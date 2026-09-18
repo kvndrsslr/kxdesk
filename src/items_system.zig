@@ -12,15 +12,19 @@ const sb = @import("sb.zig");
 const theme = @import("theme.zig");
 
 /// Flow exposes its countdown through its scripting dictionary.
-const flow_script_source = "Application(\"Flow\").gettime()";
+///
+/// AppleScript rather than the JavaScript-for-Automation spelling of the same
+/// call: the two return the same string, and the JavaScript one loads
+/// JavaScriptCore - its own allocator and JIT - into a daemon that is otherwise
+/// a few megabytes.
+const flow_script_source = "tell application \"Flow\" to gettime()";
 /// Starting the timer is an AppleScript verb, and is what a click on the Flow
 /// item used to run through `plugins/flow-click.sh`.
 const flow_start_source = "tell application \"Flow\" to start";
 
 pub const Updater = struct {
     bar: *sb.Client,
-    /// Compiled JavaScript-for-Automation program, or null when the OSA
-    /// component is unavailable.
+    /// Compiled program, or null when the OSA component is unavailable.
     flow_script: ?*anyopaque = null,
     flow_start_script: ?*anyopaque = null,
     flow_output: [64]u8 = undefined,
@@ -30,7 +34,7 @@ pub const Updater = struct {
     pub fn init(bar: *sb.Client) Updater {
         return .{
             .bar = bar,
-            .flow_script = platform.sb_osa_compile(flow_script_source, "JavaScript"),
+            .flow_script = platform.sb_osa_compile(flow_script_source, "AppleScript"),
             .flow_start_script = platform.sb_osa_compile(flow_start_source, "AppleScript"),
         };
     }

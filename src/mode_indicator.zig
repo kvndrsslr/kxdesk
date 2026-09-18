@@ -24,10 +24,13 @@ const bright = [_][]const u8{ "83A598", "B8BB26", "FABD2F", "FE8019", "FB4934", 
 /// bar colour.
 const dark = [_][]const u8{ "458588", "98971A", "D79921", "D65D0E", "CC241D", "B16286", "689D6A" };
 
-/// The JavaScript the shell ran through `osascript -l JavaScript`. Kept as an
-/// in-process compiled program: no fork, and OSAKit failing means "not dark",
-/// which is what the shell's failure path returned.
-const dark_mode_source = "Application(\"System Events\").appearancePreferences.darkMode()";
+/// The shell asked this through `osascript`, in both languages at different
+/// times; it is compiled and kept as an in-process program either way.
+///
+/// AppleScript, because the JavaScript spelling pulls JavaScriptCore into the
+/// daemon for one boolean. OSAKit failing means "not dark", which is what the
+/// shell's failure path returned.
+const dark_mode_source = "tell application \"System Events\" to get dark mode of appearance preferences";
 
 /// Set the mode indicator. `args[0]` is a mode index (`1`…`7`) or `-` for "no
 /// mode": with no mode the indicator is cleared and its colour depends on the
@@ -90,7 +93,7 @@ fn writeModeFile(io: std.Io, colour: []const u8) !void {
 fn darkMode() bool {
     // Compiled per call and released per call: the daemon runs until logout, and
     // every mode binding would otherwise leave a compiled script behind.
-    const script = platform.sb_osa_compile(dark_mode_source, "JavaScript") orelse return false;
+    const script = platform.sb_osa_compile(dark_mode_source, "AppleScript") orelse return false;
     defer platform.sb_osa_release(script);
 
     var buffer: [16]u8 = undefined;
