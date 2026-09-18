@@ -12,6 +12,7 @@ const items_usage = @import("items_usage.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
 const sb = @import("sb.zig");
+const server_mode = @import("server_mode.zig");
 const state = @import("store.zig");
 const skhdrc = @import("skhdrc.zig");
 const yabai = @import("yabai.zig");
@@ -108,6 +109,10 @@ pub const all = [_]Command{
 
     // Durable state, for this daemon and for anything that speaks to it.
     .{ .name = "state", .run = stateCommand },
+
+    // This machine as a remote coding server: the 1Password keys served over one
+    // ssh-agent, and the ssh and git configuration that points at it.
+    .{ .name = "server-mode", .run = server_mode.serverMode },
 };
 
 /// Index of the command called `name`, or null. An index rather than a pointer,

@@ -104,6 +104,16 @@ int64_t sb_exec_capture(const char* const argv[], char* out, size_t cap);
 /// only their exit status.
 int32_t sb_exec_status(const char* const argv[]);
 
+/// Run `argv` (NULL-terminated, `argv[0]` is a filesystem path) detached from
+/// this process: a session of its own, so launchd's process-group cleanup does
+/// not reach it and it outlives the daemon that started it, and its standard
+/// streams on `/dev/null`, since nobody is left to read them.
+///
+/// Returns the child's pid, or -1 when it could not be spawned. The child is
+/// never waited for: this is for the helper daemons a command starts - the
+/// ssh-agent of server mode - and not for commands.
+int32_t sb_spawn_detached(const char* const argv[]);
+
 /// Resolve an executable name to an absolute path, searching `PATH` followed by
 /// the usual Homebrew prefixes. Returns false when it cannot be found.
 bool sb_which(const char* name, char* out, size_t cap);

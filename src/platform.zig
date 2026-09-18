@@ -36,6 +36,8 @@ pub extern "c" fn sb_exec_capture(
 
 pub extern "c" fn sb_exec_status(argv: [*]const ?[*:0]const u8) i32;
 
+pub extern "c" fn sb_spawn_detached(argv: [*]const ?[*:0]const u8) i32;
+
 pub extern "c" fn sb_which(name: [*:0]const u8, out: [*]u8, cap: usize) bool;
 
 pub extern "c" fn sb_env(name: [*:0]const u8, out: [*]u8, cap: usize) bool;
