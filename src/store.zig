@@ -31,6 +31,12 @@ const platform = @import("platform.zig");
 /// Schema version this build produces. Bump this and add a step in `migrate`.
 pub const schema_version: c_int = 1;
 
+/// The directory is the owner's alone. The database holds whatever the bar and
+/// the tools that speak to it choose to keep, and SQLite creates its own
+/// write-ahead log and shared-memory file alongside with modes of its own - so
+/// the directory is what keeps all three private, not the file modes.
+const directory_mode: std.Io.File.Permissions = @enumFromInt(0o700);
+
 /// How long a write waits for another writer before giving up. The daemon is
 /// the only writer, so reaching this means something is wrong; waiting beats
 /// failing with SQLITE_BUSY on a key binding.
@@ -95,13 +101,16 @@ pub const Store = struct {
         // Only the last level is ours; the platform's `Application Support`
         // directory is always there.
         if (std.fs.path.dirname(path)) |directory| {
-            std.Io.Dir.createDirAbsolute(io, directory, .default_dir) catch |err| switch (err) {
+            std.Io.Dir.createDirAbsolute(io, directory, directory_mode) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => {
                     std.debug.print("kxdesk: cannot create the state directory: {s}\n", .{@errorName(err)});
                     return store;
                 },
             };
+            // Also for a directory an earlier version created with the default
+            // permissions, which is what this used to do.
+            std.Io.Dir.cwd().setFilePermissions(io, directory, directory_mode, .{}) catch {};
         }
 
         var connection = store.connect() orelse {
