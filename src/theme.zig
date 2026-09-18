@@ -32,6 +32,14 @@ pub const calendar_icon: Color = dark_grey;
 /// Separator icon colour.
 pub const separator_icon: Color = background_2;
 
+/// The two graphs, drawn over one another in the same window: CPU in green and
+/// GPU in yellow. Both fills are fully transparent - a graph draws its fill by
+/// default, and two of them over the same pixels would only muddle each other,
+/// so what is left is two lines sharing one baseline.
+pub const graph_cpu: Color = green;
+pub const graph_gpu: Color = yellow;
+pub const graph_no_fill: Color = 0x00000000;
+
 /// Bar geometry.
 pub const bar_height: u32 = 24;
 pub const padding: u32 = 3;

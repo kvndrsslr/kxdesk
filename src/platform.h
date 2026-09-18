@@ -127,6 +127,15 @@ bool sb_battery(int32_t* percent, bool* charging);
 /// formatted with the user's locale.
 void sb_clock(char* icon, size_t icon_cap, char* label, size_t label_cap);
 
+/// The share of CPU time that was not idle since the previous call, as a
+/// fraction of one. The first call has nothing to compare against and answers
+/// zero.
+double sb_cpu_load(void);
+
+/// The share of the GPU the accelerator reports as busy, as a fraction of one -
+/// zero when there is no accelerator to ask, as on a machine without one.
+double sb_gpu_load(void);
+
 /// Whether the system appearance is dark, read from the preference the system
 /// records it in. Needs no Apple Event, so it needs no permission.
 bool sb_dark_mode(void);

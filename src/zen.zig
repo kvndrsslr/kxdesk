@@ -11,9 +11,12 @@ const sb = @import("sb.zig");
 const state = @import("store.zig");
 
 /// Items that are simply hidden and shown again. These mirror the items
-/// `bar.zig` declares: the cpu and Spotify items this list used to name are gone
-/// from the configuration, so naming them only produced "item not found".
+/// `bar.zig` declares: naming one the configuration no longer has only produces
+/// "item not found", which is why the Spotify entries this list used to name are
+/// gone from it.
 const simple_items = [_][]const u8{
+    "cpu",
+    "gpu",
     "github.bell",
     "separator",
     "brew",

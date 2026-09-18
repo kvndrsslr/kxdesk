@@ -48,5 +48,7 @@ pub extern "c" fn sb_clock(
     label_cap: usize,
 ) void;
 
+pub extern "c" fn sb_cpu_load() f64;
+pub extern "c" fn sb_gpu_load() f64;
 pub extern "c" fn sb_dark_mode() bool;
 pub extern "c" fn sb_open_url(url: [*:0]const u8) bool;

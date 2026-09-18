@@ -18,10 +18,21 @@ const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const theme = @import("theme.zig");
 
+/// The two graph items, each fed one point per tick and drawn over one another.
+pub const cpu_item = "cpu";
+pub const gpu_item = "gpu";
+
+/// The graph is sampled once a second. A reading is the rate between two reads of
+/// Mach's cumulative tick counters, so this interval *is* the window the number
+/// averages over: shorter and the line twitches, longer and it lags.
+const cpu_cadence_seconds: i64 = 1;
+
 pub const Updater = struct {
     bar: *sb.Client,
     clock_icon: [64]u8 = undefined,
     clock_label: [64]u8 = undefined,
+    /// When the graphs last got a point, zero until they get their first.
+    last_sample: i64 = 0,
 
     pub fn init(bar: *sb.Client) Updater {
         return .{ .bar = bar };
@@ -63,6 +74,35 @@ pub const Updater = struct {
         try self.bar.commit();
     }
 
+    /// Push one CPU reading and one GPU reading into the graphs if the schedule
+    /// says a sample is due, and report how long the receive loop may wait next -
+    /// the shape `pollUsage` has, because both are driven by that one timer.
+    ///
+    /// Both readings are taken even when there is no bar to push them to. The CPU
+    /// counters only mean anything as a difference between two of them, and a
+    /// baseline left to go stale would turn the first point after the bar comes
+    /// back into an average over however long it was gone.
+    pub fn pollLoad(self: *Updater, io: std.Io, bar: ?*sb.Client) u32 {
+        if (self.last_sample != 0) {
+            const waiting = cpu_cadence_seconds - (now(io) - self.last_sample);
+            if (waiting > 0) return @intCast(waiting * std.time.ms_per_s);
+        }
+        self.last_sample = now(io);
+
+        const cpu = platform.sb_cpu_load();
+        const gpu = platform.sb_gpu_load();
+        if (bar) |client| {
+            // One message for both series, so they cannot fall out of step: the
+            // graphs share a window only by each getting exactly one point per
+            // tick. A failed send is the next tick's business - nothing is left
+            // half done by it, and both catch up a second later.
+            client.push(cpu_item, cpu) catch return @intCast(std.time.ms_per_s);
+            client.push(gpu_item, gpu) catch return @intCast(std.time.ms_per_s);
+            client.commit() catch return @intCast(std.time.ms_per_s);
+        }
+        return @intCast(std.time.ms_per_s);
+    }
+
 };
 
 /// `"00:00".substring(0, 5 - value.length) + value` - left-pad the timer to the
@@ -74,4 +114,9 @@ fn padFlowTime(value: []const u8, buffer: *[8]u8) []const u8 {
     @memset(buffer[0..width], '0');
     @memcpy(buffer[width..][0..value.len], value);
     return buffer[0 .. width + value.len];
+}
+
+/// Whole seconds on the wall clock, the unit the cadences are kept in.
+fn now(io: std.Io) i64 {
+    return @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_s));
 }

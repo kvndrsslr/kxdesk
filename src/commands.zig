@@ -45,12 +45,35 @@ pub const Context = struct {
     /// Connect to SketchyBar, resolving its bootstrap name again first: a bar
     /// that was restarted between two commands registers that name for a new
     /// instance, and the send right held for the old one is dead.
+    ///
+    /// A bar that is still starting has not registered that name yet, and the one
+    /// moment this matters is when `sketchybarrc` applies this configuration: it
+    /// runs as the bar starts. A single look arriving too early used to leave a
+    /// freshly restarted bar with nothing on it, so this waits for as long as a
+    /// start takes - the same wait the control client makes for this daemon, for
+    /// the same reason.
     pub fn ensureBar(self: *Context) !void {
-        self.bar.reconnect();
-        try self.bar.connect();
-        self.bar_present.store(true, .monotonic);
+        var attempt: u8 = 0;
+        while (true) : (attempt += 1) {
+            self.bar.reconnect();
+            self.bar.connect() catch |err| {
+                if (attempt >= bar_connect_attempts) return err;
+                std.Io.sleep(self.io,
+                             std.Io.Duration.fromMilliseconds(bar_connect_delay_ms),
+                             .awake) catch {};
+                continue;
+            };
+            self.bar_present.store(true, .monotonic);
+            return;
+        }
     }
 };
+
+/// How long `ensureBar` waits for a bar that is starting: long enough to cover a
+/// restart, short enough that a command on a machine with no bar at all still
+/// fails quickly.
+const bar_connect_attempts = 20;
+const bar_connect_delay_ms = 150;
 
 pub const Command = struct {
     /// The name a client spells.

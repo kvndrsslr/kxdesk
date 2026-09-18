@@ -2,6 +2,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
+#include <IOKit/IOKitLib.h>
 #include <IOKit/ps/IOPSKeys.h>
 #include <IOKit/ps/IOPowerSources.h>
 #include <bootstrap.h>
@@ -10,6 +11,7 @@
 #include <locale.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
+#include <mach/mach_host.h>
 #include <mach/message.h>
 #include <spawn.h>
 #include <stdlib.h>
@@ -474,6 +476,75 @@ void sb_clock(char* icon, size_t icon_cap, char* label, size_t label_cap) {
 }
 
 /* -- JavaScript for Automation -------------------------------------------- */
+
+double sb_cpu_load(void) {
+  // Ticks are cumulative, so there is no "current" CPU usage to read: what is
+  // asked for is the rate between two readings, which is why this remembers the
+  // last one. Mach's own accounting is the source; nothing is forked.
+  static host_cpu_load_info_data_t previous;
+  static bool have_previous = false;
+
+  host_cpu_load_info_data_t current;
+  mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
+  if (host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO,
+                      (host_info_t)&current, &count) != KERN_SUCCESS) {
+    return 0.0;
+  }
+
+  if (!have_previous) {
+    previous = current;
+    have_previous = true;
+    return 0.0;
+  }
+
+  // The counters are 32-bit and wrap, so the differences are taken unsigned.
+  natural_t busy = 0;
+  natural_t total = 0;
+  for (int i = 0; i < CPU_STATE_MAX; i++) {
+    natural_t delta = current.cpu_ticks[i] - previous.cpu_ticks[i];
+    total += delta;
+    if (i != CPU_STATE_IDLE) busy += delta;
+  }
+  previous = current;
+
+  if (total == 0) return 0.0;
+  return (double)busy / (double)total;
+}
+
+double sb_gpu_load(void) {
+  // Apple's GPU driver publishes a performance dictionary, and "Device
+  // Utilization %" in it is the instantaneous figure the system's own tools
+  // show. Unlike the CPU's tick counters there is nothing to difference here:
+  // one read is the answer. Everything is IOKit, in this process - no fork, and
+  // no permission to ask for.
+  io_iterator_t services = 0;
+  if (IOServiceGetMatchingServices(kIOMainPortDefault,
+                                   IOServiceMatching("IOAccelerator"),
+                                   &services) != KERN_SUCCESS) {
+    return 0.0;
+  }
+
+  double percent = 0.0;
+  io_registry_entry_t accelerator = IOIteratorNext(services);
+  if (accelerator) {
+    CFTypeRef statistics = IORegistryEntryCreateCFProperty(accelerator,
+                                                           CFSTR("PerformanceStatistics"),
+                                                           kCFAllocatorDefault,
+                                                           0);
+    if (statistics && CFGetTypeID(statistics) == CFDictionaryGetTypeID()) {
+      CFTypeRef utilization = CFDictionaryGetValue((CFDictionaryRef)statistics,
+                                                   CFSTR("Device Utilization %"));
+      if (utilization && CFGetTypeID(utilization) == CFNumberGetTypeID()) {
+        CFNumberGetValue((CFNumberRef)utilization, kCFNumberDoubleType, &percent);
+      }
+    }
+    if (statistics) CFRelease(statistics);
+    IOObjectRelease(accelerator);
+  }
+  IOObjectRelease(services);
+
+  return percent / 100.0;
+}
 
 bool sb_dark_mode(void) {
   // The appearance as the system records it, rather than through `System

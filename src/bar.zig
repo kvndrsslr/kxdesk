@@ -16,6 +16,7 @@
 const std = @import("std");
 
 const sb = @import("sb.zig");
+const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const pomodoro = @import("pomodoro.zig");
 const Props = @import("props.zig").Props;
@@ -43,6 +44,10 @@ const clear_click_script = "click_script=";
 /// sum of their two paddings, so one value applied to every item is what makes
 /// the spacing uniform.
 const item_padding = 4;
+
+/// How wide each of the two graphs is, in points. Both are this wide, so their
+/// windows hold the same number of samples and the same stretch of time.
+const graph_width = 60;
 
 /// Give an item the bar's standard padding on both sides.
 fn pad(props: *Props, points: u32) !void {
@@ -302,6 +307,64 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("--subscribe");
     try c.arg("calendar");
     try c.arg("mouse.clicked");
+
+    // CPU and GPU: two graphs over one window, sitting between the date and the
+    // Homebrew status. A graph's ring is exactly as wide as the graph is, and each
+    // tick appends one point to each, so equal widths are what hold the two
+    // windows together - a wider graph would hold a longer stretch of time and the
+    // two would drift apart in what they were showing.
+    //
+    // They are drawn over one another rather than side by side, and neither
+    // carries text: the graph is the whole item and its colour is its only label.
+    for ([_]struct { name: []const u8, color: theme.Color }{
+        .{ .name = items_system.cpu_item, .color = theme.graph_cpu },
+        .{ .name = items_system.gpu_item, .color = theme.graph_gpu },
+    }, 0..) |series, index| {
+        try c.arg("--add");
+        try c.arg("graph");
+        try c.arg(series.name);
+        try c.arg("right");
+        try c.arg(std.fmt.comptimePrint("{d}", .{graph_width}));
+
+        var graph: Props = .{};
+        try pad(&graph, item_padding);
+        // The first of the two takes no room of its own, so the second begins at
+        // the same x and the two graphs are drawn over one another. The width is
+        // not lost from the bar: the second graph still occupies its own, and that
+        // is what the item after the pair is placed against.
+        if (index == 0) graph.raw("width=0");
+        graph.raw("drawing=on");
+        try graph.num("associated_display", 1);
+        // The transparent background is not for looks: giving a graph a background
+        // is what makes it draw inside that background's height instead of across
+        // the whole 24-point bar, which is the frame the original helper's graphs
+        // used. Both text slots are off, so neither reserves room.
+        graph.raw("label.drawing=off");
+        graph.raw("icon.drawing=off");
+        graph.raw("background.drawing=on");
+        graph.raw("background.color=0x00000000");
+        try graph.num("background.height", 20);
+        try graph.color("graph.color", series.color);
+        try graph.color("graph.fill_color", theme.graph_no_fill);
+        try graph.num("graph.line_width", 1);
+        graph.raw(clear_script);
+        graph.raw(clear_click_script);
+        try c.set(series.name, graph.slice());
+    }
+
+    // The pair is placed between the date and the Homebrew status by moving it
+    // there, rather than by the order it was added in: an item keeps the place it
+    // was given when it was created, so on a bar that is already running an
+    // `--add` of an existing item changes nothing and a re-added one lands at the
+    // end. Moving them is what makes this hold on any bar, fresh or not.
+    try c.arg("--move");
+    try c.arg(items_system.gpu_item);
+    try c.arg("before");
+    try c.arg("brew");
+    try c.arg("--move");
+    try c.arg(items_system.cpu_item);
+    try c.arg("before");
+    try c.arg(items_system.gpu_item);
 
     // Homebrew: `brew outdated` is genuinely slow, so the item asks for it
     // coarsely, and the daemon runs it off the event path.

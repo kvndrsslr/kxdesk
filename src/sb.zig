@@ -172,6 +172,20 @@ pub const Client = struct {
     /// fresh query, so keeping a failed one would only mix stale commands into the
     /// next update - and grow without bound, since the events that trigger an
     /// update keep arriving.
+    /// Push one data point into a graph item.
+    ///
+    /// A point is a fraction of the graph's height, so a percentage is divided
+    /// before it arrives here - and the value is a bare argument rather than a
+    /// `key=value`, which is why it is not `propFmt`.
+    pub fn push(self: *Client, item: []const u8, value: f64) !void {
+        var buffer: [32]u8 = undefined;
+        const point = std.fmt.bufPrint(&buffer, "{d:.4}", .{value}) catch return error.OutOfMemory;
+
+        try self.arg("--push");
+        try self.arg(item);
+        try self.arg(point);
+    }
+
     pub fn commit(self: *Client) !void {
         if (self.args.items.len == 0) return;
         defer self.clear();
