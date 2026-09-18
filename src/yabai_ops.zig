@@ -55,6 +55,7 @@ const settings = [_][]const u8{
     "focus_follows_mouse",     "off",
     "window_placement",        "second_child",
     "window_shadow",           "off",
+    "skip_window_focus_animation", "on",
     "window_opacity",          "off",
     "active_window_opacity",   "0.97",
     "normal_window_opacity",   "0.93",
