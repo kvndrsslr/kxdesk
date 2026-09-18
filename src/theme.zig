@@ -54,16 +54,6 @@ pub const glyph = struct {
     /// Stands in for a notification whose title mentions a break or deprecation.
     pub const github_important = "\u{10005e}";
 
-    /// Provider balances: the power bolt for NeuralWatt, whose pitch is energy
-    /// (and which the battery item already draws when charging, so it is proven
-    /// at this weight), and exchange arrows for OpenRouter.
-    ///
-    /// Both were checked by rendering them: a Nerd Font codepoint can be
-    /// "present" according to the font's character map and still draw nothing,
-    /// which several of the router and network candidates did.
-    pub const neuralwatt = "\u{f0e7}";
-    pub const openrouter = "\u{f074}";
-
     pub const git_issue = "\u{100377}";
     pub const git_discussion = "\u{1004a4}";
     pub const git_pull_request = "\u{100661}";

@@ -36,6 +36,21 @@ const clear_click_script = "click_script=";
 /// Items an earlier configuration declared and this one does not. SketchyBar
 /// keeps items across reloads, so retiring one means removing it here: nothing
 /// else will, and a leftover item would keep running the plugin it was given.
+/// The air around every item on the right of the bar, in points.
+///
+/// An item's padding is inside its own frame, so the gap between two neighbours
+/// is the sum of their paddings - which means one value applied everywhere is
+/// what makes the spacing even. The shell configuration this replaced spaced by
+/// hand (a `-15` here, a `15` there), which produced gaps of 3, 6, 12 and 16
+/// points, one of them negative.
+const item_padding = 4;
+
+/// Give an item the bar's standard padding on both sides.
+fn pad(props: *Props, points: u32) !void {
+    try props.num("padding_left", points);
+    try props.num("padding_right", points);
+}
+
 const retired_items = [_][]const u8{
     // The Spotify popup left the configuration; its plugin is gone.
     "/spotify\\..*/",
@@ -248,6 +263,7 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("battery");
     try c.arg("right");
     var battery: Props = .{};
+    try pad(&battery, item_padding);
     battery.raw(clear_script);
     try battery.text("mach_helper", config.helper);
     try battery.num("update_freq", 120);
@@ -263,6 +279,7 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("calendar");
     try c.arg("right");
     var calendar: Props = .{};
+    try pad(&calendar, item_padding);
     calendar.raw("icon=cal");
     try calendar.fmt("icon.font={s}:ExtraBold:11.0", .{theme.font});
     try calendar.num("icon.padding_right", 8);
@@ -272,7 +289,6 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     calendar.raw("icon.drawing=on");
     try calendar.num("label.width", 40);
     calendar.raw("label.align=right");
-    try calendar.num("background.padding_left", 0);
     try calendar.num("update_freq", 5);
     calendar.raw(clear_script);
     calendar.raw(clear_click_script);
@@ -292,6 +308,7 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("brew");
     try c.arg("right");
     var brew: Props = .{};
+    try pad(&brew, item_padding);
     brew.raw(clear_script);
     try brew.text("mach_helper", config.helper);
     try brew.fmt("icon={s}", .{theme.glyph.brew});
@@ -299,7 +316,6 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     brew.raw("label=?");
     try brew.num("associated_display", 1);
     brew.raw("drawing=on");
-    try brew.num("background.padding_right", 15);
     try c.set("brew", brew.slice());
     try c.arg("--subscribe");
     try c.arg("brew");
@@ -320,8 +336,9 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try bell.color("label.highlight_color", theme.blue);
     bell.raw("popup.align=right");
     try bell.num("width", 30);
-    // A little air on the left, where the provider balances now sit against it.
-    try bell.num("background.padding_left", 12);
+    // A little more than the rest, since the provider balances sit against it.
+    try bell.num("padding_left", item_padding * 3);
+    try bell.num("padding_right", item_padding);
     try bell.num("associated_display", 1);
     bell.raw(clear_script);
     bell.raw(clear_click_script);
@@ -370,12 +387,14 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     var neuralwatt: Props = .{};
     neuralwatt.raw("drawing=on");
     try neuralwatt.num("associated_display", 1);
+    try pad(&neuralwatt, item_padding);
     // `dynamic` is SketchyBar's automatic width, and the default - but a
     // property an earlier configuration set stays set otherwise, which is the
     // same trap the empty `script=` and `click_script=` below exist for.
     neuralwatt.raw("width=dynamic");
-    try neuralwatt.fmt("icon.font={s}:Bold:14.0", .{theme.font});
-    try neuralwatt.fmt("icon={s}", .{theme.glyph.neuralwatt});
+    try neuralwatt.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
+    try neuralwatt.num("icon.padding_right", 2);
+    neuralwatt.raw("icon=:neuralwatt:");
     // Dim until the first answer arrives: the colour is the daemon's to set, and
     // a reading that stopped refreshing is dimmed rather than left bright.
     try neuralwatt.color("icon.color", theme.dark_grey);
@@ -398,9 +417,11 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     var openrouter: Props = .{};
     openrouter.raw("drawing=on");
     try openrouter.num("associated_display", 1);
+    try pad(&openrouter, item_padding);
     openrouter.raw("width=dynamic");
-    try openrouter.fmt("icon.font={s}:Bold:14.0", .{theme.font});
-    try openrouter.fmt("icon={s}", .{theme.glyph.openrouter});
+    try openrouter.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
+    try openrouter.num("icon.padding_right", 2);
+    openrouter.raw("icon=:openrouter:");
     try openrouter.color("icon.color", theme.dark_grey);
     openrouter.raw("label=?");
     openrouter.raw(clear_script);
@@ -457,8 +478,10 @@ fn rightItems(c: *sb.Client, config: Config) !void {
         "drawing=on",
         "associated_display=1",
         "alias.update_freq=1",
-        "background.padding_left=-15",
-        "background.padding_right=0",
+        // Left, not right, because the alias draws another application's status
+        // item, which arrives with margins of its own.
+        "background.padding_left=-11",
+        "background.padding_right=4",
     });
 
     // The pomodoro timer. Its countdown is the daemon's own: the daemon pushes
@@ -471,6 +494,7 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("e");
     var timer: Props = .{};
     timer.raw("icon=:clock:");
+    try pad(&timer, item_padding);
     try timer.num("associated_display", 1);
     try timer.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
     try timer.num("icon.padding_right", 2);
