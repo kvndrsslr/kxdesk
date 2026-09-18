@@ -105,16 +105,49 @@ uint32_t sb_uid(void) {
   return (uint32_t)getuid();
 }
 
-void sb_server_serve(uint32_t port, sb_handler handler) {
-  // A blocking receive: nothing in this daemon is periodic, so the loop wakes
-  // only when a message arrives and costs nothing in between. SketchyBar's `k`
-  // shutdown marker arrives as an ordinary 2-byte block - `env[0] == 'k'` - and
-  // is handed to the handler, which records that the bar is gone. It is not a
-  // reason to exit: this process outlives the bar and is expected to be serving
-  // again by the time the next `apply` arrives.
+/// Receive one message, waiting at most `timeout_ms` milliseconds. Returns false
+/// when the wait elapsed instead, in which case no message was received and
+/// there is nothing to destroy.
+///
+/// This is the vendored `mach_receive_message` with a timeout the caller picks;
+/// its own timeout path is fixed at a second. The buffer is zeroed first, as
+/// there, so that a failed receive leaves `address` NULL rather than stale.
+static bool sb_server_receive(uint32_t port, struct mach_buffer* buffer,
+                              uint32_t timeout_ms) {
+  *buffer = (struct mach_buffer) { 0 };
+
+  mach_msg_return_t rc = mach_msg(&buffer->message.header,
+                                  MACH_RCV_MSG | (timeout_ms ? MACH_RCV_TIMEOUT : 0),
+                                  0,
+                                  sizeof(struct mach_buffer),
+                                  (mach_port_t)port,
+                                  timeout_ms ? (mach_msg_timeout_t)timeout_ms
+                                             : MACH_MSG_TIMEOUT_NONE,
+                                  MACH_PORT_NULL                  );
+
+  if (rc != MACH_MSG_SUCCESS) {
+    buffer->message.descriptor.address = NULL;
+    return false;
+  }
+
+  return true;
+}
+
+void sb_server_serve(uint32_t port, sb_handler handler, sb_timer timer) {
+  // A receive that blocks until a message arrives, or until the timer says it
+  // has something to do. With no timer running the wait is infinite, so the idle
+  // daemon wakes for nothing at all. SketchyBar's `k` shutdown marker arrives as
+  // an ordinary 2-byte block - `env[0] == 'k'` - and is handed to the handler,
+  // which records that the bar is gone. It is not a reason to exit: this process
+  // outlives the bar and is expected to be serving again by the time the next
+  // `apply` arrives.
   struct mach_buffer buffer;
   for (;;) {
-    mach_receive_message((mach_port_t)port, &buffer, false);
+    // Asked before the wait rather than after it, so the timer's own work - and
+    // anything it has to show - happens before the loop commits to blocking.
+    uint32_t wait_ms = timer ? timer() : 0;
+
+    if (!sb_server_receive(port, &buffer, wait_ms)) continue;
 
     const char* env = buffer.message.descriptor.address;
     if (!env) continue;

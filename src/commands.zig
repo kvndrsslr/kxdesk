@@ -9,6 +9,7 @@ const std = @import("std");
 
 const bar_config = @import("bar.zig");
 const mode_indicator = @import("mode_indicator.zig");
+const pomodoro = @import("pomodoro.zig");
 const sb = @import("sb.zig");
 const skhdrc = @import("skhdrc.zig");
 const yabai = @import("yabai.zig");
@@ -25,6 +26,9 @@ pub const Context = struct {
     /// loop's client must not see a batch it did not build.
     bar: *sb.Client,
     yabai: *yabai.Client,
+    /// The pomodoro timer, which the receive loop ticks and these commands
+    /// start, stop and set.
+    pomodoro: *pomodoro.Timer,
     /// Whether SketchyBar is known to be up. Written by the receive loop.
     bar_present: *std.atomic.Value(bool),
     /// Bootstrap name items carry as `mach_helper`, so re-applying the
@@ -70,6 +74,9 @@ pub const all = [_]Command{
 
     // Appearance.
     .{ .name = "set_mode_indicator", .run = mode_indicator.setMode },
+
+    // The timer on the bar, and the intervals it ends.
+    .{ .name = "pomodoro", .run = pomodoroTimer },
 };
 
 /// Index of the command called `name`, or null. An index rather than a pointer,
@@ -79,6 +86,46 @@ pub fn find(name: []const u8) ?usize {
         if (std.mem.eql(u8, command.name, name)) return index;
     }
     return null;
+}
+
+/// The pomodoro timer: start it, stop it, reset it, skip a phase, or set the
+/// interval lengths. Every spelling answers with the timer's state, so
+/// `kxdesk pomodoro start` says what it started.
+fn pomodoroTimer(context: *Context, args: []const []const u8) ![]const u8 {
+    const verb = if (args.len > 0) args[0] else "status";
+    const values = if (args.len > 0) args[1..] else args;
+
+    if (std.mem.eql(u8, verb, "start")) {
+        // Started with a length, it is the work interval for this run; without
+        // one the timer keeps the lengths it has.
+        if (values.len > 0) {
+            const lengths = context.pomodoro.lengths(context.io);
+            const work = try pomodoro.parseMinutes(values[0]);
+            context.pomodoro.setDurations(context.io, work, lengths.rest);
+        }
+        context.pomodoro.start(context.io);
+    } else if (std.mem.eql(u8, verb, "pause")) {
+        context.pomodoro.pause(context.io);
+    } else if (std.mem.eql(u8, verb, "reset")) {
+        context.pomodoro.reset(context.io);
+    } else if (std.mem.eql(u8, verb, "skip")) {
+        context.pomodoro.skip(context.io);
+    } else if (std.mem.eql(u8, verb, "set")) {
+        if (values.len == 0) return error.MissingArgument;
+        const lengths = context.pomodoro.lengths(context.io);
+        const work = try pomodoro.parseMinutes(values[0]);
+        const rest = if (values.len > 1) try pomodoro.parseMinutes(values[1]) else lengths.rest;
+        context.pomodoro.setDurations(context.io, work, rest);
+    } else if (!std.mem.eql(u8, verb, "status")) {
+        return error.UnknownArgument;
+    }
+
+    // The item shows the timer, so a command that changed it shows the change
+    // now rather than at the next tick.
+    const bar = if (context.bar_present.load(.monotonic)) context.bar else null;
+    context.pomodoro.render(context.io, bar);
+
+    return context.pomodoro.describe(context.arena, context.io);
 }
 
 /// Apply the bar configuration.

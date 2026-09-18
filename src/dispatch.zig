@@ -22,6 +22,7 @@ const items_github = @import("items_github.zig");
 const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
 const platform = @import("platform.zig");
+const pomodoro = @import("pomodoro.zig");
 const sb = @import("sb.zig");
 const zen = @import("zen.zig");
 
@@ -40,6 +41,7 @@ pub const Dispatcher = struct {
 
     yabai_items: items_yabai.Updater,
     system_items: items_system.Updater,
+    pomodoro: *pomodoro.Timer,
 
     /// At most one of each refresh in flight.
     brew: background.Slot = .{},
@@ -110,6 +112,7 @@ pub const Dispatcher = struct {
     /// CLI and `osascript`; the item now sends its click here instead.
     fn click(self: *Dispatcher, name: []const u8, env: sb.Env) !void {
         if (std.mem.eql(u8, name, "calendar")) return self.toggleZen();
+        if (std.mem.eql(u8, name, pomodoro.item)) return self.clickPomodoro(env);
         if (std.mem.eql(u8, name, items_github.bell)) {
             return items_github.setPopup(self.bar, .toggle);
         }
@@ -127,6 +130,17 @@ pub const Dispatcher = struct {
                 name[space_prefix.len..];
             return self.yabai(&.{ "-m", "space", "--focus", sid });
         }
+    }
+
+    /// The pomodoro item: a left click starts or stops the timer, a right click
+    /// puts it back to a fresh work interval.
+    fn clickPomodoro(self: *Dispatcher, env: sb.Env) !void {
+        if (std.mem.eql(u8, env.getOrEmpty("BUTTON"), "right")) {
+            self.pomodoro.reset(self.io);
+        } else {
+            self.pomodoro.toggle(self.io);
+        }
+        self.pomodoro.render(self.io, self.bar);
     }
 
     /// Open the notification a popup row stands for, and dismiss the popup.

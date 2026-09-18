@@ -27,6 +27,7 @@ const dispatch = @import("dispatch.zig");
 const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
 const platform = @import("platform.zig");
+const pomodoro = @import("pomodoro.zig");
 const sb = @import("sb.zig");
 const yabai = @import("yabai.zig");
 
@@ -50,6 +51,8 @@ const Daemon = struct {
     /// so sharing it is safe; commands build their own.
     bar: *sb.Client,
     yabai_client: *yabai.Client,
+    /// The pomodoro timer, shared with the receive loop and the commands.
+    pomodoro: *pomodoro.Timer,
     dispatcher: dispatch.Dispatcher,
     started: std.Io.Timestamp,
 
@@ -67,6 +70,7 @@ const Daemon = struct {
             .io = self.io,
             .bar = bar,
             .yabai = self.yabai_client,
+            .pomodoro = self.pomodoro,
             .bar_present = &self.present,
             .event_service = event_service,
             .started = self.started,
@@ -170,6 +174,21 @@ fn onBlock(block: [*:0]const u8, reply_port: u32) callconv(.c) void {
     };
 }
 
+/// The serve loop's clock, as a C callback: end a phase that has run out, show
+/// the item, and say how long the loop may block next.
+///
+/// The loop is the only thread that runs this, and the commands take the timer's
+/// own lock to touch it from theirs.
+fn onTimer() callconv(.c) u32 {
+    const daemon = active_daemon orelse return 0;
+
+    // Nothing is pushed to a bar that is not there; the ring does not depend on
+    // the bar at all, which is the point of the timer living in the daemon.
+    const bar = if (daemon.present.load(.monotonic)) daemon.bar else null;
+    daemon.pomodoro.tick(daemon.io, bar);
+    return daemon.pomodoro.waitMs(daemon.io);
+}
+
 pub fn main(init: std.process.Init) !void {
     const arguments = try init.minimal.args.toSlice(init.arena.allocator());
     if (arguments.len < 2) return usage(init.io);
@@ -217,16 +236,34 @@ fn runDaemon(init: std.process.Init) !void {
     defer icons.deinit();
     loadIcons(&icons, init.io);
 
+    // The notifier the shell `pomo` function used. Resolved once, here: a
+    // missing notifier costs the two notifications and nothing else, and it is
+    // worth saying so once rather than discovering it silently at the end of an
+    // interval.
+    var notifier_path: [std.fs.max_path_bytes]u8 = undefined;
+    var timer = pomodoro.Timer{ .notifier = blk: {
+        if (platform.sb_which("terminal-notifier", &notifier_path, notifier_path.len)) {
+            break :blk std.mem.sliceTo(&notifier_path, 0);
+        }
+        std.debug.print(
+            "kxdesk: terminal-notifier is not installed; pomodoro notifications are off\n",
+            .{},
+        );
+        break :blk "";
+    } };
+
     var daemon = Daemon{
         .gpa = gpa,
         .io = init.io,
         .bar = &bar,
         .yabai_client = &yabai_client,
+        .pomodoro = &timer,
         .dispatcher = .{
             .bar = &bar,
             .io = init.io,
             .gpa = gpa,
             .helper = event_service,
+            .pomodoro = &timer,
             .yabai_items = items_yabai.Updater.init(gpa, &yabai_client, &bar, &scratch, response, &icons),
             .system_items = items_system.Updater.init(&bar),
         },
@@ -248,7 +285,7 @@ fn runDaemon(init: std.process.Init) !void {
 
     // Never returns: the process ends when launchd or a signal ends it, not when
     // SketchyBar does.
-    platform.sb_server_serve(server_port, onBlock);
+    platform.sb_server_serve(server_port, onBlock, onTimer);
 }
 
 /// Every other mode: ask the daemon to run one of its commands.

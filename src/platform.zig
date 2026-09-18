@@ -13,7 +13,8 @@ pub const Handler = *const fn (block: [*:0]const u8, reply_port: u32) callconv(.
 pub extern "c" fn sb_bootstrap_lookup(name: [*:0]const u8) u32;
 pub extern "c" fn sb_port_release(port: u32) void;
 pub extern "c" fn sb_server_register(name: [*:0]const u8) u32;
-pub extern "c" fn sb_server_serve(port: u32, handler: Handler) void;
+pub const Timer = *const fn () callconv(.c) u32;
+pub extern "c" fn sb_server_serve(port: u32, handler: Handler, timer: ?Timer) void;
 pub extern "c" fn sb_send(
     port: u32,
     argv: [*]const u8,

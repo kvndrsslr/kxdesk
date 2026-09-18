@@ -16,6 +16,7 @@
 const std = @import("std");
 
 const sb = @import("sb.zig");
+const pomodoro = @import("pomodoro.zig");
 const Props = @import("props.zig").Props;
 const theme = @import("theme.zig");
 
@@ -38,6 +39,10 @@ const retired_items = [_][]const u8{
     // The Spotify popup left the configuration; its plugin is gone.
     "/spotify\\..*/",
     "/^spotify$/",
+    // Flow's clock item and the alias to Flow's own status item: the pomodoro
+    // replaced both, and an alias whose application is gone draws nothing.
+    "/^flow$/",
+    "/^fan_alias$/",
 };
 
 /// Spaces 1..16 exist as items; yabai decides which ones are real.
@@ -359,39 +364,32 @@ fn rightItems(c: *sb.Client, config: Config) !void {
         "background.padding_right=0",
     });
 
-    // The shell configuration this replaces lost this alias to a missing line
-    // continuation; it is restored here.
-    var fan: Props = .{};
-    fan.raw("drawing=on");
-    try fan.color("alias.color", theme.dark_grey);
-    try fan.num("associated_display", 1);
-    try fan.num("background.padding_left", 0);
-    try fan.num("width", 46);
-    try fan.num("background.padding_right", -6);
-    try alias(c, "Flow", "fan_alias", fan.slice());
-
-    // Flow's clock, without its countdown: reading the timer is an Apple Event
-    // and an Apple Event needs permission that is asked for again for every new
-    // binary, so the item keeps its place on the bar and its icon, and shows no
-    // time. The label is cleared here rather than left to a previous
-    // configuration.
+    // The pomodoro timer. Its countdown is the daemon's own: the daemon pushes
+    // it to the label when the second changes, so the item carries no
+    // `update_freq`, forks nothing, and asks no other application for the time.
+    // A left click starts or stops the timer, a right click resets it.
     try c.arg("--add");
     try c.arg("item");
-    try c.arg("flow");
+    try c.arg(pomodoro.item);
     try c.arg("e");
-    var flow: Props = .{};
-    flow.raw("icon=:clock:");
-    try flow.num("associated_display", 1);
-    try flow.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
-    try flow.num("icon.padding_right", 2);
-    try flow.color("icon.color", theme.magenta);
-    flow.raw("icon.drawing=on");
-    try flow.num("label.width", 52);
-    flow.raw("label.align=left");
-    flow.raw("label=");
-    flow.raw(clear_script);
-    flow.raw(clear_click_script);
-    try c.set("flow", flow.slice());
+    var timer: Props = .{};
+    timer.raw("icon=:clock:");
+    try timer.num("associated_display", 1);
+    try timer.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
+    try timer.num("icon.padding_right", 2);
+    try timer.color("icon.color", theme.dark_grey);
+    timer.raw("icon.drawing=on");
+    try timer.num("label.width", 52);
+    timer.raw("label.align=left");
+    try timer.color("label.color", theme.dark_grey);
+    timer.raw("label=");
+    timer.raw(clear_script);
+    timer.raw(clear_click_script);
+    try timer.text("mach_helper", config.helper);
+    try c.set(pomodoro.item, timer.slice());
+    try c.arg("--subscribe");
+    try c.arg(pomodoro.item);
+    try c.arg("mouse.clicked");
 }
 
 /// Alias an item owned by another application and give it a stable name.

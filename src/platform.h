@@ -28,6 +28,13 @@
 /// reference with `sb_port_copy()`.
 typedef void (*sb_handler)(const char* block, uint32_t reply_port);
 
+/// Work the loop has to do on a clock rather than on a message, with the wait
+/// that follows it: called before the loop blocks, and again after every wait
+/// that elapses. Returns how many milliseconds the loop may block for - or 0 for
+/// "nothing scheduled, block until a message arrives", which is what a daemon
+/// with no timer running wants and what it costs when idle.
+typedef uint32_t (*sb_timer)(void);
+
 /* -- mach transport ------------------------------------------------------- */
 
 /// Resolve a bootstrap service to a send right, or 0. Each successful call
@@ -45,7 +52,9 @@ uint32_t sb_server_register(const char* name);
 /// SketchyBar's `k` shutdown marker is handed to the handler like any other
 /// block: by then the bar is gone, but the daemon outlives it, so ending the
 /// process is the handler's business and not the loop's.
-void sb_server_serve(uint32_t port, sb_handler handler);
+/// Serve until the process ends. `timer` may be NULL, and is the only thing that
+/// ever makes this loop wake up on its own.
+void sb_server_serve(uint32_t port, sb_handler handler, sb_timer timer);
 
 /// Send a NUL-separated argument vector to a port, copying any response into
 /// `out` (pass NULL to discard it). The buffer must end with two NUL bytes,
