@@ -36,23 +36,15 @@ const clear_click_script = "click_script=";
 /// Items an earlier configuration declared and this one does not. SketchyBar
 /// keeps items across reloads, so retiring one means removing it here: nothing
 /// else will, and a leftover item would keep running the plugin it was given.
-/// The air around every item on the right of the bar, in points.
+/// The air around every item, in points.
 ///
-/// An item's padding is inside its own frame, so the gap between two neighbours
-/// is the sum of their paddings - which means one value applied everywhere is
-/// what makes the spacing even. The shell configuration this replaced spaced by
-/// hand (a `-15` here, a `15` there), which produced gaps of 3, 6, 12 and 16
-/// points, one of them negative.
+/// An item's padding sits inside its own frame, so the gap between two
+/// neighbours is the sum of their two paddings - and with a dynamic width that
+/// sum is exactly what is rendered, which is why one value here is all it takes
+/// to make the spacing even. It is only true for items that size themselves: a
+/// fixed `width` swallows the padding, which is what left the GitHub item
+/// overlapping the balance beside it.
 const item_padding = 4;
-
-/// The gap between two sections of the bar - the provider balances, the GitHub
-/// item, the clock - as opposed to two items that belong together.
-///
-/// SketchyBar has no automatic spacing of any kind: an item's padding sits
-/// inside its own frame and the gap to its neighbour is the sum of their two
-/// paddings. A section break is therefore one item taking more padding on the
-/// side the section starts, and this is the one place that number is written.
-const section_gap = 28;
 
 /// Give an item the bar's standard padding on both sides.
 fn pad(props: *Props, points: u32) !void {
@@ -60,11 +52,8 @@ fn pad(props: *Props, points: u32) !void {
     try props.num("padding_right", points);
 }
 
-/// Start a section: the standard padding, plus the extra on the left.
-fn startSection(props: *Props) !void {
-    try props.num("padding_left", section_gap - item_padding);
-    try props.num("padding_right", item_padding);
-}
+/// The space before the GitHub item, which starts a section of its own.
+const github_gap = 24;
 
 const retired_items = [_][]const u8{
     // The Spotify popup left the configuration; its plugin is gone.
@@ -354,8 +343,12 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try bell.fmt("label={s}", .{theme.glyph.loading});
     try bell.color("label.highlight_color", theme.blue);
     bell.raw("popup.align=right");
-    try bell.num("width", 30);
-    try pad(&bell, item_padding);
+    // Stated rather than omitted, so that the fixed width an earlier
+    // configuration gave this item is replaced: a fixed width swallows the
+    // padding, and this item's own padding is what sets its section apart.
+    bell.raw("width=dynamic");
+    try bell.num("padding_left", github_gap - item_padding);
+    try bell.num("padding_right", item_padding);
     try bell.num("associated_display", 1);
     bell.raw(clear_script);
     bell.raw(clear_click_script);
@@ -404,13 +397,7 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     var neuralwatt: Props = .{};
     neuralwatt.raw("drawing=on");
     try neuralwatt.num("associated_display", 1);
-    // The space before the GitHub item goes here rather than on the bell,
-    // because only the padding of the item *before* a gap moves anything: the
-    // bell is a fixed-width item and its own `padding_left` is inert. Measured
-    // on the live bar, the gap this produces is `padding_right - 11` points, so
-    // 40 is a real 29 points of air.
-    try neuralwatt.num("padding_left", item_padding);
-    try neuralwatt.num("padding_right", 40);
+    try pad(&neuralwatt, item_padding);
     // `dynamic` is SketchyBar's automatic width, and the default - but a
     // property an earlier configuration set stays set otherwise, which is the
     // same trap the empty `script=` and `click_script=` below exist for.
@@ -445,7 +432,7 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     openrouter.raw("drawing=on");
     try openrouter.num("associated_display", 1);
     // The provider balances are a section of their own.
-    try startSection(&openrouter);
+    try pad(&openrouter, item_padding);
     openrouter.raw("width=dynamic");
     try openrouter.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
     try openrouter.num("icon.padding_right", 2);
