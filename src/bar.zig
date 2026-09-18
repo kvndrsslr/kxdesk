@@ -36,14 +36,12 @@ const clear_click_script = "click_script=";
 /// Items an earlier configuration declared and this one does not. SketchyBar
 /// keeps items across reloads, so retiring one means removing it here: nothing
 /// else will, and a leftover item would keep running the plugin it was given.
-/// The air around every item, in points.
+/// The air around every item, in points, so that every gap on the bar is the
+/// same 2 x this.
 ///
-/// An item's padding sits inside its own frame, so the gap between two
-/// neighbours is the sum of their two paddings - and with a dynamic width that
-/// sum is exactly what is rendered, which is why one value here is all it takes
-/// to make the spacing even. It is only true for items that size themselves: a
-/// fixed `width` swallows the padding, which is what left the GitHub item
-/// overlapping the balance beside it.
+/// An item's padding is inside its own frame and the gap to its neighbour is the
+/// sum of their two paddings, so one value applied to every item is what makes
+/// the spacing uniform.
 const item_padding = 4;
 
 /// Give an item the bar's standard padding on both sides.
@@ -51,9 +49,6 @@ fn pad(props: *Props, points: u32) !void {
     try props.num("padding_left", points);
     try props.num("padding_right", points);
 }
-
-/// The space before the GitHub item, which starts a section of its own.
-const github_gap = 24;
 
 const retired_items = [_][]const u8{
     // The Spotify popup left the configuration; its plugin is gone.
@@ -156,8 +151,7 @@ fn spaces(c: *sb.Client) !void {
         try props.color("icon.color", theme.white);
         try props.color("icon.highlight_color", theme.green);
         try props.fmt("icon.font={s}:ExtraBold:13.0", .{theme.font});
-        try props.num("background.padding_left", 0);
-        try props.num("background.padding_right", 0);
+        try pad(&props, item_padding);
         try props.color("background.color", theme.black);
         props.raw("background.drawing=off");
         try props.fmt("label.font={s}:Regular:14", .{theme.app_font});
@@ -191,8 +185,7 @@ fn spaces(c: *sb.Client) !void {
     props.raw("drawing=on");
     try props.fmt("icon={s}", .{theme.glyph.separator});
     try props.fmt("icon.font={s}:Regular:11.0", .{theme.font});
-    try props.num("background.padding_left", 16);
-    try props.num("background.padding_right", 6);
+    try pad(&props, item_padding);
     props.raw("label.drawing=off");
     try props.color("icon.color", theme.separator_icon);
     try c.set("separator", props.slice());
@@ -238,6 +231,7 @@ fn frontAppItems(c: *sb.Client, config: Config) !void {
         try status_props.fmt("icon.font={s}:Bold:14.0", .{theme.font});
         status_props.raw("label.drawing=off");
         try status_props.fmt("label.font={s}:Regular:12.0", .{theme.font});
+        try pad(&status_props, item_padding);
         try status_props.num("icon.width", 24);
         try status_props.fmt("icon={s}", .{theme.glyph.yabai_grid});
         try status_props.color("icon.color", theme.orange);
@@ -253,8 +247,7 @@ fn frontAppItems(c: *sb.Client, config: Config) !void {
 
         var front_props: Props = .{};
         front_props.raw("drawing=on");
-        try front_props.num("background.padding_left", 0);
-        try front_props.num("background.padding_right", 10);
+        try pad(&front_props, item_padding);
         try front_props.color("icon.color", theme.white);
         try front_props.fmt("icon.font={s}:ExtraBold:12.0", .{theme.font});
         try front_props.color("label.color", theme.grey);
@@ -343,12 +336,11 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try bell.fmt("label={s}", .{theme.glyph.loading});
     try bell.color("label.highlight_color", theme.blue);
     bell.raw("popup.align=right");
-    // Stated rather than omitted, so that the fixed width an earlier
-    // configuration gave this item is replaced: a fixed width swallows the
-    // padding, and this item's own padding is what sets its section apart.
+    // Dynamic rather than the fixed width an earlier configuration gave it: a
+    // fixed width swallows the padding, which is what made this item overlap the
+    // balance beside it.
     bell.raw("width=dynamic");
-    try bell.num("padding_left", github_gap - item_padding);
-    try bell.num("padding_right", item_padding);
+    try pad(&bell, item_padding);
     try bell.num("associated_display", 1);
     bell.raw(clear_script);
     bell.raw(clear_click_script);
@@ -431,7 +423,6 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     var openrouter: Props = .{};
     openrouter.raw("drawing=on");
     try openrouter.num("associated_display", 1);
-    // The provider balances are a section of their own.
     try pad(&openrouter, item_padding);
     openrouter.raw("width=dynamic");
     try openrouter.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
