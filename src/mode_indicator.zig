@@ -12,8 +12,14 @@ const platform = @import("platform.zig");
 
 const Context = commands.Context;
 
-/// The file the mode index is recorded in, for tooling that reads it.
+/// The file the mode index is recorded in, for tooling that reads it. That file
+/// is the shell's interface and survives a restart of this daemon, but not a
+/// reboot - which is what the store is for.
 const mode_file_path = "/tmp/yabai-mode";
+
+/// Where the mode index is remembered, so a restarted bar comes back with the
+/// highlight colour it had.
+const state_key = "mode";
 
 /// Highlight colours per mode index when the system is in light mode. Index 0
 /// is mode 1 - zsh arrays were 1-based and the template's bindings spell the
@@ -65,7 +71,21 @@ pub fn setMode(context: *Context, args: []const []const u8) anyerror![]const u8 
     try context.ensureBar();
     try context.bar.set("/space.*/", &.{property});
     try context.bar.commit();
+
+    // Remembered as the argument was spelled, so "no mode" comes back as "no
+    // mode" rather than as a mode index that happens to look the same.
+    context.store.setText(context.io, state_key, arg) catch {};
+
     return "";
+}
+
+/// Put back the mode the previous daemon was in. Called wherever the bar
+/// configuration is applied, because a rebuilt bar has lost the highlight colour
+/// even though this daemon has not.
+pub fn restore(context: *Context) void {
+    var buffer: [8]u8 = undefined;
+    const remembered = (context.store.getText(context.io, state_key, &buffer) catch null) orelse return;
+    _ = setMode(context, &.{remembered}) catch {};
 }
 
 /// Record the mode colour. The shell's `echo "$Y_CLR" >` left a trailing

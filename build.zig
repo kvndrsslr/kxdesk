@@ -27,6 +27,18 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "version", manifestVersion(b));
     exe.root_module.addOptions("build_options", options);
 
+    // SQLite is bound through its C interface: the standard library has no
+    // SQLite any more, so the SDK header is translated into a Zig module here
+    // and linked against the copy macOS ships - which needs no dependency, and
+    // is newer than the Homebrew one besides.
+    const sqlite = b.addTranslateC(.{
+        .root_source_file = b.path("vendor/sqlite.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("sqlite", sqlite.createModule());
+    exe.root_module.linkSystemLibrary("sqlite3", .{});
+
     // The upstream SketchyBar header is compiled into the helper: it defines the
     // mach wire format as `static inline` functions, so `platform.m` including it
     // statically links it here.

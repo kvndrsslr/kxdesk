@@ -23,6 +23,7 @@ const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
 const platform = @import("platform.zig");
 const pomodoro = @import("pomodoro.zig");
+const state = @import("store.zig");
 const sb = @import("sb.zig");
 const zen = @import("zen.zig");
 
@@ -42,6 +43,7 @@ pub const Dispatcher = struct {
     yabai_items: items_yabai.Updater,
     system_items: items_system.Updater,
     pomodoro: *pomodoro.Timer,
+    store: *state.Store,
 
     /// At most one of each refresh in flight.
     brew: background.Slot = .{},
@@ -166,7 +168,7 @@ pub const Dispatcher = struct {
         var scratch_state = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch_state.deinit();
 
-        return zen.apply(self.bar, scratch_state.allocator(), .toggle);
+        return zen.set(self.bar, scratch_state.allocator(), .toggle, self.store, self.io);
     }
 
     /// Run a yabai command from the event loop, on a scratch arena of its own so

@@ -8,6 +8,7 @@ const std = @import("std");
 
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
+const state = @import("store.zig");
 
 /// Items that are simply hidden and shown again. These mirror the items
 /// `bar.zig` declares: the cpu and Spotify items this list used to name are gone
@@ -27,7 +28,26 @@ const max_displays = 4;
 
 pub const Mode = enum { on, off, toggle };
 
-pub fn apply(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode) !void {
+/// Where the collapsed bar is remembered.
+pub const state_key = "zen";
+
+/// Apply zen mode and remember it, so a bar that is restarted comes back the way
+/// the last one was left.
+pub fn set(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode, store: *state.Store, io: std.Io) !void {
+    const collapsed = try apply(bar, arena, mode);
+    store.setInt(io, state_key, @intFromBool(collapsed)) catch {};
+}
+
+/// Put back the collapsed state, if that is how the bar was left.
+pub fn restore(bar: *sb.Client, arena: std.mem.Allocator, store: *state.Store, io: std.Io) !void {
+    const collapsed = (store.getInt(io, state_key) catch null) orelse return;
+    if (collapsed == 0) return;
+    _ = try apply(bar, arena, .on);
+}
+
+/// Returns the state the bar is in afterwards - `.toggle` reads it from the bar
+/// first, so the caller can remember the answer.
+pub fn apply(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode) !bool {
     const zen = switch (mode) {
         .on => true,
         .off => false,
@@ -59,6 +79,7 @@ pub fn apply(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode) !void {
     }
 
     try bar.commit();
+    return zen;
 }
 
 const Geometry = struct { drawing: []const u8 = "on" };
@@ -73,10 +94,10 @@ fn isVisible(bar: *sb.Client, arena: std.mem.Allocator) !bool {
     try bar.arg("github.bell");
     const text = try bar.commitInto(response);
 
-    const state = std.json.parseFromSliceLeaky(ItemState, arena, text, .{
+    const parsed = std.json.parseFromSliceLeaky(ItemState, arena, text, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_if_needed,
     }) catch return true;
 
-    return std.mem.eql(u8, state.@"geometry".drawing, "on");
+    return std.mem.eql(u8, parsed.@"geometry".drawing, "on");
 }

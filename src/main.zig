@@ -28,6 +28,7 @@ const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
 const platform = @import("platform.zig");
 const pomodoro = @import("pomodoro.zig");
+const state = @import("store.zig");
 const sb = @import("sb.zig");
 const yabai = @import("yabai.zig");
 
@@ -53,6 +54,8 @@ const Daemon = struct {
     yabai_client: *yabai.Client,
     /// The pomodoro timer, shared with the receive loop and the commands.
     pomodoro: *pomodoro.Timer,
+    /// Durable state, shared with the commands.
+    store: *state.Store,
     dispatcher: dispatch.Dispatcher,
     started: std.Io.Timestamp,
 
@@ -71,6 +74,7 @@ const Daemon = struct {
             .bar = bar,
             .yabai = self.yabai_client,
             .pomodoro = self.pomodoro,
+            .store = self.store,
             .bar_present = &self.present,
             .event_service = event_service,
             .started = self.started,
@@ -236,12 +240,19 @@ fn runDaemon(init: std.process.Init) !void {
     defer icons.deinit();
     loadIcons(&icons, init.io);
 
+    // Durable state. Opened before anything that uses it, and never a reason to
+    // fail: a store that cannot be opened says so once and answers
+    // `error.Unavailable`, so the bar works with or without it.
+    var state_path: [std.fs.max_path_bytes]u8 = undefined;
+    var store = state.Store.open(init.io, state.Store.defaultPath(&state_path));
+    defer store.close();
+
     // The notifier the shell `pomo` function used. Resolved once, here: a
     // missing notifier costs the two notifications and nothing else, and it is
     // worth saying so once rather than discovering it silently at the end of an
     // interval.
     var notifier_path: [std.fs.max_path_bytes]u8 = undefined;
-    var timer = pomodoro.Timer{ .notifier = blk: {
+    var timer = pomodoro.Timer{ .store = &store, .notifier = blk: {
         if (platform.sb_which("terminal-notifier", &notifier_path, notifier_path.len)) {
             break :blk std.mem.sliceTo(&notifier_path, 0);
         }
@@ -258,18 +269,25 @@ fn runDaemon(init: std.process.Init) !void {
         .bar = &bar,
         .yabai_client = &yabai_client,
         .pomodoro = &timer,
+        .store = &store,
         .dispatcher = .{
             .bar = &bar,
             .io = init.io,
             .gpa = gpa,
             .helper = event_service,
             .pomodoro = &timer,
+            .store = &store,
             .yabai_items = items_yabai.Updater.init(gpa, &yabai_client, &bar, &scratch, response, &icons),
             .system_items = items_system.Updater.init(&bar),
         },
         .started = std.Io.Timestamp.now(init.io, .awake),
     };
     active_daemon = &daemon;
+
+    // The timer is restored whether or not the bar is up: it is the daemon's
+    // own, and a phase that ran out while this process was not running starts
+    // its successor now.
+    timer.restore(init.io);
 
     // Applied here as well as by the `apply` command, because launchd restarts
     // this agent on its own and a restarted daemon listens on a new port: every
@@ -281,6 +299,14 @@ fn runDaemon(init: std.process.Init) !void {
         bar_config.apply(&bar, .{ .helper = event_service }) catch |err| {
             std.debug.print("kxdesk: startup apply failed: {s}\n", .{@errorName(err)});
         };
+        // A bar that has just been built knows nothing about the state the last
+        // one was in; the same call the `apply` command makes.
+        {
+            var restore_state_arena = std.heap.ArenaAllocator.init(gpa);
+            defer restore_state_arena.deinit();
+            var context = daemon.context(restore_state_arena.allocator(), &bar);
+            commands.restoreState(&context);
+        }
     } else |_| {}
 
     // Never returns: the process ends when launchd or a signal ends it, not when

@@ -11,6 +11,7 @@ const bar_config = @import("bar.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
 const sb = @import("sb.zig");
+const state = @import("store.zig");
 const skhdrc = @import("skhdrc.zig");
 const yabai = @import("yabai.zig");
 const yabai_ops = @import("yabai_ops.zig");
@@ -29,6 +30,9 @@ pub const Context = struct {
     /// The pomodoro timer, which the receive loop ticks and these commands
     /// start, stop and set.
     pomodoro: *pomodoro.Timer,
+    /// Durable state: what the daemon remembers across restarts, and what the
+    /// `state` command reads and writes for everything else.
+    store: *state.Store,
     /// Whether SketchyBar is known to be up. Written by the receive loop.
     bar_present: *std.atomic.Value(bool),
     /// Bootstrap name items carry as `mach_helper`, so re-applying the
@@ -77,6 +81,9 @@ pub const all = [_]Command{
 
     // The timer on the bar, and the intervals it ends.
     .{ .name = "pomodoro", .run = pomodoroTimer },
+
+    // Durable state, for this daemon and for anything that speaks to it.
+    .{ .name = "state", .run = stateCommand },
 };
 
 /// Index of the command called `name`, or null. An index rather than a pointer,
@@ -128,6 +135,71 @@ fn pomodoroTimer(context: *Context, args: []const []const u8) ![]const u8 {
     return context.pomodoro.describe(context.arena, context.io);
 }
 
+/// Durable state, reachable from anything that can talk to this daemon: a key
+/// binding, a plugin, a shell prompt, or one of the items above.
+///
+/// The value is text unless a flag says otherwise, because a key binding has
+/// nowhere to put a type: `state set layout grid`, `state set pomodoro.work 25
+/// --int`.
+fn stateCommand(context: *Context, args: []const []const u8) ![]const u8 {
+    const verb = if (args.len > 0) args[0] else return error.MissingArgument;
+    const values = if (args.len > 0) args[1..] else args;
+    const store = context.store;
+
+    if (std.mem.eql(u8, verb, "get")) {
+        if (values.len == 0) return error.MissingArgument;
+        // A missing key is not an empty value: a script has to be able to tell
+        // them apart, and only one of the two is worth falling back from.
+        return try store.getTextAlloc(context.io, context.arena, values[0]) orelse error.KeyNotFound;
+    }
+
+    if (std.mem.eql(u8, verb, "set")) {
+        if (values.len == 0) return error.MissingArgument;
+        const key = values[0];
+
+        // A null has no value to spell, so its flag stands where the value would
+        // be: `state set scratch --null`.
+        if (values.len >= 2 and std.mem.eql(u8, values[1], "--null")) {
+            try store.setNull(context.io, key);
+            return "";
+        }
+        if (values.len < 2) return error.MissingArgument;
+        const raw = values[1];
+
+        var integer = false;
+        var real = false;
+        for (values[2..]) |flag| {
+            if (std.mem.eql(u8, flag, "--int")) {
+                integer = true;
+            } else if (std.mem.eql(u8, flag, "--real")) {
+                real = true;
+            } else return error.UnknownArgument;
+        }
+
+        if (integer) {
+            try store.setInt(context.io, key, std.fmt.parseInt(i64, raw, 10) catch return error.InvalidValue);
+        } else if (real) {
+            try store.setReal(context.io, key, std.fmt.parseFloat(f64, raw) catch return error.InvalidValue);
+        } else {
+            try store.setText(context.io, key, raw);
+        }
+        return "";
+    }
+
+    if (std.mem.eql(u8, verb, "unset")) {
+        if (values.len == 0) return error.MissingArgument;
+        try store.unset(context.io, values[0]);
+        return "";
+    }
+
+    if (std.mem.eql(u8, verb, "list")) {
+        const keys = try store.keys(context.io, context.arena, if (values.len > 0) values[0] else "");
+        return std.mem.join(context.arena, "\n", keys) catch return error.OutOfMemory;
+    }
+
+    return error.UnknownArgument;
+}
+
 /// Apply the bar configuration.
 ///
 /// This is what `sketchybarrc` runs, and it is the only thing that applies it:
@@ -136,7 +208,21 @@ fn pomodoroTimer(context: *Context, args: []const []const u8) ![]const u8 {
 fn apply(context: *Context, _: []const []const u8) ![]const u8 {
     try context.ensureBar();
     try bar_config.apply(context.bar, .{ .helper = context.event_service });
+    // A freshly built bar knows nothing about the state the last one was in.
+    restoreState(context);
     return "";
+}
+
+/// Put back the state the bar configuration cannot rebuild by itself: a bar that
+/// was collapsed, and the mode the spaces were highlighted in.
+///
+/// Best effort by design - all of it is cosmetic, and none of it is a reason to
+/// fail the `apply` that just succeeded.
+pub fn restoreState(context: *Context) void {
+    zen.restore(context.bar, context.arena, context.store, context.io) catch |err| {
+        std.debug.print("kxdesk: cannot restore the bar's collapsed state: {s}\n", .{@errorName(err)});
+    };
+    mode_indicator.restore(context);
 }
 
 /// Report what the daemon is doing, in one line.
@@ -147,11 +233,12 @@ fn status(context: *Context, _: []const []const u8) ![]const u8 {
     const now = std.Io.Timestamp.now(context.io, .awake);
     const seconds = now.nanoseconds - context.started.nanoseconds;
 
-    return std.fmt.allocPrint(context.arena, "pid={d} uptime={d} bar={s} items={d}", .{
+    return std.fmt.allocPrint(context.arena, "pid={d} uptime={d} bar={s} items={d} state={s}", .{
         std.c.getpid(),
         @divTrunc(seconds, std.time.ns_per_s),
         if (present) "connected" else "gone",
         items,
+        if (context.store.enabled()) "on" else "off",
     });
 }
 
@@ -165,7 +252,7 @@ fn zenMode(context: *Context, args: []const []const u8) ![]const u8 {
     } else .toggle;
 
     try context.ensureBar();
-    try zen.apply(context.bar, context.arena, mode);
+    try zen.set(context.bar, context.arena, mode, context.store, context.io);
     return "";
 }
 

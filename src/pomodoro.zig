@@ -19,6 +19,7 @@ const std = @import("std");
 const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
+const state = @import("store.zig");
 const theme = @import("theme.zig");
 
 /// The item the daemon drives.
@@ -30,6 +31,14 @@ pub const default_rest_minutes = 5;
 
 /// A phase longer than this is a typo rather than an intention.
 pub const max_minutes = 600;
+
+/// Where the timer is remembered. Separate keys rather than one blob, so the
+/// `state` commands can read a running timer a field at a time.
+const key_phase = "pomodoro.phase";
+const key_ends_at = "pomodoro.ends_at";
+const key_remaining = "pomodoro.remaining";
+const key_work = "pomodoro.work";
+const key_break = "pomodoro.break";
 
 /// Which half of the cycle is running.
 pub const Phase = enum {
@@ -73,6 +82,9 @@ pub const Timer = struct {
     /// timer, which run on different threads.
     mutex: std.Io.Mutex = .init,
 
+    /// The database the timer is remembered in, so a restart - a `brew upgrade`
+    /// or a crash - resumes the interval instead of forgetting it.
+    store: *state.Store,
     /// Path of `terminal-notifier`, or empty when it is not installed. Resolved
     /// once, by the daemon, and used for the two notifications a cycle posts.
     notifier: []const u8 = "",
@@ -201,15 +213,21 @@ pub const Timer = struct {
 
     // -- what the timer does --------------------------------------------------
 
+    /// Start counting down from wherever `remaining` stands.
+    fn beginLocked(self: *Timer, io: std.Io) void {
+        if (self.remaining == 0) self.remaining = self.phaseNanos(self.phase);
+        self.deadline = std.Io.Timestamp.now(io, .awake)
+            .addDuration(.{ .nanoseconds = @intCast(self.remaining) });
+        self.running = true;
+    }
+
     /// Start, or resume a paused phase.
     pub fn start(self: *Timer, io: std.Io) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         if (self.running) return;
-        if (self.remaining == 0) self.remaining = self.phaseNanos(self.phase);
-        self.deadline = std.Io.Timestamp.now(io, .awake)
-            .addDuration(.{ .nanoseconds = @intCast(self.remaining) });
-        self.running = true;
+        self.beginLocked(io);
+        self.saveLocked(io);
     }
 
     /// Start a paused timer or stop a running one - what a click on the item
@@ -220,12 +238,10 @@ pub const Timer = struct {
         if (self.running) {
             self.remaining = self.left(io);
             self.running = false;
-            return;
+        } else {
+            self.beginLocked(io);
         }
-        if (self.remaining == 0) self.remaining = self.phaseNanos(self.phase);
-        self.deadline = std.Io.Timestamp.now(io, .awake)
-            .addDuration(.{ .nanoseconds = @intCast(self.remaining) });
-        self.running = true;
+        self.saveLocked(io);
     }
 
     /// The interval lengths as they stand, in minutes.
@@ -241,6 +257,7 @@ pub const Timer = struct {
         defer self.mutex.unlock(io);
         self.remaining = self.left(io);
         self.running = false;
+        self.saveLocked(io);
     }
 
     /// Back to a fresh work interval, stopped.
@@ -250,6 +267,7 @@ pub const Timer = struct {
         self.phase = .work;
         self.running = false;
         self.remaining = self.phaseNanos(.work);
+        self.saveLocked(io);
     }
 
     /// End the current phase early. Deliberate, so it is silent: the
@@ -270,6 +288,7 @@ pub const Timer = struct {
         self.work_seconds = work_minutes * 60;
         self.rest_seconds = rest_minutes * 60;
         if (was_fresh) self.remaining = self.phaseNanos(self.phase);
+        self.saveLocked(io);
     }
 
     /// Move to the other phase, keeping the run state. `ring` posts the
@@ -282,6 +301,7 @@ pub const Timer = struct {
             self.deadline = std.Io.Timestamp.now(io, .awake)
                 .addDuration(.{ .nanoseconds = @intCast(self.remaining) });
         }
+        self.saveLocked(io);
         if (ring) self.notify(finished);
     }
 
@@ -347,6 +367,75 @@ pub const Timer = struct {
         });
     }
 
+    // -- remembering across restarts ------------------------------------------
+
+    /// Write the timer down. Called under the lock on every change of state, and
+    /// not on every tick: a running phase is fully described by the instant it
+    /// ends, so a second-by-second write would say nothing new.
+    fn saveLocked(self: *Timer, io: std.Io) void {
+        const store = self.store;
+
+        const ends_at: i64 = if (self.running)
+            wallSeconds(io) + @as(i64, @intCast(self.remaining / std.time.ns_per_s))
+        else
+            0;
+
+        store.setInt(io, key_remaining, @intCast(self.remaining)) catch {};
+        store.setInt(io, key_work, @intCast(self.work_seconds / 60)) catch {};
+        store.setInt(io, key_break, @intCast(self.rest_seconds / 60)) catch {};
+        store.setText(io, key_phase, self.phase.name()) catch {};
+        // Written last: a save interrupted half-way then leaves a timer that
+        // reads as paused, rather than one pointing at a deadline that belongs
+        // to the phase it has already left.
+        store.setInt(io, key_ends_at, ends_at) catch {};
+    }
+
+    /// Put back what the previous daemon wrote. Called once at startup, before
+    /// the first tick - which is what rings for a phase that ends later.
+    pub fn restore(self: *Timer, io: std.Io) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+
+        const store = self.store;
+        if (store.getInt(io, key_work) catch null) |minutes| {
+            if (minutes > 0 and minutes <= max_minutes) self.work_seconds = @intCast(minutes * 60);
+        }
+        if (store.getInt(io, key_break) catch null) |minutes| {
+            if (minutes > 0 and minutes <= max_minutes) self.rest_seconds = @intCast(minutes * 60);
+        }
+
+        var buffer: [32]u8 = undefined;
+        if (store.getText(io, key_phase, &buffer) catch null) |value| {
+            if (std.mem.eql(u8, value, "break")) self.phase = .rest;
+        }
+        if (store.getInt(io, key_remaining) catch null) |nanos| {
+            if (nanos >= 0) self.remaining = @intCast(nanos);
+        }
+        // A phase cannot have more left than it is long.
+        self.remaining = @min(self.remaining, self.phaseNanos(self.phase));
+        self.running = false;
+
+        const ends_at = (store.getInt(io, key_ends_at) catch null) orelse return;
+        if (ends_at <= 0) return;
+
+        const now = wallSeconds(io);
+        if (ends_at <= now) {
+            // It ran out while this process was not running. Nobody was watching
+            // for that notification, so the next phase starts now rather than
+            // ringing for an interval that ended unnoticed.
+            self.phase = self.phase.other();
+            self.remaining = 0;
+            self.beginLocked(io);
+            self.saveLocked(io);
+            return;
+        }
+
+        self.remaining = @intCast(@as(i64, @intCast(ends_at - now)) * std.time.ns_per_s);
+        self.running = true;
+        self.deadline = std.Io.Timestamp.now(io, .awake)
+            .addDuration(.{ .nanoseconds = @intCast(self.remaining) });
+    }
+
     // -- the notification -----------------------------------------------------
 
     /// Post the notification for an interval that ran out.
@@ -382,6 +471,12 @@ pub const Timer = struct {
 
     const Notice = struct { title: []const u8, body: []const u8 };
 };
+
+/// Seconds since the epoch, for the one thing the awake clock cannot say: when
+/// an instant was, in terms another process will understand.
+fn wallSeconds(io: std.Io) i64 {
+    return @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_s));
+}
 
 /// Parse the minutes an argument spells, refusing anything that is not a
 /// plausible interval.
