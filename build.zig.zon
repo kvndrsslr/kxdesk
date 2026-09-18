@@ -1,6 +1,6 @@
 .{
     .name = .kxdesk,
-    .version = "0.1.2",
+    .version = "0.1.3",
     .fingerprint = 0x3e790e4e284bd1f0,
     // kxdesk uses interfaces that only exist in this compiler generation, so this
     // is the single place the requirement is written down. Zig enforces it
