@@ -63,3 +63,32 @@ environment, since the daemon runs under launchd:
 kxdesk state set neuralwatt.token 'sk-…'
 kxdesk state set openrouter.token 'sk-or-v1-…'
 ```
+
+## Server mode: this Mac as a remote coding server
+
+`kxdesk server-mode [enter|exit|status|refresh]` — `status` when no verb is
+given. It is the port of the standalone `kxb-server-mode` script, which it
+replaces along with that script's own state directory.
+
+- **enter** materializes every SSH key of the personal 1Password account
+  (`my.1password.com`; the business account is never read) under
+  `~/Library/Application Support/kxdesk/server-mode/keys`, loads them into one
+  persistent ssh-agent on `…/server-mode/agent.sock`, points `~/.ssh/config`'s
+  `IdentityAgent` at that socket, switches git's commit and tag signing to the
+  on-disk key through `ssh-keygen`, and loads the AC-only `local.caffeinate.ac`
+  keep-awake agent so the machine does not sleep. One 1Password approval covers
+  the run; ssh and git signing pay none afterwards, on any host.
+- **exit** puts every one of those back from the snapshot enter took — the ssh
+  config, the three git settings, the keep-awake service — stops the agent and
+  wipes the keys.
+- **status** says whether the mode is on, how many identities the agent holds
+  and which key git signs with.
+- **refresh** is exit then enter, for a key or a remote that was added in
+  1Password since.
+
+Everything the mode changes is recorded under
+`~/Library/Application Support/kxdesk/server-mode`: the ssh config and the git
+settings it has to restore, the materialized keys, and the `active` cookie that
+says the mode is on. The ssh config and the git snapshot are written before the
+first change and read back on `exit`, so leaving server mode returns the machine
+to exactly what it was, and an enter that fails halfway can still be undone.

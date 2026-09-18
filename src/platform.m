@@ -350,6 +350,28 @@ int32_t sb_exec_status(const char* const argv[]) {
   return -1;
 }
 
+int32_t sb_spawn_detached(const char* const argv[]) {
+  if (!argv || !argv[0]) return -1;
+
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  for (int fd = STDIN_FILENO; fd <= STDERR_FILENO; ++fd) {
+    posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", O_RDWR, 0);
+  }
+
+  posix_spawnattr_t attributes;
+  posix_spawnattr_init(&attributes);
+  posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID);
+
+  pid_t pid = 0;
+  int rc = posix_spawn(&pid, argv[0], &actions, &attributes, (char* const*)argv, environ);
+  posix_spawnattr_destroy(&attributes);
+  posix_spawn_file_actions_destroy(&actions);
+  if (rc != 0) return -1;
+
+  return (int32_t)pid;
+}
+
 bool sb_which(const char* name, char* out, size_t cap) {
   if (!name || !out || cap == 0) return false;
 
