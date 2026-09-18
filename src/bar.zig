@@ -349,6 +349,18 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("calendar");
     try c.arg("mouse.clicked");
 
+    // The ring is moved against the calendar - before it in the item list, which
+    // is to the right of it on the bar - rather than left to the place it was
+    // given when it was created. An item keeps that place, and one that has to be
+    // created again lands at the end of the list, which is the far left of the
+    // right side; this is the same move the graphs below make, for the same
+    // reason. It runs after the calendar is declared so that a fresh bar has the
+    // item to move against.
+    try c.arg("--move");
+    try c.arg(items_system.ring_item);
+    try c.arg("before");
+    try c.arg("calendar");
+
     // CPU and GPU: two graphs over one window, sitting between the date and the
     // Homebrew status. A graph's ring is exactly as wide as the graph is, and each
     // tick appends one point to each, so equal widths are what hold the two
