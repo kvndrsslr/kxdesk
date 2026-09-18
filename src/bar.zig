@@ -71,6 +71,11 @@ const retired_items = [_][]const u8{
     // put in it.
     "/^openrouter\\.day$/",
     "/^openrouter\\.week$/",
+    // The battery item, whose glyph and percentage the ring replaced. Items
+    // outlive a reload, so an earlier configuration's percentage would stay on the
+    // bar beside the ring otherwise. The pattern is anchored, so `battery.ring` -
+    // the item that took its place - is not matched.
+    "/^battery$/",
     // Aliases to other applications' status items drew nothing on the two macOS
     // versions before this one either, so the mechanism is out of the
     // configuration rather than merely disabled in it.
@@ -271,34 +276,30 @@ fn frontAppItems(c: *sb.Client, config: Config) !void {
 }
 
 fn rightItems(c: *sb.Client, config: Config) !void {
-    // Battery: read from IOKit in-process instead of spawning `pmset`.
-    try c.arg("--add");
-    try c.arg("item");
-    try c.arg("battery");
-    try c.arg("right");
-    var battery: Props = .{};
-    try pad(&battery, item_padding);
-    battery.raw(clear_script);
-    try battery.text("mach_helper", config.helper);
-    try battery.num("update_freq", 120);
-    try c.set("battery", battery.slice());
-    try c.arg("--subscribe");
-    try c.arg("battery");
-    try c.arg("system_woke");
-    try c.arg("power_source_change");
-
-    // The ring, drawn only while the battery is charging: its value is the charge
+    // The battery: read from IOKit in-process instead of spawning `pmset`, and
+    // shown as one ring rather than as an item and a ring. Its value is the charge
     // and the battery's own level glyph sits inside it as the marker, so it reads
-    // as the battery filling. It takes exactly its diameter in the bar and is moved
-    // against the battery rather than left to the order it was added in.
+    // as the battery filling - and the marker's glyph is what says whether the
+    // machine is on AC. The item carries the battery's events itself, since the
+    // item that used to carry them is gone.
     try c.arg("--add");
     try c.arg("ring");
     try c.arg(items_system.ring_item);
     try c.arg("right");
     try c.arg(std.fmt.comptimePrint("{d}", .{battery_ring_diameter}));
     var ring: Props = .{};
-    ring.raw("drawing=off");
-    try pad(&ring, item_padding);
+    // Drawn from the start: the charge is this item's to show, and on a bar that
+    // is already up the drawing a previous configuration left behind is the only
+    // other thing that could say. This is also what `items_system.battery` sets
+    // with every reading.
+    ring.raw("drawing=on");
+    // The air between the ring and the clock, which is the item to its left, is
+    // the ring's left padding and the clock's right padding - and a ring is
+    // round, so the same number of points reads wider there than between two
+    // glyphs. The ring's own side of that gap is dropped, since the clock's is
+    // enough, and the ring keeps the bar's standard padding on its other side.
+    try ring.num("padding_left", 0);
+    try ring.num("padding_right", item_padding);
     try ring.color("ring.color", theme.green);
     try ring.color("ring.track_color", theme.dark_grey);
     // The diameter is given to `--add` and also set here: that argument only lands
@@ -311,11 +312,17 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try ring.fmt("ring.marker.font={s}:Bold:12.0", .{theme.font});
     ring.raw(clear_script);
     ring.raw(clear_click_script);
+    try ring.text("mach_helper", config.helper);
+    // The battery's own readings, and how often they are asked for again: a
+    // battery that is not changing sends nothing, so the level is re-read on the
+    // item's own clock.
+    try ring.num("update_freq", 120);
     try c.set(items_system.ring_item, ring.slice());
-    try c.arg("--move");
+    try c.arg("--subscribe");
     try c.arg(items_system.ring_item);
-    try c.arg("after");
     try c.arg("battery");
+    try c.arg("system_woke");
+    try c.arg("power_source_change");
 
     // Calendar: formatted in-process from the system clock.
     try c.arg("--add");

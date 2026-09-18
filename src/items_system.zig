@@ -27,7 +27,8 @@ pub const gpu_item = "gpu";
 /// averages over: shorter and the line twitches, longer and it lags.
 const cpu_cadence_seconds: i64 = 1;
 
-/// The ring that shows the battery's charge while it is charging.
+/// The battery's charge, and its only readout on the bar: a ring whose value is
+/// the charge and whose marker is the battery's own level glyph.
 pub const ring_item = "battery.ring";
 
 pub const Updater = struct {
@@ -55,17 +56,15 @@ pub const Updater = struct {
             else => theme.glyph.battery_empty,
         };
 
-        var props: Props = .{};
-        try props.fmt("icon={s}", .{icon});
-        try props.fmt("label={d}%", .{percent});
-        try self.bar.set("battery", props.slice());
-
-        // The ring is the charging state's own piece of the bar: the charge is its
-        // value and the same level glyph sits inside it as the marker. It is drawn
-        // only while the battery is actually taking power, and this travels in the
-        // same batch as the item's own settings.
+        // The ring is the battery's whole readout: the charge is its value and
+        // the same level glyph - the charging one while the machine is on AC -
+        // sits inside it as the marker, so it reads as the battery filling and
+        // says which of the two it is at the same time. It is drawn whether or
+        // not the battery is taking power, so the drawing is set on every
+        // reading as well as by the configuration, which is also what an item
+        // left over from an earlier configuration needs.
         var ring: Props = .{};
-        ring.raw(if (charging) "drawing=on" else "drawing=off");
+        ring.raw("drawing=on");
         try ring.fmt("ring.value={d:.2}", .{@as(f64, @floatFromInt(percent)) / 100.0});
         try ring.fmt("ring.marker={s}", .{icon});
         try self.bar.set(ring_item, ring.slice());

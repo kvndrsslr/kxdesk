@@ -86,7 +86,7 @@ pub const Dispatcher = struct {
             }
             return self.yabai_items.update();
         }
-        if (std.mem.eql(u8, name, "battery")) return self.system_items.battery();
+        if (std.mem.eql(u8, name, items_system.ring_item)) return self.system_items.battery();
         if (std.mem.eql(u8, name, "calendar")) return self.system_items.calendar();
 
         // `brew outdated` and `gh api` take a second or more, so they run as
