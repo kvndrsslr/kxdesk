@@ -469,14 +469,36 @@ fn declares(flags: []const commands.Flag, name: []const u8) bool {
 
 // -- completions ------------------------------------------------------------
 
-/// The words that may follow what has been typed, one per line, each followed by
-/// a tab and what it does. Nothing when there is nothing to offer.
+/// The words that may follow what has been typed, one per line, and nothing when
+/// there is nothing to offer.
+///
+/// `described` adds a tab and what each candidate does, for a shell that has
+/// somewhere to show it. It is opt-in because the script that asks and the binary
+/// that answers are installed separately and can be out of step: the words on
+/// their own are what every version of the protocol has meant, so a script that
+/// predates this flag still reads a clean list, and one that is newer than the
+/// binary simply finds nothing to describe.
 ///
 /// `words` are the words after the program name, and `cword` is the index within
 /// them of the word being completed. It may be one past the end of `words`,
 /// because a shell whose line ends in a space may or may not hand over the empty
 /// word; both spell the same request, so both are read the same way.
-pub fn complete(arena: Allocator, cword: usize, words: []const []const u8) Allocator.Error![]const u8 {
+pub fn complete(
+    arena: Allocator,
+    described: bool,
+    cword: usize,
+    words: []const []const u8,
+) Allocator.Error![]const u8 {
+    const text = try candidates(arena, cword, words);
+    if (described) return text;
+
+    // In place, because the descriptions are already written and only the tail
+    // of each line is being given up.
+    return text[0..undescribed(text)];
+}
+
+/// Every candidate, each with what it does after a tab.
+fn candidates(arena: Allocator, cword: usize, words: []const []const u8) Allocator.Error![]u8 {
     var out = ArrayList(u8).empty;
     errdefer out.deinit(arena);
 
@@ -605,6 +627,23 @@ fn offer(
     try out.append(arena, '\n');
 }
 
+/// Give up every `\t<description>` tail, in place, and say how much is left. A
+/// tail runs to the end of its line.
+fn undescribed(text: []u8) usize {
+    var kept: usize = 0;
+    var read: usize = 0;
+    while (read < text.len) {
+        if (text[read] == '\t') {
+            while (read < text.len and text[read] != '\n') read += 1;
+            continue;
+        }
+        text[kept] = text[read];
+        kept += 1;
+        read += 1;
+    }
+    return kept;
+}
+
 fn findSub(command: Command, name: []const u8) ?commands.Sub {
     for (command.subcommands) |sub| {
         if (std.mem.eql(u8, sub.name, name)) return sub;
@@ -640,9 +679,13 @@ pub fn script(shell: []const u8) ?[]const u8 {
 /// being completed is `CURRENT` and its index among the words after the program
 /// name is `CURRENT - 2`.
 ///
-/// `compadd -d` takes the descriptions as a second array rather than in the
-/// matches, which is what keeps a description free to contain anything - a colon
-/// in one would otherwise have to be escaped.
+/// It is the one caller that passes `--describe`, because it is the one shell
+/// with somewhere to show the explanation. `compadd -d` takes the descriptions as
+/// a second array rather than in the matches, which is what keeps a description
+/// free to contain anything - a colon in one would otherwise have to be escaped.
+///
+/// A candidate that arrives without a tab is taken as a bare word, so this script
+/// keeps working if it ever runs ahead of the binary.
 const zsh =
     \\#compdef kxdesk
     \\# kxdesk completions for zsh, from `kxdesk completions zsh`.
@@ -654,7 +697,10 @@ const zsh =
     \\
     \\_kxdesk() {
     \\  local -a candidates matches descriptions candidate
-    \\  candidates=("${(@f)$(kxdesk __complete $((CURRENT - 2)) "${(@)words[2,CURRENT]}")}")
+    \\  candidates=("${(@f)$(kxdesk __complete --describe $((CURRENT - 2)) "${(@)words[2,CURRENT]}")}")
+    \\  # A kxdesk older than this script does not know --describe and answers
+    \\  # nothing at all; ask again without it rather than complete nothing.
+    \\  [[ -n $candidates[1] ]] || candidates=("${(@f)$(kxdesk __complete $((CURRENT - 2)) "${(@)words[2,CURRENT]}")}")
     \\  [[ -n $candidates[1] ]] || return 1
     \\  for candidate in "${(@)candidates}"; do
     \\    if [[ $candidate == *$'\t'* ]]; then
@@ -674,8 +720,8 @@ const zsh =
 
 /// bash keeps `COMP_WORDS` 0-based with the program name at 0, so the word being
 /// completed is `COMP_CWORD` and its index among the words after the program name
-/// is `COMP_CWORD - 1`. Readline has nowhere to show a description, so only the
-/// word is kept.
+/// is `COMP_CWORD - 1`. Readline has nowhere to show a description, so it does not
+/// ask for one.
 const bash =
     \\# kxdesk completions for bash, from `kxdesk completions bash`.
     \\#
@@ -684,12 +730,9 @@ const bash =
     \\
     \\_kxdesk() {
     \\  local IFS=$'\n'
-    \\  local candidates candidate
+    \\  local candidates
     \\  candidates=($(kxdesk __complete $((COMP_CWORD - 1)) "${COMP_WORDS[@]:1}"))
-    \\  COMPREPLY=()
-    \\  for candidate in "${candidates[@]}"; do
-    \\    [[ -n $candidate ]] && COMPREPLY+=("${candidate%%$'\t'*}")
-    \\  done
+    \\  COMPREPLY=("${candidates[@]}")
     \\}
     \\
     \\complete -F _kxdesk kxdesk

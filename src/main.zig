@@ -313,13 +313,26 @@ fn describe(init: std.process.Init, name: []const u8) !void {
     emit(init.io, .stdout, try cli.describe(init.arena.allocator(), command));
 }
 
-/// The completion protocol the generated shell functions call: the index of the
-/// word being completed, then the words after the program name. Hidden, because
-/// `completions` is the interface - these line breaks are not for people.
+/// The completion protocol the generated shell functions call: optionally
+/// `--describe`, then the index of the word being completed, then the words after
+/// the program name. Hidden, because `completions` is the interface - these line
+/// breaks are not for people.
+///
+/// `--describe` is what asks for the tab and the explanation; a caller that does
+/// not pass it gets the words alone, which is what every earlier version of this
+/// protocol answered and what a script that is older than the binary still
+/// expects.
 fn runCompletions(init: std.process.Init, args: []const []const u8) !void {
-    if (args.len == 0) return;
-    const cword = std.fmt.parseInt(usize, args[0], 10) catch return;
-    const text = try cli.complete(init.arena.allocator(), cword, args[1..]);
+    var rest = args;
+    var described = false;
+    if (rest.len > 0 and std.mem.eql(u8, rest[0], "--describe")) {
+        described = true;
+        rest = rest[1..];
+    }
+    if (rest.len == 0) return;
+
+    const cword = std.fmt.parseInt(usize, rest[0], 10) catch return;
+    const text = try cli.complete(init.arena.allocator(), described, cword, rest[1..]);
     if (text.len > 0) writeText(init.io, .stdout, text);
 }
 

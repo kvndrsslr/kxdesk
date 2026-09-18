@@ -39,12 +39,19 @@ usage: kxdesk state set <key> [<value>] [--int] [--real] [--null]
 
 The completion scripts are thin: they hand the words to `kxdesk __complete`,
 which answers from the same description, so a command that is added or changed is
-completed correctly without regenerating anything. Each candidate carries what it
-does — zsh shows it beside the match — and a value that only exists at runtime is
-completed too: `state get` offers the keys that are actually in the store, and
-`switch_workspace` offers the labels yabai is actually carrying (see
-`kxdesk space_labels`). Those come from the running daemon and are simply absent
-when there is not one; pressing TAB never starts it.
+completed correctly without regenerating anything. That call answers with the
+words alone; zsh passes `--describe` to also get what each candidate does, and
+shows it beside the match. A value that only exists at runtime is completed too:
+`state get` offers the keys that are actually in the store, and `switch_workspace`
+offers the labels yabai is actually carrying (see `kxdesk space_labels`). Those
+come from the running daemon and are simply absent when there is not one;
+pressing TAB never starts it.
+
+The script and the binary are installable separately and can therefore be out of
+step, so the protocol is written to survive it: the words alone are what every
+version has answered, a script that predates `--describe` still reads a clean
+list, and a script that is newer than the binary asks a second time without the
+flag rather than completing nothing.
 
 The Homebrew formula installs both of them where each shell already looks —
 `share/zsh/site-functions/_kxdesk` (on `$fpath` through `brew shellenv zsh`) and
