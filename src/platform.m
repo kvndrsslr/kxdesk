@@ -1,5 +1,4 @@
 #import <AppKit/AppKit.h>
-#import <OSAKit/OSAKit.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
@@ -443,47 +442,20 @@ void sb_clock(char* icon, size_t icon_cap, char* label, size_t label_cap) {
 
 /* -- JavaScript for Automation -------------------------------------------- */
 
-void* sb_osa_compile(const char* source, const char* language_name) {
-  NSString* name = [NSString stringWithUTF8String:language_name];
-  if (!name) return NULL;
-
-  OSALanguage* language = [OSALanguage languageForName:name];
-  if (!language) return NULL;
-
-  NSString* text = [NSString stringWithUTF8String:source];
-  if (!text) return NULL;
-
-  OSAScript* script = [[OSAScript alloc] initWithSource:text language:language];
-  if (!script) return NULL;
-
-  // Compile eagerly so the first evaluation does not pay the parse cost.
-  NSDictionary* error = nil;
-  if (![script compileAndReturnError:&error]) return NULL;
-
-  return (__bridge_retained void*)script;
-}
-
-void sb_osa_release(void* script) {
-  if (!script) return;
-  // Compiled with `__bridge_retained`, so this balances that reference.
-  CFRelease((CFTypeRef)script);
-}
-
-bool sb_osa_run(void* script, char* out, size_t cap) {
-  if (!script) return false;
-
-  NSDictionary* error = nil;
-  NSAppleEventDescriptor* result = [(__bridge OSAScript*)script executeAndReturnError:&error];
-  if (error) return false;
-
-  if (!out || cap == 0) return true;
-  out[0] = '\0';
-
-  // Scripts such as `playpause` return nothing, which is not a failure.
-  NSString* value = result ? [result stringValue] : nil;
-  if (!value) return true;
-
-  return [value getCString:out maxLength:cap encoding:NSUTF8StringEncoding];
+bool sb_dark_mode(void) {
+  // The appearance as the system records it, rather than through `System
+  // Events`: an Apple Event to another application needs Automation (and, for
+  // System Events, Accessibility) permission, and macOS asks again for every
+  // new binary - so a tool that upgraded itself would have to be approved
+  // again after each upgrade. Reading the preference needs nothing.
+  CFStringRef style = CFPreferencesCopyValue(CFSTR("AppleInterfaceStyle"),
+                                             kCFPreferencesAnyApplication,
+                                             kCFPreferencesCurrentUser,
+                                             kCFPreferencesAnyHost);
+  if (!style) return false;  // unset is Light
+  bool dark = CFStringCompare(style, CFSTR("Dark"), 0) == kCFCompareEqualTo;
+  CFRelease(style);
+  return dark;
 }
 
 bool sb_open_url(const char* url) {

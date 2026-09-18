@@ -370,8 +370,11 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try fan.num("background.padding_right", -6);
     try alias(c, "Flow", "fan_alias", fan.slice());
 
-    // Flow timer: evaluated in-process through OSAKit rather than by forking
-    // `osascript` once per second.
+    // Flow's clock, without its countdown: reading the timer is an Apple Event
+    // and an Apple Event needs permission that is asked for again for every new
+    // binary, so the item keeps its place on the bar and its icon, and shows no
+    // time. The label is cleared here rather than left to a previous
+    // configuration.
     try c.arg("--add");
     try c.arg("item");
     try c.arg("flow");
@@ -385,14 +388,10 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     flow.raw("icon.drawing=on");
     try flow.num("label.width", 52);
     flow.raw("label.align=left");
-    try flow.num("update_freq", 1);
+    flow.raw("label=");
     flow.raw(clear_script);
     flow.raw(clear_click_script);
-    try flow.text("mach_helper", config.helper);
     try c.set("flow", flow.slice());
-    try c.arg("--subscribe");
-    try c.arg("flow");
-    try c.arg("mouse.clicked");
 }
 
 /// Alias an item owned by another application and give it a stable name.

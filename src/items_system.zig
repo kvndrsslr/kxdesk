@@ -1,8 +1,15 @@
-//! Updaters for the items whose data the helper reads directly.
+//! Updaters for the items whose data the daemon reads directly.
 //!
 //! Each of these replaces a shell plugin that forked a process: `pmset` for the
-//! battery, `date` twice for the calendar, and `osascript` once a second for the
-//! Flow timer. They now cost a syscall and a mach message.
+//! battery and `date` twice for the calendar. They now cost a syscall and a mach
+//! message.
+//!
+//! Flow's countdown used to be here too, read once a second through Flow's
+//! scripting dictionary. That is an Apple Event, and an Apple Event to another
+//! application needs Automation permission - which macOS asks for again for every
+//! new binary, so an upgraded daemon would have to be approved again. A prompt on
+//! every launch is worse than a countdown, so nothing here asks another
+//! application anything.
 
 const std = @import("std");
 
@@ -11,32 +18,13 @@ const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const theme = @import("theme.zig");
 
-/// Flow exposes its countdown through its scripting dictionary.
-///
-/// AppleScript rather than the JavaScript-for-Automation spelling of the same
-/// call: the two return the same string, and the JavaScript one loads
-/// JavaScriptCore - its own allocator and JIT - into a daemon that is otherwise
-/// a few megabytes.
-const flow_script_source = "tell application \"Flow\" to gettime()";
-/// Starting the timer is an AppleScript verb, and is what a click on the Flow
-/// item used to run through `plugins/flow-click.sh`.
-const flow_start_source = "tell application \"Flow\" to start";
-
 pub const Updater = struct {
     bar: *sb.Client,
-    /// Compiled program, or null when the OSA component is unavailable.
-    flow_script: ?*anyopaque = null,
-    flow_start_script: ?*anyopaque = null,
-    flow_output: [64]u8 = undefined,
     clock_icon: [64]u8 = undefined,
     clock_label: [64]u8 = undefined,
 
     pub fn init(bar: *sb.Client) Updater {
-        return .{
-            .bar = bar,
-            .flow_script = platform.sb_osa_compile(flow_script_source, "AppleScript"),
-            .flow_start_script = platform.sb_osa_compile(flow_start_source, "AppleScript"),
-        };
+        return .{ .bar = bar };
     }
 
     pub fn battery(self: *Updater) !void {
@@ -75,35 +63,6 @@ pub const Updater = struct {
         try self.bar.commit();
     }
 
-    /// Refresh the Flow countdown. When Flow cannot be reached the label is
-    /// cleared, matching what the shell plugin did with an empty `osascript`
-    /// substitution.
-    pub fn flow(self: *Updater) !void {
-        var props: Props = .{};
-
-        const script = self.flow_script orelse {
-            props.raw("label=");
-            try self.bar.set("flow", props.slice());
-            return self.bar.commit();
-        };
-
-        if (platform.sb_osa_run(script, &self.flow_output, self.flow_output.len)) {
-            var padded: [8]u8 = undefined;
-            const value = padFlowTime(std.mem.sliceTo(&self.flow_output, 0), &padded);
-            try props.fmt("label={s}", .{value});
-        } else {
-            props.raw("label=");
-        }
-
-        try self.bar.set("flow", props.slice());
-        try self.bar.commit();
-    }
-
-    /// Start the Flow timer. A click on the Flow item reaches this.
-    pub fn startFlow(self: *Updater) !void {
-        const script = self.flow_start_script orelse return error.OsaUnavailable;
-        if (!platform.sb_osa_run(script, null, 0)) return error.FlowRefused;
-    }
 };
 
 /// `"00:00".substring(0, 5 - value.length) + value` - left-pad the timer to the

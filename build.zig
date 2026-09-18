@@ -43,7 +43,6 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("CoreText", .{});
     exe.root_module.linkFramework("Foundation", .{});
     exe.root_module.linkFramework("IOKit", .{});
-    exe.root_module.linkFramework("OSAKit", .{});
 
     b.installArtifact(exe);
 }

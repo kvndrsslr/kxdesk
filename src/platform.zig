@@ -47,7 +47,5 @@ pub extern "c" fn sb_clock(
     label_cap: usize,
 ) void;
 
-pub extern "c" fn sb_osa_compile(source: [*:0]const u8, language: [*:0]const u8) ?*anyopaque;
-pub extern "c" fn sb_osa_run(script: *anyopaque, out: ?[*]u8, cap: usize) bool;
-pub extern "c" fn sb_osa_release(script: *anyopaque) void;
+pub extern "c" fn sb_dark_mode() bool;
 pub extern "c" fn sb_open_url(url: [*:0]const u8) bool;

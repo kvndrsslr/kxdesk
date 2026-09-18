@@ -6,8 +6,8 @@
 //!
 //! Nothing on this path forks a process. A click is an event - the items that
 //! used to carry a `click_script` declare `--subscribe ... mouse.clicked`
-//! instead - and what a click asks for is a yabai command, an OSAKit script, or
-//! a message back to the bar.
+//! instead - and what a click asks for is a yabai command or a message back to
+//! the bar.
 //!
 //! Most events are handled inline, because the answers come from yabai or from
 //! the kernel and take microseconds. The two items whose refresh reaches the
@@ -69,7 +69,6 @@ pub const Dispatcher = struct {
         }
         if (std.mem.eql(u8, name, "battery")) return self.system_items.battery();
         if (std.mem.eql(u8, name, "calendar")) return self.system_items.calendar();
-        if (std.mem.eql(u8, name, "flow")) return self.system_items.flow();
 
         // `brew outdated` and `gh api` take a second or more, so they run as
         // background tasks rather than on this loop.
@@ -111,7 +110,6 @@ pub const Dispatcher = struct {
     /// CLI and `osascript`; the item now sends its click here instead.
     fn click(self: *Dispatcher, name: []const u8, env: sb.Env) !void {
         if (std.mem.eql(u8, name, "calendar")) return self.toggleZen();
-        if (std.mem.eql(u8, name, "flow")) return self.system_items.startFlow();
         if (std.mem.eql(u8, name, items_github.bell)) {
             return items_github.setPopup(self.bar, .toggle);
         }

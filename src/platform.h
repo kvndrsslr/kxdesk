@@ -118,17 +118,9 @@ bool sb_battery(int32_t* percent, bool* charging);
 /// formatted with the user's locale.
 void sb_clock(char* icon, size_t icon_cap, char* label, size_t label_cap);
 
-/// Compile a script for the named OSA language ("AppleScript" or "JavaScript")
-/// and keep it resident. Returns NULL if that component is unavailable.
-void* sb_osa_compile(const char* source, const char* language);
-
-/// Run a compiled script. Its string result, if any, is copied into `out`;
-/// pass a NULL `out` to just execute it. Returns false if the script errored.
-bool sb_osa_run(void* script, char* out, size_t cap);
-
-/// Release a compiled script. `sb_osa_compile` hands over a reference, so a
-/// caller that compiles per invocation has to give it back.
-void sb_osa_release(void* script);
+/// Whether the system appearance is dark, read from the preference the system
+/// records it in. Needs no Apple Event, so it needs no permission.
+bool sb_dark_mode(void);
 
 /// Open a URL with the user's default handler.
 bool sb_open_url(const char* url);
