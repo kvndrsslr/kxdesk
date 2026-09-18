@@ -45,10 +45,25 @@ const clear_click_script = "click_script=";
 /// points, one of them negative.
 const item_padding = 4;
 
+/// The gap between two sections of the bar - the provider balances, the GitHub
+/// item, the clock - as opposed to two items that belong together.
+///
+/// SketchyBar has no automatic spacing of any kind: an item's padding sits
+/// inside its own frame and the gap to its neighbour is the sum of their two
+/// paddings. A section break is therefore one item taking more padding on the
+/// side the section starts, and this is the one place that number is written.
+const section_gap = 28;
+
 /// Give an item the bar's standard padding on both sides.
 fn pad(props: *Props, points: u32) !void {
     try props.num("padding_left", points);
     try props.num("padding_right", points);
+}
+
+/// Start a section: the standard padding, plus the extra on the left.
+fn startSection(props: *Props) !void {
+    try props.num("padding_left", section_gap - item_padding);
+    try props.num("padding_right", item_padding);
 }
 
 const retired_items = [_][]const u8{
@@ -336,9 +351,8 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try bell.color("label.highlight_color", theme.blue);
     bell.raw("popup.align=right");
     try bell.num("width", 30);
-    // A little more than the rest, since the provider balances sit against it.
-    try bell.num("padding_left", item_padding * 3);
-    try bell.num("padding_right", item_padding);
+    // GitHub starts a section; the balances end one.
+    try startSection(&bell);
     try bell.num("associated_display", 1);
     bell.raw(clear_script);
     bell.raw(clear_click_script);
@@ -392,7 +406,11 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     // property an earlier configuration set stays set otherwise, which is the
     // same trap the empty `script=` and `click_script=` below exist for.
     neuralwatt.raw("width=dynamic");
-    try neuralwatt.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
+    // Smaller than its neighbour on purpose: the app font's icons are not the
+    // same shape at the same size. Measured at 16 points, `:neuralwatt:` inks a
+    // full 16x16 square where `:openrouter:` is 16x13.7 and `:clock:` is
+    // 15.5x15.6, so at the same size it reads much heavier than the rest.
+    try neuralwatt.fmt("icon.font={s}:Regular:14.0", .{theme.app_font});
     try neuralwatt.num("icon.padding_right", 2);
     neuralwatt.raw("icon=:neuralwatt:");
     // Dim until the first answer arrives: the colour is the daemon's to set, and
@@ -417,7 +435,8 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     var openrouter: Props = .{};
     openrouter.raw("drawing=on");
     try openrouter.num("associated_display", 1);
-    try pad(&openrouter, item_padding);
+    // The provider balances are a section of their own.
+    try startSection(&openrouter);
     openrouter.raw("width=dynamic");
     try openrouter.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
     try openrouter.num("icon.padding_right", 2);
