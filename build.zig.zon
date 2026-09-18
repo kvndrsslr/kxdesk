@@ -1,0 +1,12 @@
+.{
+    .name = .kxdesk,
+    .version = "0.1.0",
+    .fingerprint = 0x3e790e4e284bd1f0,
+    // kxdesk uses interfaces that only exist in this compiler generation, so this
+    // is the single place the requirement is written down. Zig enforces it
+    // whenever this project is consumed as a dependency; a root-package build is
+    // not checked by Zig itself - an older compiler simply fails with an
+    // unrelated link error.
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+}
