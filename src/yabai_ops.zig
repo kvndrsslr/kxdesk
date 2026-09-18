@@ -19,13 +19,17 @@ const Context = commands.Context;
 /// One `rule --add`, complete: the exact argv tokens, spaces inside tokens
 /// exactly as the shell passed them - quoting them differently would change
 /// what yabai matches.
+///
+/// Every rule carries a label, including the two the shell left unlabelled: a
+/// rule is removed by naming it, so an unlabelled one could never be removed and
+/// accumulated a copy per refresh. Nothing here is added without a name.
 const managed_rules = [_][]const []const u8{
     &.{ "-m", "rule", "--add", "label=unmanaged apps", "manage=off", "app=^(Ableton|Blitz|BIAS FX 2|Yousician|ROLI Connect|JetBrains Toolbox|Steam|MTGA|Leader Key)$" },
     &.{ "-m", "rule", "--add", "label=sticky topmost apps", "manage=off", "sticky=on", "app=^System Settings|Vitamin-R 3|Wally|ColorSlurp$" },
     &.{ "-m", "rule", "--add", "label=video and gaming apps in pip mode", "manage=off", "sticky=on", "opacity=1.0", "app=^VLC|mpv$|^(Riot Client)|(League Client)|(League of)|(League Of)" },
     &.{ "-m", "rule", "--add", "label=Teams Notifications", "app=^Microsoft Teams$", "title=^Microsoft Teams Notification$", "manage=off" },
-    &.{ "-m", "rule", "--add", "app=^(Slack|kitty)$", "display=^3" },
-    &.{ "-m", "rule", "--add", "app=^(Microsoft Outlook|Mail)$", "display=^1" },
+    &.{ "-m", "rule", "--add", "label=slack and kitty on display 3", "app=^(Slack|kitty)$", "display=^3" },
+    &.{ "-m", "rule", "--add", "label=mail on display 1", "app=^(Microsoft Outlook|Mail)$", "display=^1" },
 };
 
 /// One `signal --add`, complete: the exact argv tokens. `$YABAI_WINDOW_ID` is
@@ -76,14 +80,17 @@ const settings = [_][]const u8{
 /// process, however many settings there are.
 const settings_argv = [_][]const u8{ "-m", "config" } ++ settings;
 
-/// Re-assert every setting on yabai: the padding and gaps, the opacity, the
-/// mouse bindings and the rest, all in one `yabai -m config`.
+/// Assert everything kxdesk manages on yabai: every setting, then every rule,
+/// then every signal.
 ///
-/// `~/.yabairc` runs this when yabai starts, which is when its configuration is
-/// its defaults again.
+/// One command, because `~/.yabairc` wants all three and this way it is one
+/// round trip to the daemon rather than three - and the three stay reachable on
+/// their own for a targeted refresh.
 pub fn applySettings(context: *Context, args: []const []const u8) anyerror![]const u8 {
     _ = args;
     try context.yabai.command(context.arena, &settings_argv);
+    _ = try refreshRules(context, &.{});
+    _ = try refreshSignals(context, &.{});
     return "";
 }
 
@@ -358,10 +365,9 @@ fn lessThanIndex(_: void, a: yabai.Space, b: yabai.Space) bool {
 
 /// `yabai -m <domain> --remove <label>`, for one entry of a `--list`.
 ///
-/// Labels yabai reports as empty are skipped: the shell's unlabeled rules show
-/// up with an empty `label`, `--remove ''` is refused, and the shell ignored
-/// that failure - so its unlabeled rules survived every refresh, and so do
-/// ours (only removing by index would clear them, which the shell never did).
+/// A rule or signal yabai reports without a label is skipped rather than
+/// failing the refresh: it cannot be named for removal, and every entry kxdesk
+/// adds has one.
 fn removeByLabel(arena: std.mem.Allocator, client: *yabai.Client, domain: []const u8, label: []const u8) !void {
     if (label.len == 0) return;
     try client.command(arena, &.{ "-m", domain, "--remove", label });
