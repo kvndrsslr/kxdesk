@@ -267,7 +267,10 @@ fn startAgent(gpa: std.mem.Allocator, io: std.Io) !bool {
         defer gpa.free(target);
 
         const result = std.process.run(gpa, io, .{
-            .argv = &.{ launchctl, "kickstart", "-k", target },
+            // Without `-k`: a client is here because it could not see the
+            // daemon, and `-k` would kill the one that is running before
+            // starting another. Starting it if it is not up is the whole job.
+            .argv = &.{ launchctl, "kickstart", target },
         }) catch continue;
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
