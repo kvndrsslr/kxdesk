@@ -171,6 +171,21 @@ fn onBlock(block: [*:0]const u8, reply_port: u32) callconv(.c) void {
 
     if (control.isRequest(block)) return daemon.startCommand(block, reply_port);
 
+    // Any other block is proof that a bar is there, because it addressed an item
+    // whose `mach_helper` only a configuration this daemon applied could have set.
+    // If the bar had been marked gone, this is where it comes back: a bar's
+    // shutdown marker and the start of the next bar can cross, and a marker can
+    // outlive the bar it named. A daemon that stayed marked away for the rest of
+    // its life looked exactly like a bar that had stopped drawing - nothing on the
+    // bar moved again until the daemon was restarted, while the bar itself was
+    // fine.
+    if (!daemon.present.load(.monotonic)) {
+        daemon.present.store(true, .monotonic);
+        // The right held for the bar that went away names a dead port; dropping
+        // it makes the next send resolve whichever bar is running now.
+        daemon.dispatcher.bar.reconnect();
+    }
+
     if (daemon.dispatcher.bar.trace) sb.traceBlock(block);
 
     daemon.dispatcher.handle(block) catch |err| {
