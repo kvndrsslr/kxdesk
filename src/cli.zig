@@ -680,12 +680,19 @@ pub fn script(shell: []const u8) ?[]const u8 {
 /// name is `CURRENT - 2`.
 ///
 /// It is the one caller that passes `--describe`, because it is the one shell
-/// with somewhere to show the explanation. `compadd -d` takes the descriptions as
-/// a second array rather than in the matches, which is what keeps a description
-/// free to contain anything - a colon in one would otherwise have to be escaped.
+/// with somewhere to show the explanation, and `_describe` is how the explanation
+/// is shown: it lays the candidates out as `name  -- what it does`, which is the
+/// same thing brew's own completions do. `compadd -d` looks like the right call
+/// but is not - it displays the description *instead of* the candidate.
+///
+/// `_describe` reads each element as `name:description`, so a colon in a
+/// description has to be escaped, and the escaping happens here rather than in
+/// the answer: the binary has no idea what is reading it.
 ///
 /// A candidate that arrives without a tab is taken as a bare word, so this script
-/// keeps working if it ever runs ahead of the binary.
+/// keeps working if it ever runs ahead of the binary - and if the binary is the
+/// older one, which does not know `--describe`, the first call answers nothing
+/// and the second one asks without it.
 const zsh =
     \\#compdef kxdesk
     \\# kxdesk completions for zsh, from `kxdesk completions zsh`.
@@ -696,22 +703,19 @@ const zsh =
     \\#   kxdesk completions zsh > ~/.zsh/completions/_kxdesk
     \\
     \\_kxdesk() {
-    \\  local -a candidates matches descriptions candidate
+    \\  local -a candidates described
+    \\  local candidate
     \\  candidates=("${(@f)$(kxdesk __complete --describe $((CURRENT - 2)) "${(@)words[2,CURRENT]}")}")
-    \\  # A kxdesk older than this script does not know --describe and answers
-    \\  # nothing at all; ask again without it rather than complete nothing.
     \\  [[ -n $candidates[1] ]] || candidates=("${(@f)$(kxdesk __complete $((CURRENT - 2)) "${(@)words[2,CURRENT]}")}")
     \\  [[ -n $candidates[1] ]] || return 1
     \\  for candidate in "${(@)candidates}"; do
     \\    if [[ $candidate == *$'\t'* ]]; then
-    \\      matches+=("${candidate%%$'\t'*}")
-    \\      descriptions+=("${candidate#*$'\t'}")
+    \\      described+=("${candidate%%$'\t'*}:${${candidate#*$'\t'}//:/\\:}")
     \\    else
-    \\      matches+=("$candidate")
-    \\      descriptions+=("")
+    \\      described+=("$candidate")
     \\    fi
     \\  done
-    \\  compadd -d descriptions -- "${(@)matches}"
+    \\  _describe -t kxdesk 'kxdesk' described
     \\}
     \\
     \\compdef _kxdesk kxdesk
