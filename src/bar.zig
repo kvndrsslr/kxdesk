@@ -36,18 +36,34 @@ const clear_click_script = "click_script=";
 /// Items an earlier configuration declared and this one does not. SketchyBar
 /// keeps items across reloads, so retiring one means removing it here: nothing
 /// else will, and a leftover item would keep running the plugin it was given.
-/// The air around every item, in points, so that every gap on the bar is the
-/// same 2 x this.
+/// The air around every item on the right of the bar, in points.
 ///
-/// An item's padding is inside its own frame and the gap to its neighbour is the
-/// sum of their two paddings, so one value applied to every item is what makes
-/// the spacing uniform.
-const item_padding = 8;
+/// An item's padding is inside its own frame, so the gap between two neighbours
+/// is the sum of their paddings - which means one value applied everywhere is
+/// what makes the spacing even. The shell configuration this replaced spaced by
+/// hand (a `-15` here, a `15` there), which produced gaps of 3, 6, 12 and 16
+/// points, one of them negative.
+const item_padding = 4;
+
+/// The gap between two sections of the bar - the provider balances, the GitHub
+/// item, the clock - as opposed to two items that belong together.
+///
+/// SketchyBar has no automatic spacing of any kind: an item's padding sits
+/// inside its own frame and the gap to its neighbour is the sum of their two
+/// paddings. A section break is therefore one item taking more padding on the
+/// side the section starts, and this is the one place that number is written.
+const section_gap = 28;
 
 /// Give an item the bar's standard padding on both sides.
 fn pad(props: *Props, points: u32) !void {
     try props.num("padding_left", points);
     try props.num("padding_right", points);
+}
+
+/// Start a section: the standard padding, plus the extra on the left.
+fn startSection(props: *Props) !void {
+    try props.num("padding_left", section_gap - item_padding);
+    try props.num("padding_right", item_padding);
 }
 
 const retired_items = [_][]const u8{
@@ -151,7 +167,8 @@ fn spaces(c: *sb.Client) !void {
         try props.color("icon.color", theme.white);
         try props.color("icon.highlight_color", theme.green);
         try props.fmt("icon.font={s}:ExtraBold:13.0", .{theme.font});
-        try pad(&props, item_padding);
+        try props.num("background.padding_left", 0);
+        try props.num("background.padding_right", 0);
         try props.color("background.color", theme.black);
         props.raw("background.drawing=off");
         try props.fmt("label.font={s}:Regular:14", .{theme.app_font});
@@ -185,7 +202,8 @@ fn spaces(c: *sb.Client) !void {
     props.raw("drawing=on");
     try props.fmt("icon={s}", .{theme.glyph.separator});
     try props.fmt("icon.font={s}:Regular:11.0", .{theme.font});
-    try pad(&props, item_padding);
+    try props.num("background.padding_left", 16);
+    try props.num("background.padding_right", 6);
     props.raw("label.drawing=off");
     try props.color("icon.color", theme.separator_icon);
     try c.set("separator", props.slice());
@@ -231,7 +249,6 @@ fn frontAppItems(c: *sb.Client, config: Config) !void {
         try status_props.fmt("icon.font={s}:Bold:14.0", .{theme.font});
         status_props.raw("label.drawing=off");
         try status_props.fmt("label.font={s}:Regular:12.0", .{theme.font});
-        try pad(&status_props, item_padding);
         try status_props.num("icon.width", 24);
         try status_props.fmt("icon={s}", .{theme.glyph.yabai_grid});
         try status_props.color("icon.color", theme.orange);
@@ -247,7 +264,8 @@ fn frontAppItems(c: *sb.Client, config: Config) !void {
 
         var front_props: Props = .{};
         front_props.raw("drawing=on");
-        try pad(&front_props, item_padding);
+        try front_props.num("background.padding_left", 0);
+        try front_props.num("background.padding_right", 10);
         try front_props.color("icon.color", theme.white);
         try front_props.fmt("icon.font={s}:ExtraBold:12.0", .{theme.font});
         try front_props.color("label.color", theme.grey);
@@ -386,7 +404,13 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     var neuralwatt: Props = .{};
     neuralwatt.raw("drawing=on");
     try neuralwatt.num("associated_display", 1);
-    try pad(&neuralwatt, item_padding);
+    // The space before the GitHub item goes here rather than on the bell,
+    // because only the padding of the item *before* a gap moves anything: the
+    // bell is a fixed-width item and its own `padding_left` is inert. Measured
+    // on the live bar, the gap this produces is `padding_right - 11` points, so
+    // 40 is a real 29 points of air.
+    try neuralwatt.num("padding_left", item_padding);
+    try neuralwatt.num("padding_right", 40);
     // `dynamic` is SketchyBar's automatic width, and the default - but a
     // property an earlier configuration set stays set otherwise, which is the
     // same trap the empty `script=` and `click_script=` below exist for.
@@ -420,7 +444,8 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     var openrouter: Props = .{};
     openrouter.raw("drawing=on");
     try openrouter.num("associated_display", 1);
-    try pad(&openrouter, item_padding);
+    // The provider balances are a section of their own.
+    try startSection(&openrouter);
     openrouter.raw("width=dynamic");
     try openrouter.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
     try openrouter.num("icon.padding_right", 2);
