@@ -310,6 +310,28 @@ pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror!
     return "";
 }
 
+/// Every labelled space, one label per line, in index order.
+///
+/// This is what a completion offers for `switch_workspace`, and it is worth
+/// having on its own: the labels are what a binding passes, and they exist
+/// nowhere but in yabai's answer.
+pub fn spaceLabels(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
+    const arena = context.arena;
+
+    const spaces = try context.yabai.query([]yabai.Space, arena, &.{ "-m", "query", "--spaces" });
+    sort(spaces);
+
+    var labels = std.ArrayList([]const u8).empty;
+    for (spaces) |space| {
+        if (space.@"label".len == 0) continue;
+        // A label may be on more than one space; it is offered once.
+        if (isSelected(labels.items, space.@"label")) continue;
+        try labels.append(arena, space.@"label");
+    }
+    return std.mem.join(arena, "\n", labels.items) catch return error.OutOfMemory;
+}
+
 /// Move focus to the neighbouring display.
 pub fn cycleDisplays(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;

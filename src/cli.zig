@@ -1,23 +1,27 @@
-//! The command line as the outside sees it: `--help`, `help <command>`, and the
-//! shell completions.
+//! The command line as the outside sees it: the help, the completions, and the
+//! check that a request is spelled the way the command says it is.
 //!
 //! Nothing here restates the command table. It is read out of `commands.zig`, so
-//! a command that is added, renamed, or given an argument documents and completes
-//! itself; the two commands this binary answers itself live in the same table,
-//! next to the daemon's, and are treated identically.
+//! a command that is added, renamed, or given an argument documents itself,
+//! completes itself, and is validated against its own description; the two
+//! commands this binary answers itself live in the same table, next to the
+//! daemon's, and are treated identically.
 //!
 //! Completions are computed here rather than in each shell: the generated script
 //! is a few lines that hand the words to `kxdesk __complete` and print what comes
-//! back. That keeps one description of the command line instead of four, and a
-//! shell never has to be regenerated when a command changes.
+//! back. That keeps one description of the command line instead of four, and it
+//! is what lets a candidate carry what it does alongside its name - and lets a
+//! value that only exists at runtime, such as a state key or a space label, be
+//! offered at all.
 
 const std = @import("std");
 
 const commands = @import("commands.zig");
+const control = @import("control.zig");
 
 const Allocator = std.mem.Allocator;
-const Command = commands.Command;
 const ArrayList = std.ArrayList;
+const Command = commands.Command;
 
 /// What every usage line starts with.
 pub const program = "kxdesk";
@@ -26,9 +30,9 @@ pub const program = "kxdesk";
 /// installed here, and an unexercised script is worse than none.
 pub const shells = [_][]const u8{ "zsh", "bash" };
 
-/// The commands this binary answers itself. Same shape as the daemon's, so
-/// `--help` and the completions treat them alike; `run` stays null, because the
-/// daemon is never asked about them.
+/// The commands this binary answers itself. Same shape as the daemon's, so the
+/// help, the completions and the validation treat them alike; `run` stays null,
+/// because the daemon is never asked about them.
 const local = [_]Command{
     .{
         .name = "help",
@@ -36,7 +40,7 @@ const local = [_]Command{
         .args = &.{.{
             .name = "[<command>]",
             .summary = "the command to describe",
-            .commands = true,
+            .source = .commands,
         }},
     },
     .{
@@ -45,6 +49,7 @@ const local = [_]Command{
         .args = &.{.{
             .name = "<shell>",
             .summary = "the shell to emit for",
+            .source = .fixed,
             .values = &shells,
         }},
     },
@@ -59,6 +64,21 @@ pub fn find(name: []const u8) ?Command {
         if (std.mem.eql(u8, command.name, name)) return command;
     }
     return null;
+}
+
+/// What a command's own arguments and flags are, once its subcommand - named or
+/// defaulted - is known.
+const Spec = struct {
+    args: []const commands.Arg,
+    flags: []const commands.Flag,
+    sub: ?commands.Sub = null,
+};
+
+fn specOf(command: Command, sub: ?commands.Sub) Spec {
+    return if (sub) |chosen|
+        .{ .args = chosen.args, .flags = chosen.flags, .sub = chosen }
+    else
+        .{ .args = command.args, .flags = command.flags };
 }
 
 // -- help -------------------------------------------------------------------
@@ -124,6 +144,7 @@ pub fn describe(arena: Allocator, command: Command) Allocator.Error![]const u8 {
             try appendSubUsage(&out, arena, sub);
             try pad(&out, arena, width - subUsageLen(sub) + 2);
             try out.appendSlice(arena, sub.summary);
+            if (sub.default) try out.appendSlice(arena, " (default)");
             try out.append(arena, '\n');
         }
     }
@@ -161,6 +182,29 @@ fn appendUsage(out: *ArrayList(u8), arena: Allocator, command: Command) Allocato
     }
 
     for (command.flags) |flag| {
+        try out.appendSlice(arena, " [");
+        try out.appendSlice(arena, flag.name);
+        try out.append(arena, ']');
+    }
+}
+
+/// `kxdesk state set <key> [<value>]`: one command spelled out the way the
+/// problem message for it has to be run.
+fn appendInvocation(out: *ArrayList(u8), arena: Allocator, command: Command, spec: Spec) Allocator.Error!void {
+    try out.appendSlice(arena, program);
+    try out.append(arena, ' ');
+    try out.appendSlice(arena, command.name);
+
+    if (spec.sub) |sub| {
+        try out.append(arena, ' ');
+        try appendSubUsage(out, arena, sub);
+        return;
+    }
+    for (spec.args) |arg| {
+        try out.append(arena, ' ');
+        try out.appendSlice(arena, arg.name);
+    }
+    for (spec.flags) |flag| {
         try out.appendSlice(arena, " [");
         try out.appendSlice(arena, flag.name);
         try out.append(arena, ']');
@@ -283,10 +327,150 @@ fn pad(out: *ArrayList(u8), arena: Allocator, count: usize) Allocator.Error!void
     for (0..count) |_| try out.append(arena, ' ');
 }
 
+// -- validation -------------------------------------------------------------
+
+/// Check `args` against the command's own description: the subcommand it names,
+/// how many arguments it takes, and the flags it accepts. Returns null when the
+/// request is well-formed, or a message naming what was expected and how the
+/// command is spelled.
+///
+/// This is what turns a request the daemon would otherwise have to guess at into
+/// a sentence: `state set` used to answer `MissingArgument`, and now answers
+/// `state set: missing <key>` with its usage line under it.
+///
+/// Only `--`-prefixed words are read as flags. A value may begin with one dash -
+/// `state set level -5`, `set_mode_indicator -` - and no command here declares a
+/// single-dash flag, so that reading never has to guess. Flags are refused before
+/// arguments for the same reason: a command reads its arguments by position, so
+/// `state set --null key` would be taken as the key `--null` with the value
+/// `key`.
+pub fn validate(arena: Allocator, command: Command, args: []const []const u8) Allocator.Error!?[]const u8 {
+    var rest = args;
+    var spec = specOf(command, null);
+
+    if (command.subcommands.len != 0) {
+        if (rest.len == 0) {
+            const chosen = defaultSub(command) orelse
+                return try problem(arena, command, spec, "a subcommand is required");
+            spec = specOf(command, chosen);
+        } else if (isFlag(rest[0])) {
+            return try problem(arena, command, spec, "expected a subcommand, not a flag");
+        } else {
+            const chosen = findSub(command, rest[0]) orelse {
+                const detail = try std.fmt.allocPrint(arena, "no subcommand named '{s}'", .{rest[0]});
+                return try problem(arena, command, spec, detail);
+            };
+            spec = specOf(command, chosen);
+            rest = rest[1..];
+        }
+    }
+
+    var positionals = ArrayList([]const u8).empty;
+    var after_flag = false;
+    for (rest) |word| {
+        if (isFlag(word)) {
+            if (!declares(spec.flags, word)) {
+                const detail = try std.fmt.allocPrint(arena, "unknown flag '{s}'", .{word});
+                return try problem(arena, command, spec, detail);
+            }
+            after_flag = true;
+            continue;
+        }
+        if (after_flag) {
+            const detail = try std.fmt.allocPrint(arena, "unexpected argument '{s}' after a flag", .{word});
+            return try problem(arena, command, spec, detail);
+        }
+        try positionals.append(arena, word);
+    }
+
+    const required = requiredArgs(spec.args);
+    if (positionals.items.len < required) {
+        const detail = try std.fmt.allocPrint(arena, "missing {s}", .{spec.args[positionals.items.len].name});
+        return try problem(arena, command, spec, detail);
+    }
+    if (positionals.items.len > spec.args.len) {
+        const detail = try std.fmt.allocPrint(
+            arena,
+            "unexpected argument '{s}'",
+            .{positionals.items[spec.args.len]},
+        );
+        return try problem(arena, command, spec, detail);
+    }
+
+    for (positionals.items, spec.args) |value, argument| {
+        switch (argument.source) {
+            .fixed => if (argument.values.len > 0 and !contains(argument.values, value)) {
+                const detail = try std.fmt.allocPrint(
+                    arena,
+                    "{s} is not one of: {s}",
+                    .{ argument.name, try std.mem.join(arena, ", ", argument.values) },
+                );
+                return try problem(arena, command, spec, detail);
+            },
+            .commands => if (find(value) == null) {
+                const detail = try std.fmt.allocPrint(arena, "no such command '{s}'", .{value});
+                return try problem(arena, command, spec, detail);
+            },
+            .free, .state_keys, .space_labels => {},
+        }
+    }
+    return null;
+}
+
+/// `state set: missing <key>` and the line to run.
+fn problem(
+    arena: Allocator,
+    command: Command,
+    spec: Spec,
+    detail: []const u8,
+) Allocator.Error![]const u8 {
+    var out = ArrayList(u8).empty;
+    errdefer out.deinit(arena);
+
+    try out.appendSlice(arena, command.name);
+    if (spec.sub) |sub| {
+        try out.append(arena, ' ');
+        try out.appendSlice(arena, sub.name);
+    }
+    try out.appendSlice(arena, ": ");
+    try out.appendSlice(arena, detail);
+    try out.appendSlice(arena, "\nusage: ");
+    try appendInvocation(&out, arena, command, spec);
+    return out.toOwnedSlice(arena);
+}
+
+/// How many arguments a command will not run without: the ones whose name is not
+/// bracketed.
+fn requiredArgs(args: []const commands.Arg) usize {
+    var count: usize = 0;
+    for (args) |argument| {
+        char: {
+            if (argument.name.len == 0 or argument.name[0] != '[') break :char;
+            continue;
+        }
+        count += 1;
+    }
+    return count;
+}
+
+fn defaultSub(command: Command) ?commands.Sub {
+    for (command.subcommands) |sub| {
+        if (sub.default) return sub;
+    }
+    return null;
+}
+
+fn declares(flags: []const commands.Flag, name: []const u8) bool {
+    for (flags) |flag| {
+        if (std.mem.eql(u8, flag.name, name)) return true;
+    }
+    return false;
+}
+
 // -- completions ------------------------------------------------------------
 
-/// The words that may follow what has been typed, one per line and nothing when
-/// there is nothing to offer.
+/// The words that may follow what has been typed, one per line, each followed by
+/// a tab and what it does. Nothing when there is nothing to offer.
 ///
 /// `words` are the words after the program name, and `cword` is the index within
 /// them of the word being completed. It may be one past the end of `words`,
@@ -300,31 +484,28 @@ pub fn complete(arena: Allocator, cword: usize, words: []const []const u8) Alloc
     const typed = words[0..@min(cword, words.len)];
 
     if (typed.len == 0) {
-        for (registry) |command| try offer(&out, arena, partial, command.name);
-        try offer(&out, arena, partial, "--help");
-        try offer(&out, arena, partial, "--version");
+        for (registry) |command| try offer(&out, arena, partial, command.name, command.summary);
+        try offer(&out, arena, partial, "--help", "show the help");
+        try offer(&out, arena, partial, "--version", "print the version");
         return out.toOwnedSlice(arena);
     }
 
     const command = find(typed[0]) orelse return out.toOwnedSlice(arena);
     var rest = typed[1..];
-
-    var args: []const commands.Arg = command.args;
-    var flags: []const commands.Flag = command.flags;
+    var spec = specOf(command, null);
 
     if (command.subcommands.len != 0) {
         // Either the subcommand is still being chosen, or a flag came first and
         // only flags can be offered until one is.
         if (rest.len == 0 or isFlag(rest[0])) {
             if (rest.len == 0) {
-                for (command.subcommands) |sub| try offer(&out, arena, partial, sub.name);
+                for (command.subcommands) |sub| try offer(&out, arena, partial, sub.name, sub.summary);
             }
             try offerFlags(&out, arena, partial, command.flags, rest);
             return out.toOwnedSlice(arena);
         }
         const sub = findSub(command, rest[0]) orelse return out.toOwnedSlice(arena);
-        args = sub.args;
-        flags = sub.flags;
+        spec = specOf(command, sub);
         rest = rest[1..];
     }
 
@@ -334,17 +515,57 @@ pub fn complete(arena: Allocator, cword: usize, words: []const []const u8) Alloc
         position += 1;
     }
 
-    if (position < args.len) {
-        const arg = args[position];
-        if (arg.commands) {
-            for (registry) |each| try offer(&out, arena, partial, each.name);
-        } else for (arg.values) |value| {
-            try offer(&out, arena, partial, value);
-        }
-    }
-    try offerFlags(&out, arena, partial, flags, rest);
+    if (position < spec.args.len) try offerValues(&out, arena, partial, spec.args[position]);
+    try offerFlags(&out, arena, partial, spec.flags, rest);
 
     return out.toOwnedSlice(arena);
+}
+
+/// What may stand where one argument is expected.
+fn offerValues(
+    out: *ArrayList(u8),
+    arena: Allocator,
+    partial: []const u8,
+    argument: commands.Arg,
+) Allocator.Error!void {
+    switch (argument.source) {
+        .free => {},
+        .fixed => for (argument.values) |value| try offer(out, arena, partial, value, ""),
+        .commands => for (registry) |command| {
+            try offer(out, arena, partial, command.name, command.summary);
+        },
+        .state_keys => {
+            const keys = askDaemon(arena, "state", &.{"list"}) orelse return;
+            var lines = std.mem.splitScalar(u8, keys, '\n');
+            while (lines.next()) |key| try offer(out, arena, partial, key, "");
+        },
+        .space_labels => {
+            // The argument is a comma-separated list, so only the field the cursor
+            // is in is completed, and a candidate keeps the fields before it.
+            const field_start = if (std.mem.lastIndexOfScalar(u8, partial, ',')) |comma| comma + 1 else 0;
+            const already_typed = partial[0..field_start];
+
+            const labels = askDaemon(arena, "space_labels", &.{}) orelse return;
+            var lines = std.mem.splitScalar(u8, labels, '\n');
+            while (lines.next()) |label| {
+                if (label.len == 0) continue;
+                const candidate = try std.fmt.allocPrint(arena, "{s}{s}", .{ already_typed, label });
+                try offer(out, arena, partial, candidate, "");
+            }
+        },
+    }
+}
+
+/// Ask a running daemon for the value of one command, for the values only it can
+/// enumerate. Null when no daemon is listening, or when it refused - a completion
+/// offers what it can and never fails a TAB over it.
+fn askDaemon(arena: Allocator, command: []const u8, args: []const []const u8) ?[]const u8 {
+    var response: [8 * 1024]u8 = undefined;
+    const reply = control.query(arena, command, args, &response) orelse return null;
+    return switch (control.decode(reply) orelse return null) {
+        .ok => |payload| if (payload.len > 0) arena.dupe(u8, payload) catch null else null,
+        .err => null,
+    };
 }
 
 fn offerFlags(
@@ -356,19 +577,31 @@ fn offerFlags(
 ) Allocator.Error!void {
     for (flags) |flag| {
         if (contains(used, flag.name)) continue;
-        try offer(out, arena, partial, flag.name);
+        try offer(out, arena, partial, flag.name, flag.summary);
     }
-    if (!contains(used, "--help")) try offer(out, arena, partial, "--help");
+    if (!contains(used, "--help")) try offer(out, arena, partial, "--help", "show this");
 }
 
+/// One candidate, and what it does.
+///
+/// The description follows a tab, which is what keeps this readable to both
+/// shells: zsh splits it off to show beside the match (`compadd -d`), and bash
+/// takes the word and drops the rest.
 fn offer(
     out: *ArrayList(u8),
     arena: Allocator,
     partial: []const u8,
     candidate: []const u8,
+    description: []const u8,
 ) Allocator.Error!void {
+    if (candidate.len == 0) return;
     if (!std.mem.startsWith(u8, candidate, partial)) return;
+
     try out.appendSlice(arena, candidate);
+    if (description.len > 0) {
+        try out.append(arena, '\t');
+        try out.appendSlice(arena, description);
+    }
     try out.append(arena, '\n');
 }
 
@@ -380,7 +613,7 @@ fn findSub(command: Command, name: []const u8) ?commands.Sub {
 }
 
 fn isFlag(word: []const u8) bool {
-    return word.len > 0 and word[0] == '-';
+    return word.len > 1 and word[0] == '-' and word[1] == '-';
 }
 
 fn contains(words: []const []const u8, wanted: []const u8) bool {
@@ -406,6 +639,10 @@ pub fn script(shell: []const u8) ?[]const u8 {
 /// zsh completes with `words` 1-based and holding the program name, so the word
 /// being completed is `CURRENT` and its index among the words after the program
 /// name is `CURRENT - 2`.
+///
+/// `compadd -d` takes the descriptions as a second array rather than in the
+/// matches, which is what keeps a description free to contain anything - a colon
+/// in one would otherwise have to be escaped.
 const zsh =
     \\#compdef kxdesk
     \\# kxdesk completions for zsh, from `kxdesk completions zsh`.
@@ -416,9 +653,19 @@ const zsh =
     \\#   kxdesk completions zsh > ~/.zsh/completions/_kxdesk
     \\
     \\_kxdesk() {
-    \\  local -a candidates
-    \\  candidates=(${(f)"$(kxdesk __complete $((CURRENT - 2)) "${(@)words[2,CURRENT]}")"})
-    \\  compadd -a candidates
+    \\  local -a candidates matches descriptions candidate
+    \\  candidates=("${(@f)$(kxdesk __complete $((CURRENT - 2)) "${(@)words[2,CURRENT]}")}")
+    \\  [[ -n $candidates[1] ]] || return 1
+    \\  for candidate in "${(@)candidates}"; do
+    \\    if [[ $candidate == *$'\t'* ]]; then
+    \\      matches+=("${candidate%%$'\t'*}")
+    \\      descriptions+=("${candidate#*$'\t'}")
+    \\    else
+    \\      matches+=("$candidate")
+    \\      descriptions+=("")
+    \\    fi
+    \\  done
+    \\  compadd -d descriptions -- "${(@)matches}"
     \\}
     \\
     \\compdef _kxdesk kxdesk
@@ -427,7 +674,8 @@ const zsh =
 
 /// bash keeps `COMP_WORDS` 0-based with the program name at 0, so the word being
 /// completed is `COMP_CWORD` and its index among the words after the program name
-/// is `COMP_CWORD - 1`.
+/// is `COMP_CWORD - 1`. Readline has nowhere to show a description, so only the
+/// word is kept.
 const bash =
     \\# kxdesk completions for bash, from `kxdesk completions bash`.
     \\#
@@ -436,9 +684,12 @@ const bash =
     \\
     \\_kxdesk() {
     \\  local IFS=$'\n'
-    \\  local candidates
+    \\  local candidates candidate
     \\  candidates=($(kxdesk __complete $((COMP_CWORD - 1)) "${COMP_WORDS[@]:1}"))
-    \\  COMPREPLY=("${candidates[@]}")
+    \\  COMPREPLY=()
+    \\  for candidate in "${candidates[@]}"; do
+    \\    [[ -n $candidate ]] && COMPREPLY+=("${candidate%%$'\t'*}")
+    \\  done
     \\}
     \\
     \\complete -F _kxdesk kxdesk

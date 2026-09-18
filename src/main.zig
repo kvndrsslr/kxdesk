@@ -105,6 +105,14 @@ const Daemon = struct {
         const index = commands.find(verb) orelse
             return control.postReply(reply_port, .{ .err = "unknown command" });
 
+        // The command is checked against its own description before it runs, so a
+        // request that does not fit is answered with what was expected rather
+        // than with whatever the command makes of it. The client checks too, and
+        // this is the authority: any client can be older than the daemon.
+        if (try cli.validate(arena_state.allocator(), commands.all[index], args)) |problem| {
+            return control.postReply(reply_port, .{ .err = problem });
+        }
+
         // A channel of this task's own: the receive loop's client must not see a
         // batch it did not build.
         var bar = sb.Client.init(arena_state.allocator(), sb.sketchybar_service);
@@ -268,36 +276,27 @@ pub fn main(init: std.process.Init) !void {
     return runClient(init, mode, arguments[2..]);
 }
 
-/// The commands this binary answers itself: `help` and `completions`.
+/// The commands this binary answers itself: `help` and `completions`. Both are
+/// checked against their own description, so a wrong shell or an unknown command
+/// name is refused with the same kind of message as a daemon command.
 fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8) !void {
+    const arena = init.arena.allocator();
+    const command = cli.find(mode) orelse return;
+
+    if (try cli.validate(arena, command, args)) |problem| {
+        emit(init.io, .stderr, problem);
+        std.process.exit(1);
+    }
+
     if (std.mem.eql(u8, mode, "help")) {
         if (args.len == 0) {
-            emit(init.io, .stdout, try cli.overview(init.arena.allocator()));
+            emit(init.io, .stdout, try cli.overview(arena));
             return;
         }
         return describe(init, args[0]);
     }
 
-    const arena = init.arena.allocator();
-    if (args.len == 0) {
-        const message = try std.fmt.allocPrint(
-            arena,
-            "kxdesk: completions needs a shell: {s}",
-            .{try cli.shellList(arena)},
-        );
-        emit(init.io, .stderr, message);
-        std.process.exit(1);
-    }
-    const text = cli.script(args[0]) orelse {
-        const message = try std.fmt.allocPrint(
-            arena,
-            "kxdesk: no completions for that shell: {s}",
-            .{try cli.shellList(arena)},
-        );
-        emit(init.io, .stderr, message);
-        std.process.exit(1);
-    };
-    writeText(init.io, .stdout, text);
+    writeText(init.io, .stdout, cli.script(args[0]) orelse return);
 }
 
 /// Describe one command, or say there is no such command.
@@ -430,7 +429,26 @@ fn runDaemon(init: std.process.Init) !void {
 }
 
 /// Every other mode: ask the daemon to run one of its commands.
+///
+/// The request is checked against the command's own description first, which is
+/// what lets an incomplete one be answered without a daemon - and what keeps a
+/// misspelled verb from starting one.
 fn runClient(init: std.process.Init, verb: []const u8, args: []const []const u8) !void {
+    const arena = init.arena.allocator();
+    const command = cli.find(verb) orelse {
+        const message = try std.fmt.allocPrint(
+            arena,
+            "kxdesk: no such command: {s}\n`kxdesk --help` lists them.",
+            .{verb},
+        );
+        emit(init.io, .stderr, message);
+        std.process.exit(1);
+    };
+    if (try cli.validate(arena, command, args)) |problem| {
+        emit(init.io, .stderr, problem);
+        std.process.exit(1);
+    }
+
     var response: [8 * 1024]u8 = undefined;
     const reply = control.submit(init.gpa, init.io, verb, args, &response) catch |err| {
         return fail(init.io, err);

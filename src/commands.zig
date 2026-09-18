@@ -105,8 +105,27 @@ pub const Sub = struct {
     /// The word a client types.
     name: []const u8,
     summary: []const u8,
+    /// The subcommand a bare `<command>` means, so `kxdesk pomodoro` is
+    /// `kxdesk pomodoro status`. At most one per command.
+    default: bool = false,
     args: []const Arg = &.{},
     flags: []const Flag = &.{},
+};
+
+/// Where a positional argument's values come from. The ones that are not `fixed`
+/// are resolved when a completion is asked for, which is why the values are not
+/// written down here.
+pub const Source = enum {
+    /// The user's to type; there is nothing to offer.
+    free,
+    /// The `values` below.
+    fixed,
+    /// Every command in this registry (`help`).
+    commands,
+    /// Every key in the daemon's state store.
+    state_keys,
+    /// Every space label yabai knows.
+    space_labels,
 };
 
 /// One positional argument.
@@ -114,12 +133,11 @@ pub const Arg = struct {
     /// How the usage line spells it, brackets included when it may be omitted.
     name: []const u8,
     summary: []const u8,
-    /// The values it accepts, when they are a closed set. Empty when the value
-    /// is free-form, in which case there is nothing to complete.
+    /// Where its values come from.
+    source: Source = .free,
+    /// The values a `fixed` argument accepts, which are also the completions and
+    /// the check a malformed request is refused by.
     values: []const []const u8 = &.{},
-    /// The argument is the name of another command (`help`), so completions come
-    /// from the registry itself.
-    commands: bool = false,
 };
 
 /// One flag. Every flag here stands alone; none takes a value.
@@ -149,7 +167,7 @@ pub const all = [_]Command{
         .subcommands = &.{
             .{ .name = "on", .summary = "collapse the bar to the essentials" },
             .{ .name = "off", .summary = "restore everything the bar had" },
-            .{ .name = "toggle", .summary = "flip whatever state the bar is in" },
+            .{ .name = "toggle", .summary = "flip whatever state the bar is in", .default = true },
         },
         .run = zenMode,
     },
@@ -186,9 +204,15 @@ pub const all = [_]Command{
             .{
                 .name = "<labels>",
                 .summary = "comma-separated space labels; focus lands on one of their display",
+                .source = .space_labels,
             },
         },
         .run = yabai_ops.switchWorkspace,
+    },
+    .{
+        .name = "space_labels",
+        .summary = "print the label of every labelled space, one per line",
+        .run = yabai_ops.spaceLabels,
     },
 
     // Provisioning, reached from `~/.yabairc` and from the bindings that
@@ -227,6 +251,7 @@ pub const all = [_]Command{
             .{
                 .name = "<mode>",
                 .summary = "a mode index, or - for no mode",
+                .source = .fixed,
                 .values = &mode_indices,
             },
         },
@@ -259,7 +284,7 @@ pub const all = [_]Command{
                     .{ .name = "[<rest>]", .summary = "length of a rest interval, in minutes; unchanged when omitted" },
                 },
             },
-            .{ .name = "status", .summary = "say what the timer is doing" },
+            .{ .name = "status", .summary = "say what the timer is doing", .default = true },
         },
         .run = pomodoroTimer,
     },
@@ -273,14 +298,14 @@ pub const all = [_]Command{
                 .name = "get",
                 .summary = "print the value stored under a key",
                 .args = &.{
-                    .{ .name = "<key>", .summary = "the key to read" },
+                    .{ .name = "<key>", .summary = "the key to read", .source = .state_keys },
                 },
             },
             .{
                 .name = "set",
                 .summary = "store a value under a key",
                 .args = &.{
-                    .{ .name = "<key>", .summary = "the key to write" },
+                    .{ .name = "<key>", .summary = "the key to write", .source = .state_keys },
                     .{ .name = "[<value>]", .summary = "the value; left out with --null" },
                 },
                 .flags = &.{
@@ -293,7 +318,7 @@ pub const all = [_]Command{
                 .name = "unset",
                 .summary = "drop a key",
                 .args = &.{
-                    .{ .name = "<key>", .summary = "the key to drop" },
+                    .{ .name = "<key>", .summary = "the key to drop", .source = .state_keys },
                 },
             },
             .{
@@ -315,7 +340,7 @@ pub const all = [_]Command{
         .subcommands = &.{
             .{ .name = "enter", .summary = "materialize the keys, start the agent, and rewire ssh and git" },
             .{ .name = "exit", .summary = "put all of that back and wipe the keys" },
-            .{ .name = "status", .summary = "say whether the mode is on, and what it serves" },
+            .{ .name = "status", .summary = "say whether the mode is on, and what it serves", .default = true },
             .{ .name = "refresh", .summary = "exit, then enter: for a key or remote added since" },
         },
         .run = server_mode.serverMode,

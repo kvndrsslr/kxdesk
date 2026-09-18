@@ -27,9 +27,24 @@ kxdesk completions zsh     # or bash
 These are answered by the binary itself rather than the daemon, so they work
 when nothing is listening.
 
+The description is also what a request is *checked* against before it is sent or
+run, so a malformed one is answered with what was expected instead of whatever
+the command would have made of it:
+
+```
+$ kxdesk state set
+state set: missing <key>
+usage: kxdesk state set <key> [<value>] [--int] [--real] [--null]
+```
+
 The completion scripts are thin: they hand the words to `kxdesk __complete`,
 which answers from the same description, so a command that is added or changed is
-completed correctly without regenerating anything.
+completed correctly without regenerating anything. Each candidate carries what it
+does — zsh shows it beside the match — and a value that only exists at runtime is
+completed too: `state get` offers the keys that are actually in the store, and
+`switch_workspace` offers the labels yabai is actually carrying (see
+`kxdesk space_labels`). Those come from the running daemon and are simply absent
+when there is not one; pressing TAB never starts it.
 
 The Homebrew formula installs both of them where each shell already looks —
 `share/zsh/site-functions/_kxdesk` (on `$fpath` through `brew shellenv zsh`) and

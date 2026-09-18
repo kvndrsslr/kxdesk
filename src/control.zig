@@ -84,9 +84,10 @@ pub const Reply = union(enum) {
     err: []const u8,
 };
 
-/// Largest reply this will frame. Every payload is a line of text, so a longer
-/// one is a bug; it is truncated rather than dropped.
-const max_reply = 512;
+/// Largest reply this will frame. Payloads are lines of text - a status line, a
+/// list of state keys, a list of space labels - so this fits any of them with
+/// room to spare; a longer one is a bug, and is truncated rather than dropped.
+const max_reply = 4096;
 
 /// Post `reply` to the port a request asked to be answered on. That port is 0
 /// for SketchyBar's one-way event sends, which have nowhere to answer.
@@ -188,6 +189,39 @@ pub fn submit(
         };
         return reply;
     }
+}
+
+/// Ask a daemon that is already running to run `verb`, returning its reply, or
+/// null when nothing is listening.
+///
+/// Unlike `submit` this never asks launchd to start the agent, because it serves
+/// callers that must not have a side effect: a completion is being looked at, not
+/// run, and pressing TAB should not start a daemon.
+pub fn query(
+    gpa: std.mem.Allocator,
+    verb: []const u8,
+    args: []const []const u8,
+    out: []u8,
+) ?[]const u8 {
+    const port = platform.sb_bootstrap_lookup(sb.control_service);
+    if (port == 0) return null;
+    defer platform.sb_port_release(port);
+
+    const message = frameRequest(gpa, verb, args) catch return null;
+    defer gpa.free(message);
+
+    const written = platform.sb_send(
+        port,
+        message.ptr,
+        message.len,
+        out.ptr,
+        out.len,
+        reply_timeout_ms,
+    );
+    return switch (written) {
+        -1, -2 => null,
+        else => out[0..@min(@as(usize, @intCast(written)), out.len)],
+    };
 }
 
 /// Send one request and return the reply, or null when a daemon that the
