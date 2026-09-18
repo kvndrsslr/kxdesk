@@ -3,7 +3,7 @@
 //!
 //! Everything is emitted into one command batch, so SketchyBar applies the whole
 //! configuration and redraws exactly once. Every item whose data this daemon
-//! computes declares `mach_helper=`; the space, front-app, alias and separator
+//! computes declares `mach_helper=`; the space, front-app and separator
 //! items are driven from the helper's own batches instead, and nothing here
 //! forks a process or keeps a shell `script=` or `click_script`.
 //!
@@ -71,9 +71,13 @@ const retired_items = [_][]const u8{
     "/spotify\\..*/",
     "/^spotify$/",
     // Flow's clock item and the alias to Flow's own status item: the pomodoro
-    // replaced both, and an alias whose application is gone draws nothing.
+    // replaced both, and every alias is gone from this configuration now.
     "/^flow$/",
     "/^fan_alias$/",
+    // Aliases to other applications' status items drew nothing on the two macOS
+    // versions before this one either, so the mechanism is out of the
+    // configuration rather than merely disabled in it.
+    "/^network_alias$/",
 };
 
 /// Spaces 1..16 exist as items; yabai decides which ones are real.
@@ -492,17 +496,6 @@ fn rightItems(c: *sb.Client, config: Config) !void {
         }
     }
 
-    // Aliases to other applications' status items.
-    try alias(c, "Little Snitch Agent,Item-0", "network_alias", &.{
-        "drawing=on",
-        "associated_display=1",
-        "alias.update_freq=1",
-        // Left, not right, because the alias draws another application's status
-        // item, which arrives with margins of its own.
-        "background.padding_left=-11",
-        "background.padding_right=4",
-    });
-
     // The pomodoro timer. Its countdown is the daemon's own: the daemon pushes
     // it to the label when the second changes, so the item carries no
     // `update_freq`, forks nothing, and asks no other application for the time.
@@ -532,25 +525,3 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("mouse.clicked");
 }
 
-/// Alias an item owned by another application and give it a stable name.
-///
-/// An alias reads its owner and window name out of the `--add` token, so it has
-/// to be created under the source name and then renamed. Both names are removed
-/// first, because that pair is not idempotent on its own: applying the
-/// configuration a second time creates another alias under the source name and
-/// the rename then fails, leaving duplicate items capturing the same status
-/// item.
-fn alias(c: *sb.Client, source: []const u8, name: []const u8, props: []const []const u8) !void {
-    try c.arg("--remove");
-    try c.arg(name);
-    try c.arg("--remove");
-    try c.arg(source);
-    try c.arg("--add");
-    try c.arg("alias");
-    try c.arg(source);
-    try c.arg("right");
-    try c.arg("--rename");
-    try c.arg(source);
-    try c.arg(name);
-    try c.set(name, props);
-}

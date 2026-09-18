@@ -19,7 +19,6 @@ const simple_items = [_][]const u8{
     "brew",
     "neuralwatt",
     "openrouter",
-    "/.*_alias/",
 };
 
 /// Items paired per display.
