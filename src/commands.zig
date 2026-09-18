@@ -59,9 +59,7 @@ pub const Context = struct {
             self.bar.reconnect();
             self.bar.connect() catch |err| {
                 if (attempt >= bar_connect_attempts) return err;
-                std.Io.sleep(self.io,
-                             std.Io.Duration.fromMilliseconds(bar_connect_delay_ms),
-                             .awake) catch {};
+                std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(bar_connect_delay_ms), .awake) catch {};
                 continue;
             };
             self.bar_present.store(true, .monotonic);
@@ -76,43 +74,252 @@ pub const Context = struct {
 const bar_connect_attempts = 20;
 const bar_connect_delay_ms = 150;
 
+/// What a command takes after its name, in the terms the usage line is drawn
+/// from: `kxdesk pomodoro set 25 5` is `set` (a `Sub`) with `<work>` and
+/// `[<rest>]` (`Arg`s), and there is no other spelling of that.
+///
+/// The whole command line is described here rather than written out twice, so
+/// `--help` and the shell completions are derived from the same table the daemon
+/// dispatches on and cannot drift from it.
 pub const Command = struct {
     /// The name a client spells.
     name: []const u8,
-    run: *const fn (*Context, []const []const u8) anyerror![]const u8,
+    /// One line for the overview and for a command's own help.
+    summary: []const u8,
+    /// Words that may follow the name and select a subcommand: the first
+    /// positional is one of these, and its own arguments and flags apply after
+    /// it. Empty when the command takes plain arguments or none.
+    subcommands: []const Sub = &.{},
+    /// Positional arguments, in order. Brackets in `name` mark one that may be
+    /// left out.
+    args: []const Arg = &.{},
+    /// Flags, accepted anywhere the command accepts arguments.
+    flags: []const Flag = &.{},
+    /// Where the command runs. Null for `help` and `completions`, which this
+    /// binary answers itself and the daemon is never asked about.
+    run: ?*const fn (*Context, []const []const u8) anyerror![]const u8 = null,
 };
 
+/// One subcommand of a `Command`: a literal word, and what it takes.
+pub const Sub = struct {
+    /// The word a client types.
+    name: []const u8,
+    summary: []const u8,
+    args: []const Arg = &.{},
+    flags: []const Flag = &.{},
+};
+
+/// One positional argument.
+pub const Arg = struct {
+    /// How the usage line spells it, brackets included when it may be omitted.
+    name: []const u8,
+    summary: []const u8,
+    /// The values it accepts, when they are a closed set. Empty when the value
+    /// is free-form, in which case there is nothing to complete.
+    values: []const []const u8 = &.{},
+    /// The argument is the name of another command (`help`), so completions come
+    /// from the registry itself.
+    commands: bool = false,
+};
+
+/// One flag. Every flag here stands alone; none takes a value.
+pub const Flag = struct {
+    name: []const u8,
+    summary: []const u8,
+};
+
+/// The mode indicator's indices, as `set_mode_indicator` accepts them: `1`…`7`
+/// select a mode, `-` clears the highlight.
+const mode_indices = [_][]const u8{ "1", "2", "3", "4", "5", "6", "7", "-" };
+
 pub const all = [_]Command{
-    .{ .name = "apply", .run = apply },
-    .{ .name = "status", .run = status },
-    .{ .name = "zen", .run = zenMode },
+    .{
+        .name = "apply",
+        .summary = "apply the bar configuration to a running SketchyBar",
+        .run = apply,
+    },
+    .{
+        .name = "status",
+        .summary = "report what the daemon is doing",
+        .run = status,
+    },
+    .{
+        .name = "zen",
+        .summary = "collapse the bar down to the essentials, or restore it",
+        .subcommands = &.{
+            .{ .name = "on", .summary = "collapse the bar to the essentials" },
+            .{ .name = "off", .summary = "restore everything the bar had" },
+            .{ .name = "toggle", .summary = "flip whatever state the bar is in" },
+        },
+        .run = zenMode,
+    },
 
     // Navigation, reached from the bindings in `~/.skhdrc`.
-    .{ .name = "cycle_space_windows", .run = yabai_ops.cycleSpaceWindows },
-    .{ .name = "cycle_display_spaces", .run = yabai_ops.cycleDisplaySpaces },
-    .{ .name = "cycle_displays", .run = yabai_ops.cycleDisplays },
-    .{ .name = "switch_workspace", .run = yabai_ops.switchWorkspace },
+    .{
+        .name = "cycle_space_windows",
+        .summary = "focus the next window of the current space",
+        .flags = &.{
+            .{ .name = "--reverse", .summary = "go the other way around" },
+        },
+        .run = yabai_ops.cycleSpaceWindows,
+    },
+    .{
+        .name = "cycle_display_spaces",
+        .summary = "focus the neighbouring space on the current display",
+        .flags = &.{
+            .{ .name = "--reverse", .summary = "go to the previous space instead" },
+        },
+        .run = yabai_ops.cycleDisplaySpaces,
+    },
+    .{
+        .name = "cycle_displays",
+        .summary = "focus the neighbouring display",
+        .flags = &.{
+            .{ .name = "--reverse", .summary = "go to the previous display instead" },
+        },
+        .run = yabai_ops.cycleDisplays,
+    },
+    .{
+        .name = "switch_workspace",
+        .summary = "focus the spaces whose labels are listed",
+        .args = &.{
+            .{
+                .name = "<labels>",
+                .summary = "comma-separated space labels; focus lands on one of their display",
+            },
+        },
+        .run = yabai_ops.switchWorkspace,
+    },
 
     // Provisioning, reached from `~/.yabairc` and from the bindings that
     // reload the rules and signals after an edit.
-    .{ .name = "apply_settings", .run = yabai_ops.applySettings },
-    .{ .name = "refresh_rules", .run = yabai_ops.refreshRules },
-    .{ .name = "refresh_signals", .run = yabai_ops.refreshSignals },
-    .{ .name = "clear_signals", .run = yabai_ops.clearSignals },
-    .{ .name = "generate_skhdrc", .run = skhdrc.generate },
+    .{
+        .name = "apply_settings",
+        .summary = "assert every setting, rule and signal kxdesk manages on yabai",
+        .run = yabai_ops.applySettings,
+    },
+    .{
+        .name = "refresh_rules",
+        .summary = "re-provision the yabai rules",
+        .run = yabai_ops.refreshRules,
+    },
+    .{
+        .name = "refresh_signals",
+        .summary = "re-provision the yabai signals",
+        .run = yabai_ops.refreshSignals,
+    },
+    .{
+        .name = "clear_signals",
+        .summary = "drop every configured yabai signal",
+        .run = yabai_ops.clearSignals,
+    },
+    .{
+        .name = "generate_skhdrc",
+        .summary = "regenerate ~/.skhdrc from ~/.skhdrc.template",
+        .run = skhdrc.generate,
+    },
 
     // Appearance.
-    .{ .name = "set_mode_indicator", .run = mode_indicator.setMode },
+    .{
+        .name = "set_mode_indicator",
+        .summary = "set the colour the space icons highlight with",
+        .args = &.{
+            .{
+                .name = "<mode>",
+                .summary = "a mode index, or - for no mode",
+                .values = &mode_indices,
+            },
+        },
+        .run = mode_indicator.setMode,
+    },
 
     // The timer on the bar, and the intervals it ends.
-    .{ .name = "pomodoro", .run = pomodoroTimer },
+    .{
+        .name = "pomodoro",
+        .summary = "run the interval timer on the bar",
+        .subcommands = &.{
+            .{
+                .name = "start",
+                .summary = "start the timer",
+                .args = &.{
+                    .{
+                        .name = "[<minutes>]",
+                        .summary = "length of the work interval for this run; keeps the stored one when omitted",
+                    },
+                },
+            },
+            .{ .name = "pause", .summary = "stop the countdown, keeping the phase" },
+            .{ .name = "reset", .summary = "put the timer back to a fresh work interval" },
+            .{ .name = "skip", .summary = "end the current phase and start the next" },
+            .{
+                .name = "set",
+                .summary = "set the interval lengths",
+                .args = &.{
+                    .{ .name = "<work>", .summary = "length of a work interval, in minutes" },
+                    .{ .name = "[<rest>]", .summary = "length of a rest interval, in minutes; unchanged when omitted" },
+                },
+            },
+            .{ .name = "status", .summary = "say what the timer is doing" },
+        },
+        .run = pomodoroTimer,
+    },
 
     // Durable state, for this daemon and for anything that speaks to it.
-    .{ .name = "state", .run = stateCommand },
+    .{
+        .name = "state",
+        .summary = "read and write the daemon's durable state",
+        .subcommands = &.{
+            .{
+                .name = "get",
+                .summary = "print the value stored under a key",
+                .args = &.{
+                    .{ .name = "<key>", .summary = "the key to read" },
+                },
+            },
+            .{
+                .name = "set",
+                .summary = "store a value under a key",
+                .args = &.{
+                    .{ .name = "<key>", .summary = "the key to write" },
+                    .{ .name = "[<value>]", .summary = "the value; left out with --null" },
+                },
+                .flags = &.{
+                    .{ .name = "--int", .summary = "store the value as a whole number" },
+                    .{ .name = "--real", .summary = "store the value as a decimal number" },
+                    .{ .name = "--null", .summary = "store nothing, whatever the key held before" },
+                },
+            },
+            .{
+                .name = "unset",
+                .summary = "drop a key",
+                .args = &.{
+                    .{ .name = "<key>", .summary = "the key to drop" },
+                },
+            },
+            .{
+                .name = "list",
+                .summary = "print the keys, one per line",
+                .args = &.{
+                    .{ .name = "[<prefix>]", .summary = "only keys starting with this" },
+                },
+            },
+        },
+        .run = stateCommand,
+    },
 
     // This machine as a remote coding server: the 1Password keys served over one
     // ssh-agent, and the ssh and git configuration that points at it.
-    .{ .name = "server-mode", .run = server_mode.serverMode },
+    .{
+        .name = "server-mode",
+        .summary = "serve this machine as a remote coding server",
+        .subcommands = &.{
+            .{ .name = "enter", .summary = "materialize the keys, start the agent, and rewire ssh and git" },
+            .{ .name = "exit", .summary = "put all of that back and wipe the keys" },
+            .{ .name = "status", .summary = "say whether the mode is on, and what it serves" },
+            .{ .name = "refresh", .summary = "exit, then enter: for a key or remote added since" },
+        },
+        .run = server_mode.serverMode,
+    },
 };
 
 /// Index of the command called `name`, or null. An index rather than a pointer,
@@ -290,7 +497,7 @@ fn zenMode(context: *Context, args: []const []const u8) ![]const u8 {
 /// How many items the running SketchyBar has.
 fn itemCount(context: *Context) !usize {
     const Bar = struct {
-        @"items": []const []const u8 = &.{},
+        items: []const []const u8 = &.{},
     };
 
     var response: [64 * 1024]u8 = undefined;
@@ -304,5 +511,5 @@ fn itemCount(context: *Context) !usize {
         .ignore_unknown_fields = true,
         .allocate = .alloc_if_needed,
     }) catch return error.InvalidSketchyBarResponse;
-    return parsed.@"items".len;
+    return parsed.items.len;
 }

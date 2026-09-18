@@ -12,8 +12,12 @@
 //! `kxdesk daemon` is the process itself and is started by launchd, so it starts
 //! before SketchyBar and outlives it: it applies the configuration on startup
 //! when the bar is already up, and otherwise waits for the bar's config script
-//! to ask. `kxdesk version` answers from the binary itself. Every other spelling
-//! is a client that asks the daemon to run the command.
+//! to ask. `version`, `--help`/`help` and `completions` are answered by the
+//! binary itself, so they work when nothing is listening - and a shell setting
+//! itself up has something to complete against before the agent is up. Every
+//! other spelling is a client that asks the daemon to run the command; the
+//! command line is described once, in `commands.zig`, and `cli.zig` draws both
+//! the help and the completions from it.
 
 const std = @import("std");
 
@@ -21,6 +25,7 @@ const app_icons = @import("app_icons.zig");
 const background = @import("background.zig");
 const build_options = @import("build_options");
 const bar_config = @import("bar.zig");
+const cli = @import("cli.zig");
 const commands = @import("commands.zig");
 const control = @import("control.zig");
 const dispatch = @import("dispatch.zig");
@@ -106,7 +111,7 @@ const Daemon = struct {
         defer bar.deinit();
 
         var command_context = self.context(arena_state.allocator(), &bar);
-        if (commands.all[index].run(&command_context, args)) |payload| {
+        if (commands.all[index].run.?(&command_context, args)) |payload| {
             control.postReply(reply_port, .{ .ok = payload });
         } else |err| {
             control.postReply(reply_port, .{ .err = @errorName(err) });
@@ -221,18 +226,102 @@ fn soonest(first: u32, second: u32) u32 {
 
 pub fn main(init: std.process.Init) !void {
     const arguments = try init.minimal.args.toSlice(init.arena.allocator());
-    if (arguments.len < 2) return usage(init.io);
+    const arena = init.arena.allocator();
+    const io = init.io;
+
+    if (arguments.len < 2) {
+        // No command at all: say what there is, on stderr, the way a usage error
+        // does.
+        emit(io, .stderr, try cli.overview(arena));
+        std.process.exit(1);
+    }
 
     const mode = arguments[1];
     if (std.mem.eql(u8, mode, "daemon")) return runDaemon(init);
     // Answered here rather than by the daemon: the version of *this* binary is
-    // the version of the daemon it starts, and it is worth asking when nothing
-    // is answering - which is exactly when a client command cannot be used.
-    if (std.mem.eql(u8, mode, "version")) {
-        emit(init.io, .stdout, build_options.version);
+    // the version of the daemon it starts, and it is worth asking when nothing is
+    // answering - which is exactly when a client command cannot be used. The
+    // same goes for `--help` and the completions, which a shell asks for while it
+    // is being set up, before any daemon need be running.
+    if (std.mem.eql(u8, mode, "version") or std.mem.eql(u8, mode, "--version")) {
+        emit(io, .stdout, build_options.version);
         return;
     }
+    if (std.mem.eql(u8, mode, "--help") or std.mem.eql(u8, mode, "-h")) {
+        emit(io, .stdout, try cli.overview(arena));
+        return;
+    }
+    if (std.mem.eql(u8, mode, "__complete")) return runCompletions(init, arguments[2..]);
+    if (std.mem.eql(u8, mode, "help") or std.mem.eql(u8, mode, "completions")) {
+        return runLocally(init, mode, arguments[2..]);
+    }
+
+    // `kxdesk <command> --help`: answered here so it works with no daemon
+    // listening, and so a command that needs arguments can be asked about without
+    // supplying any.
+    for (arguments[2..]) |argument| {
+        if (std.mem.eql(u8, argument, "--help") or std.mem.eql(u8, argument, "-h")) {
+            return describe(init, mode);
+        }
+    }
+
     return runClient(init, mode, arguments[2..]);
+}
+
+/// The commands this binary answers itself: `help` and `completions`.
+fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8) !void {
+    if (std.mem.eql(u8, mode, "help")) {
+        if (args.len == 0) {
+            emit(init.io, .stdout, try cli.overview(init.arena.allocator()));
+            return;
+        }
+        return describe(init, args[0]);
+    }
+
+    const arena = init.arena.allocator();
+    if (args.len == 0) {
+        const message = try std.fmt.allocPrint(
+            arena,
+            "kxdesk: completions needs a shell: {s}",
+            .{try cli.shellList(arena)},
+        );
+        emit(init.io, .stderr, message);
+        std.process.exit(1);
+    }
+    const text = cli.script(args[0]) orelse {
+        const message = try std.fmt.allocPrint(
+            arena,
+            "kxdesk: no completions for that shell: {s}",
+            .{try cli.shellList(arena)},
+        );
+        emit(init.io, .stderr, message);
+        std.process.exit(1);
+    };
+    writeText(init.io, .stdout, text);
+}
+
+/// Describe one command, or say there is no such command.
+fn describe(init: std.process.Init, name: []const u8) !void {
+    const command = cli.find(name) orelse {
+        const message = try std.fmt.allocPrint(
+            init.arena.allocator(),
+            "kxdesk: no such command: {s}",
+            .{name},
+        );
+        emit(init.io, .stderr, message);
+        std.process.exit(1);
+    };
+    emit(init.io, .stdout, try cli.describe(init.arena.allocator(), command));
+}
+
+/// The completion protocol the generated shell functions call: the index of the
+/// word being completed, then the words after the program name. Hidden, because
+/// `completions` is the interface - these line breaks are not for people.
+fn runCompletions(init: std.process.Init, args: []const []const u8) !void {
+    if (args.len == 0) return;
+    const cword = std.fmt.parseInt(usize, args[0], 10) catch return;
+    const text = try cli.complete(init.arena.allocator(), cword, args[1..]);
+    if (text.len > 0) writeText(init.io, .stdout, text);
 }
 
 /// The daemon: register the service, then serve until the process is killed.
@@ -358,20 +447,20 @@ fn runClient(init: std.process.Init, verb: []const u8, args: []const []const u8)
 
 const Stream = enum { stdout, stderr };
 
-/// Write one line, tolerating a closed pipe: a key binding's terminal is long
-/// gone by the time the daemon answers.
-fn emit(io: std.Io, stream: Stream, text: []const u8) void {
+/// Write text, tolerating a closed pipe: a key binding's terminal is long gone by
+/// the time the daemon answers.
+fn writeText(io: std.Io, stream: Stream, text: []const u8) void {
     const file = switch (stream) {
         .stdout => std.Io.File.stdout(),
         .stderr => std.Io.File.stderr(),
     };
     file.writeStreamingAll(io, text) catch {};
-    file.writeStreamingAll(io, "\n") catch {};
 }
 
-fn usage(io: std.Io) noreturn {
-    emit(io, .stderr, "usage: kxdesk <command> [arguments...]");
-    std.process.exit(1);
+/// Write one line.
+fn emit(io: std.Io, stream: Stream, text: []const u8) void {
+    writeText(io, stream, text);
+    writeText(io, stream, "\n");
 }
 
 fn fail(io: std.Io, err: anyerror) noreturn {

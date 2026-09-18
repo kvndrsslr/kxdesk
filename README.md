@@ -10,6 +10,40 @@ It also owns the state those things share: one SQLite database at
 `~/Library/Application Support/kxdesk/state.db`, reachable from outside with
 `kxdesk state get|set|unset|list`.
 
+## The command line
+
+Every command is described once, in `src/commands.zig` — its name, its
+subcommands, its arguments and its flags — and both the help and the shell
+completions are drawn from that description, so neither can drift from what the
+daemon actually runs:
+
+```sh
+kxdesk --help              # every command, one line each
+kxdesk help <command>      # one command in full
+kxdesk <command> --help    # the same, without running it
+kxdesk completions zsh     # or bash
+```
+
+These are answered by the binary itself rather than the daemon, so they work
+when nothing is listening.
+
+The completion scripts are thin: they hand the words to `kxdesk __complete`,
+which answers from the same description, so a command that is added or changed is
+completed correctly without regenerating anything.
+
+The Homebrew formula installs both of them where each shell already looks —
+`share/zsh/site-functions/_kxdesk` (on `$fpath` through `brew shellenv zsh`) and
+`etc/bash_completion.d/kxdesk` (the `bash-completion` directory) — so a brewed
+kxdesk needs nothing further. For a checkout, or any copy Homebrew did not
+install, evaluate the script instead:
+
+```sh
+eval "$(kxdesk completions zsh)"      # or bash
+```
+
+Fish is not supported: it is not installed here, so its script would ship
+untested.
+
 ## Installing: currently from HEAD, temporarily
 
 **The installed copy is a HEAD build on purpose, while this is still being
