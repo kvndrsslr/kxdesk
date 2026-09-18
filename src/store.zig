@@ -29,7 +29,15 @@ const c = @import("sqlite");
 const platform = @import("platform.zig");
 
 /// Schema version this build produces. Bump this and add a step in `migrate`.
-pub const schema_version: c_int = 1;
+pub const schema_version: c_int = 2;
+
+/// A reading of a provider's cumulative spend.
+pub const Sample = struct {
+    /// When it was taken, in seconds since the epoch.
+    sampled_at: i64,
+    /// What the provider said it had spent in total at that moment.
+    spent_usd: f64,
+};
 
 /// The directory is the owner's alone. The database holds whatever the bar and
 /// the tools that speak to it choose to keep, and SQLite creates its own
@@ -262,6 +270,78 @@ pub const Store = struct {
         return found.toOwnedSlice(gpa) catch return error.NoSpaceLeft;
     }
 
+    // -- cumulative spend, sampled --------------------------------------------
+
+    /// Record what a provider says it has spent in total.
+    pub fn sampleSpend(
+        self: *Store,
+        io: std.Io,
+        provider: []const u8,
+        spent_usd: f64,
+        sampled_at: i64,
+    ) Error!void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const db = self.db orelse return error.Unavailable;
+
+        const statement = try prepare(db,
+            \\INSERT INTO usage_samples (provider, sampled_at, spent_usd) VALUES (?1, ?2, ?3)
+            \\ON CONFLICT(provider, sampled_at) DO UPDATE SET spent_usd = excluded.spent_usd
+        );
+        defer _ = c.sqlite3_finalize(statement);
+        try bindText(statement, 1, provider);
+        if (c.sqlite3_bind_int64(statement, 2, sampled_at) != c.SQLITE_OK) return error.Query;
+        if (c.sqlite3_bind_double(statement, 3, spent_usd) != c.SQLITE_OK) return error.Query;
+        return step(statement);
+    }
+
+    /// The reading closest to `at`, as long as one falls within `tolerance`
+    /// seconds of it. Null means the window cannot be answered from what is on
+    /// file - a daemon that has not been running long enough, or one that was
+    /// asleep across the whole window.
+    pub fn spendAt(
+        self: *Store,
+        io: std.Io,
+        provider: []const u8,
+        at: i64,
+        tolerance: i64,
+    ) Error!?Sample {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const db = self.db orelse return error.Unavailable;
+
+        const statement = try prepare(db,
+            \\SELECT sampled_at, spent_usd FROM usage_samples
+            \\WHERE provider = ?1
+            \\  AND sampled_at BETWEEN ?2 - ?3 AND ?2 + ?3
+            \\ORDER BY abs(sampled_at - ?2)
+            \\LIMIT 1
+        );
+        defer _ = c.sqlite3_finalize(statement);
+        try bindText(statement, 1, provider);
+        if (c.sqlite3_bind_int64(statement, 2, at) != c.SQLITE_OK) return error.Query;
+        if (c.sqlite3_bind_int64(statement, 3, tolerance) != c.SQLITE_OK) return error.Query;
+        if (c.sqlite3_step(statement) != c.SQLITE_ROW) return null;
+
+        return .{
+            .sampled_at = c.sqlite3_column_int64(statement, 0),
+            .spent_usd = c.sqlite3_column_double(statement, 1),
+        };
+    }
+
+    /// Drop readings older than `oldest`, which is a week of window plus a day
+    /// of slack.
+    pub fn pruneSamples(self: *Store, io: std.Io, oldest: i64) Error!void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const db = self.db orelse return error.Unavailable;
+
+        const statement = try prepare(db, "DELETE FROM usage_samples WHERE sampled_at < ?1");
+        defer _ = c.sqlite3_finalize(statement);
+        if (c.sqlite3_bind_int64(statement, 1, oldest) != c.SQLITE_OK) return error.Query;
+        if (c.sqlite3_step(statement) != c.SQLITE_DONE) return error.Query;
+    }
+
     // -- the pieces -----------------------------------------------------------
 
     const Value = union(enum) {
@@ -376,6 +456,21 @@ pub const Store = struct {
                 \\  key     TEXT PRIMARY KEY,
                 \\  value   ANY,
                 \\  updated INTEGER NOT NULL DEFAULT (unixepoch())
+                \\) STRICT
+            );
+        }
+
+        if (current < 2) {
+            // Cumulative spend, sampled. A provider's counter only rises, so the
+            // difference between two readings is exactly what was spent between
+            // them - which is how the usage items answer "the last day and the
+            // last week" for a provider whose own API offers neither.
+            try execOn(db,
+                \\CREATE TABLE usage_samples (
+                \\  provider   TEXT NOT NULL,
+                \\  sampled_at INTEGER NOT NULL,
+                \\  spent_usd  REAL NOT NULL,
+                \\  PRIMARY KEY (provider, sampled_at)
                 \\) STRICT
             );
         }

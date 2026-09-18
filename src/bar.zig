@@ -16,6 +16,7 @@
 const std = @import("std");
 
 const sb = @import("sb.zig");
+const items_usage = @import("items_usage.zig");
 const pomodoro = @import("pomodoro.zig");
 const Props = @import("props.zig").Props;
 const theme = @import("theme.zig");
@@ -354,6 +355,100 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("--subscribe");
     try c.arg("github.template");
     try c.arg("mouse.clicked");
+
+    // Provider balances: what is left on NeuralWatt and on OpenRouter. One
+    // background task fetches both, on the daemon's own clock rather than on an
+    // item's `update_freq` - a refresh that pushed to an item which was
+    // subscribed to updates came straight back as another event. Hovering either
+    // shows the last day and the last week; clicking opens its usage page.
+    try c.arg("--add");
+    try c.arg("item");
+    try c.arg(items_usage.neuralwatt_item);
+    try c.arg("right");
+    var neuralwatt: Props = .{};
+    neuralwatt.raw("drawing=on");
+    try neuralwatt.num("associated_display", 1);
+    // `dynamic` is SketchyBar's automatic width, and the default - but a
+    // property an earlier configuration set stays set otherwise, which is the
+    // same trap the empty `script=` and `click_script=` below exist for.
+    neuralwatt.raw("width=dynamic");
+    try neuralwatt.fmt("icon.font={s}:Bold:14.0", .{theme.font});
+    try neuralwatt.fmt("icon={s}", .{theme.glyph.neuralwatt});
+    // Dim until the first answer arrives: the colour is the daemon's to set, and
+    // a reading that stopped refreshing is dimmed rather than left bright.
+    try neuralwatt.color("icon.color", theme.dark_grey);
+    neuralwatt.raw("label=?");
+    neuralwatt.raw(clear_script);
+    neuralwatt.raw(clear_click_script);
+    try neuralwatt.text("mach_helper", config.helper);
+    try c.set(items_usage.neuralwatt_item, neuralwatt.slice());
+    try c.arg("--subscribe");
+    try c.arg(items_usage.neuralwatt_item);
+    try c.arg("mouse.entered");
+    try c.arg("mouse.exited");
+    try c.arg("mouse.exited.global");
+    try c.arg("mouse.clicked");
+
+    try c.arg("--add");
+    try c.arg("item");
+    try c.arg(items_usage.openrouter_item);
+    try c.arg("right");
+    var openrouter: Props = .{};
+    openrouter.raw("drawing=on");
+    try openrouter.num("associated_display", 1);
+    openrouter.raw("width=dynamic");
+    try openrouter.fmt("icon.font={s}:Bold:14.0", .{theme.font});
+    try openrouter.fmt("icon={s}", .{theme.glyph.openrouter});
+    try openrouter.color("icon.color", theme.dark_grey);
+    openrouter.raw("label=?");
+    openrouter.raw(clear_script);
+    openrouter.raw(clear_click_script);
+    try openrouter.text("mach_helper", config.helper);
+    try c.set(items_usage.openrouter_item, openrouter.slice());
+    try c.arg("--subscribe");
+    try c.arg(items_usage.openrouter_item);
+    try c.arg("mouse.entered");
+    try c.arg("mouse.exited");
+    try c.arg("mouse.exited.global");
+    try c.arg("mouse.clicked");
+
+    // One popup row per window, per provider. They are declared rather than
+    // cloned, because the number of rows does not vary.
+    for ([_]struct { parent: []const u8, color: theme.Color }{
+        .{ .parent = items_usage.neuralwatt_item, .color = theme.green },
+        .{ .parent = items_usage.openrouter_item, .color = theme.aqua },
+    }) |provider| {
+        for ([_]struct { suffix: []const u8, nominal: []const u8 }{
+            .{ .suffix = "day", .nominal = "24h" },
+            .{ .suffix = "week", .nominal = "7d" },
+        }) |row| {
+            var name_buffer: [48]u8 = undefined;
+            const name = try std.fmt.bufPrint(&name_buffer, "{s}.{s}", .{ provider.parent, row.suffix });
+
+            var position_buffer: [48]u8 = undefined;
+            const position = try std.fmt.bufPrint(&position_buffer, "popup.{s}", .{provider.parent});
+
+            try c.arg("--add");
+            try c.arg("item");
+            try c.arg(name);
+            try c.arg(position);
+
+            var detail: Props = .{};
+            detail.raw("drawing=on");
+            try detail.num("background.corner_radius", 12);
+            try detail.num("background.padding_left", 7);
+            try detail.num("background.padding_right", 7);
+            try detail.color("background.color", theme.black);
+            detail.raw("background.drawing=off");
+            try detail.num("label.padding_left", 7);
+            try detail.num("label.padding_right", 7);
+            try detail.color("label.color", provider.color);
+            try detail.fmt("label={s} -", .{row.nominal});
+            detail.raw(clear_script);
+            detail.raw(clear_click_script);
+            try c.set(name, detail.slice());
+        }
+    }
 
     // Aliases to other applications' status items.
     try alias(c, "Little Snitch Agent,Item-0", "network_alias", &.{

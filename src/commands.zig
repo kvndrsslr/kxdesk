@@ -8,6 +8,7 @@
 const std = @import("std");
 
 const bar_config = @import("bar.zig");
+const items_usage = @import("items_usage.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
 const sb = @import("sb.zig");
@@ -208,8 +209,10 @@ fn stateCommand(context: *Context, args: []const []const u8) ![]const u8 {
 fn apply(context: *Context, _: []const []const u8) ![]const u8 {
     try context.ensureBar();
     try bar_config.apply(context.bar, .{ .helper = context.event_service });
-    // A freshly built bar knows nothing about the state the last one was in.
+    // A freshly built bar knows nothing about the state the last one was in, and
+    // the provider items have just been given placeholder labels.
     restoreState(context);
+    items_usage.invalidate();
     return "";
 }
 

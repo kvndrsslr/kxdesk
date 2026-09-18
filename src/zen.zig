@@ -17,6 +17,8 @@ const simple_items = [_][]const u8{
     "github.bell",
     "separator",
     "brew",
+    "neuralwatt",
+    "openrouter",
     "/.*_alias/",
 };
 

@@ -190,7 +190,17 @@ fn onTimer() callconv(.c) u32 {
     // the bar at all, which is the point of the timer living in the daemon.
     const bar = if (daemon.present.load(.monotonic)) daemon.bar else null;
     daemon.pomodoro.tick(daemon.io, bar);
-    return daemon.pomodoro.waitMs(daemon.io);
+
+    // Two things want the clock, and the loop wakes for whichever is sooner.
+    return soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage());
+}
+
+/// The sooner of two waits, in the loop's convention that 0 means "nothing
+/// scheduled" rather than "now".
+fn soonest(first: u32, second: u32) u32 {
+    if (first == 0) return second;
+    if (second == 0) return first;
+    return @min(first, second);
 }
 
 pub fn main(init: std.process.Init) !void {

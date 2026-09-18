@@ -20,12 +20,26 @@ const background = @import("background.zig");
 const items_brew = @import("items_brew.zig");
 const items_github = @import("items_github.zig");
 const items_system = @import("items_system.zig");
+const items_usage = @import("items_usage.zig");
 const items_yabai = @import("items_yabai.zig");
 const platform = @import("platform.zig");
+const Props = @import("props.zig").Props;
 const pomodoro = @import("pomodoro.zig");
 const state = @import("store.zig");
 const sb = @import("sb.zig");
 const zen = @import("zen.zig");
+
+/// The popup rows under an item are shown and hidden, never toggled: what a
+/// hover means is unambiguous.
+const Popup = enum { show, hide };
+
+/// Open a URL with the user's default handler - what a click on a provider item
+/// asks for. A free function because it needs nothing of the dispatcher.
+fn openPage(url: []const u8) !void {
+    var target: [std.fs.max_path_bytes]u8 = undefined;
+    const terminated = try std.fmt.bufPrintZ(&target, "{s}", .{url});
+    if (!platform.sb_open_url(terminated.ptr)) return error.CouldNotOpenUrl;
+}
 
 /// Space items are named `space.<index>`, and the index is the space's `SID`.
 const space_prefix = "space.";
@@ -48,6 +62,7 @@ pub const Dispatcher = struct {
     /// At most one of each refresh in flight.
     brew: background.Slot = .{},
     github: background.Slot = .{},
+    usage: background.Slot = .{},
 
     pub fn handle(self: *Dispatcher, block: [*:0]const u8) !void {
         const env = sb.Env{ .block = block };
@@ -78,6 +93,24 @@ pub const Dispatcher = struct {
         // background tasks rather than on this loop.
         if (std.mem.eql(u8, name, items_brew.item)) {
             self.brew.request(self.io, items_brew.refresh, .{ self.io, self.gpa });
+            return;
+        }
+        // The provider items are refreshed by the receive loop's clock, not by
+        // their own events: a refresh pushes labels back to the items, and an
+        // item that is subscribed to updates turns that push into another event.
+        // Here only the mouse matters.
+        if (std.mem.eql(u8, name, items_usage.neuralwatt_item) or
+            std.mem.eql(u8, name, items_usage.openrouter_item))
+        {
+            const sender = env.getOrEmpty("SENDER");
+            if (std.mem.eql(u8, sender, "mouse.entered")) {
+                return self.setUsagePopup(name, .show);
+            }
+            if (std.mem.eql(u8, sender, "mouse.exited") or
+                std.mem.eql(u8, sender, "mouse.exited.global"))
+            {
+                return self.setUsagePopup(name, .hide);
+            }
             return;
         }
         if (std.mem.eql(u8, name, items_github.bell)) {
@@ -115,6 +148,27 @@ pub const Dispatcher = struct {
     fn click(self: *Dispatcher, name: []const u8, env: sb.Env) !void {
         if (std.mem.eql(u8, name, "calendar")) return self.toggleZen();
         if (std.mem.eql(u8, name, pomodoro.item)) return self.clickPomodoro(env);
+        // A provider's number opens that provider's usage page.
+        if (std.mem.eql(u8, name, items_usage.neuralwatt_item)) return openPage(items_usage.neuralwatt_url);
+        if (std.mem.eql(u8, name, items_usage.openrouter_item)) return openPage(items_usage.openrouter_url);
+        // The provider items are refreshed by the receive loop's clock, not by
+        // their own events: a refresh pushes labels back to the items, and an
+        // item that is subscribed to updates turns that push into another event.
+        // Here only the mouse matters.
+        if (std.mem.eql(u8, name, items_usage.neuralwatt_item) or
+            std.mem.eql(u8, name, items_usage.openrouter_item))
+        {
+            const sender = env.getOrEmpty("SENDER");
+            if (std.mem.eql(u8, sender, "mouse.entered")) {
+                return self.setUsagePopup(name, .show);
+            }
+            if (std.mem.eql(u8, sender, "mouse.exited") or
+                std.mem.eql(u8, sender, "mouse.exited.global"))
+            {
+                return self.setUsagePopup(name, .hide);
+            }
+            return;
+        }
         if (std.mem.eql(u8, name, items_github.bell)) {
             return items_github.setPopup(self.bar, .toggle);
         }
@@ -132,6 +186,27 @@ pub const Dispatcher = struct {
                 name[space_prefix.len..];
             return self.yabai(&.{ "-m", "space", "--focus", sid });
         }
+    }
+
+    /// Start a usage refresh if the clock says one is due, and report how long
+    /// the receive loop may wait next. Called from that loop's timer.
+    pub fn pollUsage(self: *Dispatcher) u32 {
+        if (items_usage.due(self.io)) {
+            self.usage.request(self.io, items_usage.refresh, .{ self.io, self.gpa, self.store });
+            return 1000;
+        }
+        return items_usage.waitMs(self.io);
+    }
+
+    /// Show or hide the rows under one of the provider items.
+    fn setUsagePopup(self: *Dispatcher, name: []const u8, wanted: Popup) !void {
+        var props: Props = .{};
+        switch (wanted) {
+            .show => props.raw("popup.drawing=on"),
+            .hide => props.raw("popup.drawing=off"),
+        }
+        try self.bar.set(name, props.slice());
+        try self.bar.commit();
     }
 
     /// The pomodoro item: a left click starts or stops the timer, a right click
