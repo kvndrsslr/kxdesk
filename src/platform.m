@@ -486,25 +486,6 @@ bool sb_osa_run(void* script, char* out, size_t cap) {
   return [value getCString:out maxLength:cap encoding:NSUTF8StringEncoding];
 }
 
-bool sb_self_path(char* out, size_t cap) {
-  uint32_t size = (uint32_t)cap;
-  if (_NSGetExecutablePath(out, &size) != 0) return false;
-
-  // Deliberately not `realpath`: the point of this path is that it keeps
-  // working, and Homebrew installs a versioned Cellar directory behind a
-  // `bin/` symlink that the next upgrade replaces. Resolving the symlink would
-  // write the Cellar path into the file that names this binary - the generated
-  // `~/.skhdrc` - and break every binding the first time the formula is
-  // upgraded. What is needed is only an absolute path.
-  if (out[0] == '/') return true;
-
-  char cwd[PATH_MAX];
-  if (!getcwd(cwd, sizeof(cwd))) return false;
-
-  int written = snprintf(out, cap, "%s/%s", cwd, out);
-  return written > 0 && (size_t)written < cap;
-}
-
 bool sb_open_url(const char* url) {
   NSString* text = [NSString stringWithUTF8String:url];
   if (!text) return false;

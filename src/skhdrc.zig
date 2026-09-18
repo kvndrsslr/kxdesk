@@ -16,22 +16,26 @@ const platform = @import("platform.zig");
 const Context = commands.Context;
 const Allocator = std.mem.Allocator;
 
+/// What every expansion in the generated file calls this tool.
+///
+/// Bare, not a path: a binding runs under the `PATH` that resolves the `yabai`,
+/// `kitty`, `open` and `screencapture` named in the same file, so it resolves
+/// this too - and a path would only pin the file to one installation.
+const command = "kxdesk";
+
 /// Longest `HOME`, and therefore template/output path, we will act on.
 const home_capacity = 256;
-/// Path buffer for this binary; plenty for the longest `/opt/homebrew/...` name.
-const self_path_capacity = 4096;
 /// A hand-maintained binding list; refuse to read something absurd instead of
 /// truncating it silently.
 const source_limit: std.Io.Limit = .limited(1 << 20);
 
 /// Regenerate `~/.skhdrc` from `~/.skhdrc.template`. No options: the
-/// transformation is fully determined by the template and this binary's path,
-/// both resolved like the shell did (`${HOME}`, `$0`).
+/// transformation is fully determined by the template, and the file is written
+/// under `${HOME}` as the shell wrote it.
 pub fn generate(context: *Context, args: []const []const u8) anyerror![]const u8 {
     _ = args;
 
     const home_dir = home(context.arena) orelse return error.NoHomeDirectory;
-    const binary = selfPath(context.arena) orelse return error.NoSelfPath;
 
     const template_path = try std.fmt.allocPrint(context.arena, "{s}/.skhdrc.template", .{home_dir});
     const output_path = try std.fmt.allocPrint(context.arena, "{s}/.skhdrc", .{home_dir});
@@ -39,7 +43,7 @@ pub fn generate(context: *Context, args: []const []const u8) anyerror![]const u8
     const source = try std.Io.Dir.cwd().readFileAlloc(context.io, template_path, context.arena, source_limit);
 
     var output = std.ArrayList(u8).empty;
-    try expand(source, binary, context.arena, &output);
+    try expand(source, context.arena, &output);
 
     // Truncates, as the shell's `>` did: the file is always the template's
     // full expansion, never a patch over a previous one.
@@ -50,21 +54,23 @@ pub fn generate(context: *Context, args: []const []const u8) anyerror![]const u8
 }
 
 /// Expand the template's abbreviations into skhd's configuration language,
-/// appending to `out`. `binary` is substituted quoted — every expansion lands
-/// on a shell command line — wherever the template asks for the helper: `:::`
-/// and `&&&` directly, the `:=>`-family tokens after their `skhd -k escape`
+/// appending to `out`.
+///
+/// The helper is named by its bare command name wherever the template asks for
+/// it - `:::`, `&&&`, the `:=>`-family tokens after their `skhd -k escape`
 /// prefixes, and once per line for a leading `<<<` along with the mode list it
-/// expands to. Comment and empty lines are dropped, matching the shell's sed
-/// order, which kept `;;;` as the last substitution on every kept line.
+/// expands to. Not by a path: a binding runs under the same `PATH` that lets
+/// `yabai`, `kitty` and `open` resolve in the very same file, so the daemon is
+/// on it too, and an absolute path would only pin the file to whichever
+/// directory this binary happens to live in.
+///
+/// Comment and empty lines are dropped, matching the shell's sed order, which
+/// kept `;;;` as the last substitution on every kept line.
 pub fn expand(
     source: []const u8,
-    binary: []const u8,
     allocator: Allocator,
     out: *std.ArrayList(u8),
 ) Allocator.Error!void {
-    const quoted = try std.fmt.allocPrint(allocator, "\"{s}\"", .{binary});
-    defer allocator.free(quoted);
-
     const modes = try modeList(source, allocator);
     defer allocator.free(modes);
 
@@ -73,18 +79,17 @@ pub fn expand(
     // and leave the escape prefixes mangled. The order is the shell's, whose
     // sed expressions ran in this sequence.
     // Each replacement is transcribed from the matching sed expression in
-    // `__generate_skhdrc`, including where the binary goes: `:::=>`, `:::==>`,
+    // `__generate_skhdrc`, including where the helper goes: `:::=>`, `:::==>`,
     // `:::` and `&&&` name it, while `:=>` and `:==>` do not — the template
-    // line's own command follows them. The strings are built once here and
-    // freed with the arena; the per-line work allocates its own copies.
+    // line's own command follows them.
     const Substitution = struct { needle: []const u8, replacement: []const u8 };
     const substitutions = [_]Substitution{
-        .{ .needle = ":::=>", .replacement = try std.fmt.allocPrint(allocator, ": skhd -k escape && {s}", .{quoted}) },
-        .{ .needle = ":::==>", .replacement = try std.fmt.allocPrint(allocator, ": skhd -k escape && skhd -k escape && {s}", .{quoted}) },
+        .{ .needle = ":::=>", .replacement = ": skhd -k escape && " ++ command },
+        .{ .needle = ":::==>", .replacement = ": skhd -k escape && skhd -k escape && " ++ command },
         .{ .needle = ":=>", .replacement = ": skhd -k escape && " },
         .{ .needle = ":==>", .replacement = ": skhd -k escape && skhd -k escape && " },
-        .{ .needle = ":::", .replacement = try std.fmt.allocPrint(allocator, ": {s}", .{quoted}) },
-        .{ .needle = "&&&", .replacement = try std.fmt.allocPrint(allocator, "&& {s}", .{quoted}) },
+        .{ .needle = ":::", .replacement = ": " ++ command },
+        .{ .needle = "&&&", .replacement = "&& " ++ command },
         .{ .needle = ";;;", .replacement = "&& skhd -k escape" },
     };
 
@@ -222,10 +227,4 @@ fn home(arena: Allocator) ?[]const u8 {
     return arena.dupe(u8, std.mem.sliceTo(&buffer, 0)) catch null;
 }
 
-/// What the shell resolved as `$0`, the binary the generated file names so it
-/// never depends on `PATH`.
-fn selfPath(arena: Allocator) ?[]const u8 {
-    var buffer: [self_path_capacity]u8 = undefined;
-    if (!platform.sb_self_path(&buffer, buffer.len)) return null;
-    return arena.dupe(u8, std.mem.sliceTo(&buffer, 0)) catch null;
-}
+

@@ -132,7 +132,3 @@ void sb_osa_release(void* script);
 
 /// Open a URL with the user's default handler.
 bool sb_open_url(const char* url);
-
-/// Absolute path of this executable, for a file that has to name it without
-/// relying on `PATH` - the generated `~/.skhdrc`.
-bool sb_self_path(char* out, size_t cap);
