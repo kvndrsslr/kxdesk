@@ -152,7 +152,10 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator, helper: []const u8) anyerror!
     const count = notifications.len;
 
     var props: Props = .{};
-    try props.fmt("icon={s}", .{if (count == 0) theme.glyph.bell else theme.glyph.bell_dot});
+    // One icon for both states: the Octocat says what this item is about, and
+    // whether there is something new is already said twice over - by the count,
+    // and by the icon turning red when a notification matters.
+    try props.fmt("icon={s}", .{theme.glyph.github});
     try props.fmt("label={d}", .{count});
     try props.color("icon.color", theme.blue);
     try client.set(bell, props.slice());

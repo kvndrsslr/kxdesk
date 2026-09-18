@@ -44,6 +44,10 @@ pub const glyph = struct {
     pub const loading = "\u{100587}";
     pub const bell = "\u{1002da}";
     pub const bell_dot = "\u{100757}";
+    /// The Octocat, for the GitHub item: it says what the notification count
+    /// belongs to far better than a generic bell does. Checked by rendering it,
+    /// since several plausible codepoints draw nothing at all.
+    pub const github = "\u{f09b}";
     pub const brew = "\u{10041b}";
     /// Shown by the brew item when nothing is outdated.
     pub const brew_current = "\u{100185}";

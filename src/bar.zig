@@ -314,12 +314,14 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     bell.raw("drawing=on");
     try bell.num("update_freq", 180);
     try bell.fmt("icon.font={s}:Bold:15.0", .{theme.font});
-    try bell.fmt("icon={s}", .{theme.glyph.bell});
+    try bell.fmt("icon={s}", .{theme.glyph.github});
     try bell.color("icon.color", theme.blue);
     try bell.fmt("label={s}", .{theme.glyph.loading});
     try bell.color("label.highlight_color", theme.blue);
     bell.raw("popup.align=right");
     try bell.num("width", 30);
+    // A little air on the left, where the provider balances now sit against it.
+    try bell.num("background.padding_left", 12);
     try bell.num("associated_display", 1);
     bell.raw(clear_script);
     bell.raw(clear_click_script);
