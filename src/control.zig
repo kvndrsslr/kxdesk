@@ -143,18 +143,24 @@ pub fn decode(reply: []const u8) ?Answer {
 /// it only elapses when the daemon is wedged.
 pub const reply_timeout_ms: u32 = 30_000;
 
-/// launchd label of the installed agent, used to start the daemon when a
-/// command arrives and nothing is listening.
-const agent = "homebrew.mxcl.kxdesk";
+/// launchd labels a `brew services` agent for this formula can carry.
+///
+/// Homebrew names an agent `sh.brew.<name>` and keeps `homebrew.mxcl.<name>` for
+/// agents already loaded under the older spelling: those are the two it tries
+/// itself. Which one applies is a property of the deployment, so both are
+/// offered and the first one launchd accepts wins.
+const agent_labels = [_][]const u8{ "sh.brew.kxdesk", "homebrew.mxcl.kxdesk" };
 
-/// How long to wait for a daemon that was just started to publish its name.
+/// How long to wait for a daemon that was just started to publish its name, and
+/// how often to look.
 const start_timeout_ms: u32 = 2_000;
+const start_poll_ms: u32 = 50;
 
 /// Ask the daemon to run `verb` with `args`, returning its reply.
 ///
-/// The daemon is a launchd agent, so a client that finds nothing listening
-/// starts one and waits briefly instead of failing: a key binding or a config
-/// script should not have to care whether the agent happens to be up.
+/// The daemon is a launchd agent, so a client that finds nothing listening asks
+/// launchd to start it and waits briefly instead of failing: a key binding or a
+/// config script should not have to care whether the agent happens to be up.
 pub fn submit(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -200,17 +206,20 @@ fn frameRequest(gpa: std.mem.Allocator, verb: []const u8, args: []const []const 
     return message.toOwnedSlice(gpa);
 }
 
-/// Resolve the daemon's control service, starting the agent when it is not
-/// running.
+/// Resolve the daemon's control service, asking launchd to start the agent when
+/// nothing is listening.
 fn connect(gpa: std.mem.Allocator, io: std.Io) !u32 {
     const existing = platform.sb_bootstrap_lookup(sb.control_service);
     if (existing != 0) return existing;
 
-    try startAgent(gpa, io);
+    // Nothing is answering. launchd owns the agent, so it is asked to start it -
+    // and when it will not (the agent was never installed, or its label is one
+    // this machine does not use), there is nothing to wait for.
+    if (!try startAgent(gpa, io)) return error.DaemonUnavailable;
 
     var waited: u32 = 0;
-    while (waited < start_timeout_ms) : (waited += 50) {
-        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    while (waited < start_timeout_ms) : (waited += start_poll_ms) {
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(start_poll_ms), .awake) catch {};
         const port = platform.sb_bootstrap_lookup(sb.control_service);
         if (port != 0) return port;
     }
@@ -218,19 +227,28 @@ fn connect(gpa: std.mem.Allocator, io: std.Io) !u32 {
     return error.DaemonUnavailable;
 }
 
-/// Ask launchd to start the agent. A missing launchctl, a machine where the
-/// agent was never installed, or a launchd that refuses are all the same
-/// outcome: the caller then reports that nothing is listening.
-fn startAgent(gpa: std.mem.Allocator, io: std.Io) !void {
-    const launchctl = exec.path(gpa, "launchctl") catch return;
+/// Ask launchd to start the agent, reporting whether it accepted the request.
+/// A refused `kickstart` means no daemon is coming, which is worth knowing
+/// immediately rather than after the retry window has expired.
+fn startAgent(gpa: std.mem.Allocator, io: std.Io) !bool {
+    const launchctl = exec.path(gpa, "launchctl") catch return false;
     defer gpa.free(launchctl);
 
-    const target = try std.fmt.allocPrint(gpa, "gui/{d}/{s}", .{ platform.sb_uid(), agent });
-    defer gpa.free(target);
+    for (agent_labels) |label| {
+        const target = try std.fmt.allocPrint(gpa, "gui/{d}/{s}", .{ platform.sb_uid(), label });
+        defer gpa.free(target);
 
-    const result = std.process.run(gpa, io, .{
-        .argv = &.{ launchctl, "kickstart", "-k", target },
-    }) catch return;
-    defer gpa.free(result.stdout);
-    defer gpa.free(result.stderr);
+        const result = std.process.run(gpa, io, .{
+            .argv = &.{ launchctl, "kickstart", "-k", target },
+        }) catch continue;
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+
+        switch (result.term) {
+            .exited => |status| if (status == 0) return true,
+            else => {},
+        }
+    }
+
+    return false;
 }
