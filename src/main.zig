@@ -12,12 +12,14 @@
 //! `kxdesk daemon` is the process itself and is started by launchd, so it starts
 //! before SketchyBar and outlives it: it applies the configuration on startup
 //! when the bar is already up, and otherwise waits for the bar's config script
-//! to ask. Every other spelling is a client.
+//! to ask. `kxdesk version` answers from the binary itself. Every other spelling
+//! is a client that asks the daemon to run the command.
 
 const std = @import("std");
 
 const app_icons = @import("app_icons.zig");
 const background = @import("background.zig");
+const build_options = @import("build_options");
 const bar_config = @import("bar.zig");
 const commands = @import("commands.zig");
 const control = @import("control.zig");
@@ -178,6 +180,13 @@ pub fn main(init: std.process.Init) !void {
 
     const mode = arguments[1];
     if (std.mem.eql(u8, mode, "daemon")) return runDaemon(init);
+    // Answered here rather than by the daemon: the version of *this* binary is
+    // the version of the daemon it starts, and it is worth asking when nothing
+    // is answering - which is exactly when a client command cannot be used.
+    if (std.mem.eql(u8, mode, "version")) {
+        emit(init.io, .stdout, build_options.version);
+        return;
+    }
     return runClient(init, mode, arguments[2..]);
 }
 

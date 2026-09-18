@@ -8,7 +8,6 @@
 const std = @import("std");
 
 const bar_config = @import("bar.zig");
-const build_options = @import("build_options");
 const mode_indicator = @import("mode_indicator.zig");
 const sb = @import("sb.zig");
 const skhdrc = @import("skhdrc.zig");
@@ -53,7 +52,6 @@ pub const Command = struct {
 pub const all = [_]Command{
     .{ .name = "apply", .run = apply },
     .{ .name = "status", .run = status },
-    .{ .name = "version", .run = version },
     .{ .name = "zen", .run = zenMode },
 
     // Navigation, reached from the bindings in `~/.skhdrc`.
@@ -107,12 +105,6 @@ fn status(context: *Context, _: []const []const u8) ![]const u8 {
         if (present) "connected" else "gone",
         items,
     });
-}
-
-/// The version this binary was built from, taken from `build.zig.zon` by the
-/// build script so that the manifest stays the one place it is written.
-fn version(_: *Context, _: []const []const u8) ![]const u8 {
-    return build_options.version;
 }
 
 /// Collapse the bar down to the essentials, or restore it. The calendar's click
