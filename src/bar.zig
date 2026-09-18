@@ -49,6 +49,10 @@ const item_padding = 4;
 /// windows hold the same number of samples and the same stretch of time.
 const graph_width = 60;
 
+/// The battery ring's diameter, in points. A ring takes exactly this much of the
+/// bar, and the bar is 24 points tall.
+const battery_ring_diameter = 20;
+
 /// Give an item the bar's standard padding on both sides.
 fn pad(props: *Props, points: u32) !void {
     try props.num("padding_left", points);
@@ -283,6 +287,36 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("system_woke");
     try c.arg("power_source_change");
 
+    // The ring, drawn only while the battery is charging: its value is the charge
+    // and the battery's own level glyph sits inside it as the marker, so it reads
+    // as the battery filling. It takes exactly its diameter in the bar and is moved
+    // against the battery rather than left to the order it was added in.
+    try c.arg("--add");
+    try c.arg("ring");
+    try c.arg(items_system.ring_item);
+    try c.arg("right");
+    try c.arg(std.fmt.comptimePrint("{d}", .{battery_ring_diameter}));
+    var ring: Props = .{};
+    ring.raw("drawing=off");
+    try pad(&ring, item_padding);
+    try ring.color("ring.color", theme.green);
+    try ring.color("ring.track_color", theme.dark_grey);
+    // The diameter is given to `--add` and also set here: that argument only lands
+    // when the item is created, and an item that outlives the configuration keeps
+    // whatever a later `--set` gave it - which is the same trap `script` and
+    // `click_script` fall into.
+    try ring.num("ring.width", battery_ring_diameter);
+    try ring.num("ring.line_width", 2);
+    ring.raw("ring.marker.position=center");
+    try ring.fmt("ring.marker.font={s}:Bold:12.0", .{theme.font});
+    ring.raw(clear_script);
+    ring.raw(clear_click_script);
+    try c.set(items_system.ring_item, ring.slice());
+    try c.arg("--move");
+    try c.arg(items_system.ring_item);
+    try c.arg("after");
+    try c.arg("battery");
+
     // Calendar: formatted in-process from the system clock.
     try c.arg("--add");
     try c.arg("item");
@@ -381,7 +415,13 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try brew.text("mach_helper", config.helper);
     try brew.fmt("icon={s}", .{theme.glyph.brew});
     try brew.num("update_freq", 3600);
-    brew.raw("label=?");
+    // The number is a badge here too, for the same reason: a count with two digits
+    // must not widen the item and shift what is beside it.
+    brew.raw("label.drawing=off");
+    brew.raw("label=");
+    try brew.fmt("icon.badge={s}", .{"?"});
+    try brew.fmt("icon.badge.font={s}:Bold:9.0", .{theme.font});
+    brew.raw("icon.badge.anchor=top_right");
     try brew.num("associated_display", 1);
     brew.raw("drawing=on");
     try c.set("brew", brew.slice());
@@ -400,8 +440,20 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try bell.fmt("icon.font={s}:Bold:15.0", .{theme.font});
     try bell.fmt("icon={s}", .{theme.glyph.github});
     try bell.color("icon.color", theme.blue);
-    try bell.fmt("label={s}", .{theme.glyph.loading});
-    try bell.color("label.highlight_color", theme.blue);
+    // The count is a badge on the icon rather than the item's label. A badge is
+    // drawn over its parent and takes no room in the bar, so the item is the width
+    // of the bell however long the number gets and nothing beside it shifts. The
+    // label still has to be emptied and switched off, because an item outlives the
+    // configuration that set it.
+    //
+    // `badge.*` and the `ring` below come from the local SketchyBar fork, not from
+    // a release: an upstream bar rejects the unknown properties and draws no badge,
+    // which costs the count and nothing else.
+    bell.raw("label.drawing=off");
+    bell.raw("label=");
+    try bell.fmt("icon.badge={s}", .{theme.glyph.loading});
+    try bell.fmt("icon.badge.font={s}:Bold:9.0", .{theme.font});
+    bell.raw("icon.badge.anchor=top_right");
     bell.raw("popup.align=right");
     // Dynamic rather than the fixed width an earlier configuration gave it: a
     // fixed width swallows the padding, which is what made this item overlap the

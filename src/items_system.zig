@@ -27,6 +27,9 @@ pub const gpu_item = "gpu";
 /// averages over: shorter and the line twitches, longer and it lags.
 const cpu_cadence_seconds: i64 = 1;
 
+/// The ring that shows the battery's charge while it is charging.
+pub const ring_item = "battery.ring";
+
 pub const Updater = struct {
     bar: *sb.Client,
     clock_icon: [64]u8 = undefined,
@@ -56,6 +59,17 @@ pub const Updater = struct {
         try props.fmt("icon={s}", .{icon});
         try props.fmt("label={d}%", .{percent});
         try self.bar.set("battery", props.slice());
+
+        // The ring is the charging state's own piece of the bar: the charge is its
+        // value and the same level glyph sits inside it as the marker. It is drawn
+        // only while the battery is actually taking power, and this travels in the
+        // same batch as the item's own settings.
+        var ring: Props = .{};
+        ring.raw(if (charging) "drawing=on" else "drawing=off");
+        try ring.fmt("ring.value={d:.2}", .{@as(f64, @floatFromInt(percent)) / 100.0});
+        try ring.fmt("ring.marker={s}", .{icon});
+        try self.bar.set(ring_item, ring.slice());
+
         try self.bar.commit();
     }
 

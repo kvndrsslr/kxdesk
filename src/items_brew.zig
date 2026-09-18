@@ -33,10 +33,10 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator) anyerror!void {
 
     var props: Props = .{};
     if (count == 0) {
-        try props.fmt("label={s}", .{theme.glyph.brew_current});
+        try props.fmt("icon.badge={s}", .{theme.glyph.brew_current});
         try props.color("icon.color", theme.green);
     } else {
-        try props.fmt("label={d}", .{count});
+        try props.fmt("icon.badge={d}", .{count});
         try props.color("icon.color", outdatedColor(count));
     }
 

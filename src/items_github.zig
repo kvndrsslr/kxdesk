@@ -156,7 +156,7 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator, helper: []const u8) anyerror!
     // whether there is something new is already said twice over - by the count,
     // and by the icon turning red when a notification matters.
     try props.fmt("icon={s}", .{theme.glyph.github});
-    try props.fmt("label={d}", .{count});
+    try props.fmt("icon.badge={d}", .{count});
     try props.color("icon.color", theme.blue);
     try client.set(bell, props.slice());
 
@@ -195,8 +195,8 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator, helper: []const u8) anyerror!
         try client.arg("tanh");
         try client.arg("15");
         var nudge: Props = .{};
-        try nudge.num("label.y_offset", 5);
-        try nudge.num("label.y_offset", 0);
+        try nudge.num("icon.badge.y_offset", 5);
+        try nudge.num("icon.badge.y_offset", 0);
         try client.set(bell, nudge.slice());
         try client.commit();
     }
@@ -361,9 +361,9 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-/// The bell's current label, used to notice that the count grew. A label that
-/// is not a number leaves this unknown, and then no nudge is emitted - which is
-/// what the shell's failing numeric comparison did too.
+/// The bell's current badge, used to notice that the count grew. A badge that is
+/// not a number leaves this unknown, and then no nudge is emitted - which is what
+/// the shell's failing numeric comparison did too.
 fn previousCount(client: *sb.Client, arena: std.mem.Allocator) !?usize {
     var response: [16 * 1024]u8 = undefined;
 
@@ -373,11 +373,13 @@ fn previousCount(client: *sb.Client, arena: std.mem.Allocator) !?usize {
     const body = try client.commitInto(&response);
 
     const Bell = struct {
-        @"label": struct { @"value": []const u8 = "" } = .{},
+        @"icon": struct {
+            @"badge": struct { @"value": []const u8 = "" } = .{},
+        } = .{},
     };
     const parsed = std.json.parseFromSliceLeaky(Bell, arena, body, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_if_needed,
     }) catch return null;
-    return std.fmt.parseInt(usize, parsed.@"label".@"value", 10) catch null;
+    return std.fmt.parseInt(usize, parsed.@"icon".@"badge".@"value", 10) catch null;
 }
