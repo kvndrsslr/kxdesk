@@ -58,6 +58,10 @@ const retired_items = [_][]const u8{
     // replaced both, and every alias is gone from this configuration now.
     "/^flow$/",
     "/^fan_alias$/",
+    // OpenRouter's popup, which an earlier version built and which had nothing to
+    // put in it.
+    "/^openrouter\\.day$/",
+    "/^openrouter\\.week$/",
     // Aliases to other applications' status items drew nothing on the two macOS
     // versions before this one either, so the mechanism is out of the
     // configuration rather than merely disabled in it.
@@ -434,18 +438,16 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     openrouter.raw(clear_click_script);
     try openrouter.text("mach_helper", config.helper);
     try c.set(items_usage.openrouter_item, openrouter.slice());
+    // A click opens its usage page. There is no popup: this provider has no
+    // daily or weekly figure to put in one.
     try c.arg("--subscribe");
     try c.arg(items_usage.openrouter_item);
-    try c.arg("mouse.entered");
-    try c.arg("mouse.exited");
-    try c.arg("mouse.exited.global");
     try c.arg("mouse.clicked");
 
     // One popup row per window, per provider. They are declared rather than
     // cloned, because the number of rows does not vary.
     for ([_]struct { parent: []const u8, color: theme.Color }{
         .{ .parent = items_usage.neuralwatt_item, .color = theme.green },
-        .{ .parent = items_usage.openrouter_item, .color = theme.aqua },
     }) |provider| {
         for ([_]struct { suffix: []const u8, nominal: []const u8 }{
             .{ .suffix = "day", .nominal = "24h" },

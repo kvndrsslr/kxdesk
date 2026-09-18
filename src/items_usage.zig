@@ -5,16 +5,12 @@
 //! through the system's `curl`: a TLS stack is not worth carrying for two URLs
 //! every five minutes.
 //!
-//! The bar shows what is left. What was spent in the last day and the last week
-//! is on hover, and the two providers answer those differently:
-//!
-//! * NeuralWatt takes a window as ISO 8601 and returns the charged cost for it,
-//!   so its two windows are the provider's own numbers.
-//! * OpenRouter's account activity is behind a management key, and its per-key
-//!   daily and weekly fields describe a key that has never been used. Its
-//!   windows are therefore differenced from samples of `total_usage` kept in the
-//!   store - exact, because that counter only rises, and empty until a sample
-//!   that old exists.
+//! The bar shows what is left on each. What was spent in the last day and the
+//! last week is on hover, from NeuralWatt's own usage summary, which takes a
+//! window as ISO 8601 and returns the charged cost for it. OpenRouter has no such
+//! window to offer a normal key - the account's daily activity is behind a
+//! management key, and its per-key daily and weekly fields describe a key that
+//! has never been used - so its item shows the balance alone.
 
 const std = @import("std");
 
@@ -49,9 +45,6 @@ const request_timeout_seconds = "20";
 
 const day_seconds: i64 = 24 * 60 * 60;
 const week_seconds: i64 = 7 * day_seconds;
-
-/// Readings are kept for the longest window plus a day of slack.
-const sample_retention_seconds: i64 = week_seconds + day_seconds;
 
 /// How often both providers are refreshed. What is left only changes when you
 /// spend, and each cycle is four HTTPS requests.
@@ -177,17 +170,8 @@ fn updateOpenrouter(
         .ignore_unknown_fields = true,
     }) catch return error.UnreadableResponse;
 
-    const when = now(io);
-    // Sampled before the windows are read, so this refresh's own reading is the
-    // "now" end of them.
-    try store.sampleSpend(io, openrouter_item, credits.data.total_usage, when);
-    store.pruneSamples(io, when - sample_retention_seconds) catch {};
-
-    const day = sampled(io, store, credits.data.total_usage, day_seconds, when);
-    const week = sampled(io, store, credits.data.total_usage, week_seconds, when);
     const remaining = credits.data.total_credits - credits.data.total_usage;
-
-    try publish(client, openrouter_item, openrouter_color, remaining, day, week);
+    try publish(client, openrouter_item, openrouter_color, remaining, null, null);
 }
 
 /// A window from NeuralWatt's own usage summary.
@@ -228,28 +212,6 @@ fn summaryWindow(
     return .{ .spent_usd = summary.totals.total_cost_usd, .span_seconds = seconds };
 }
 
-/// A window differenced from two readings of a cumulative counter.
-fn sampled(
-    io: std.Io,
-    store: *state.Store,
-    spent_now: f64,
-    seconds: i64,
-    when: i64,
-) ?Window {
-    // A quarter of the window as slack: readings are taken every few minutes, but
-    // a machine that was asleep has none for hours, and a reading from much
-    // further away would answer a different question than the one the row asks.
-    const sample = (store.spendAt(io, openrouter_item, when - seconds, @divTrunc(seconds, 4)) catch null) orelse
-        return null;
-
-    const spent = spent_now - sample.spent_usd;
-    // A counter that has gone backwards is a reset, not a window; reporting a
-    // negative spend would be nonsense.
-    if (spent < 0) return null;
-
-    return .{ .spent_usd = spent, .span_seconds = when - sample.sampled_at };
-}
-
 /// Show what is left on the bar, and the two windows in the popup.
 fn publish(
     client: *sb.Client,
@@ -264,6 +226,13 @@ fn publish(
     try props.fmt("label={s}", .{try money(&money_buffer, remaining)});
     try props.color("icon.color", color);
     try client.set(item, props.slice());
+
+    // A provider without windows has no rows to write: OpenRouter's popup is
+    // empty by nature, so it has none.
+    if (day == null and week == null) {
+        try client.commit();
+        return;
+    }
 
     const rows = [_]struct { suffix: []const u8, window: ?Window, nominal: i64 }{
         .{ .suffix = "day", .window = day, .nominal = day_seconds },

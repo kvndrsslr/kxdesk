@@ -99,9 +99,9 @@ pub const Dispatcher = struct {
         // their own events: a refresh pushes labels back to the items, and an
         // item that is subscribed to updates turns that push into another event.
         // Here only the mouse matters.
-        if (std.mem.eql(u8, name, items_usage.neuralwatt_item) or
-            std.mem.eql(u8, name, items_usage.openrouter_item))
-        {
+        // Only the balance with windows has a popup to show; the other item is
+        // subscribed to clicks alone.
+        if (std.mem.eql(u8, name, items_usage.neuralwatt_item)) {
             const sender = env.getOrEmpty("SENDER");
             if (std.mem.eql(u8, sender, "mouse.entered")) {
                 return self.setUsagePopup(name, .show);
@@ -155,9 +155,9 @@ pub const Dispatcher = struct {
         // their own events: a refresh pushes labels back to the items, and an
         // item that is subscribed to updates turns that push into another event.
         // Here only the mouse matters.
-        if (std.mem.eql(u8, name, items_usage.neuralwatt_item) or
-            std.mem.eql(u8, name, items_usage.openrouter_item))
-        {
+        // Only the balance with windows has a popup to show; the other item is
+        // subscribed to clicks alone.
+        if (std.mem.eql(u8, name, items_usage.neuralwatt_item)) {
             const sender = env.getOrEmpty("SENDER");
             if (std.mem.eql(u8, sender, "mouse.entered")) {
                 return self.setUsagePopup(name, .show);

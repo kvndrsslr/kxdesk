@@ -1,0 +1,65 @@
+# kxdesk
+
+A personal desktop daemon for macOS. It serves SketchyBar's item events and a
+command channel over one mach port, so the bar's items are configured in Zig
+instead of shell, clicks arrive as events instead of forked processes, and the
+commands that `~/.skhdrc`, `~/.yabairc`, yabai signals and the bar's config
+script run are answered by one long-lived process.
+
+It also owns the state those things share: one SQLite database at
+`~/Library/Application Support/kxdesk/state.db`, reachable from outside with
+`kxdesk state get|set|unset|list`.
+
+## Installing: currently from HEAD, temporarily
+
+**The installed copy is a HEAD build on purpose, while this is still being
+worked on.** It is built from `main` rather than from a tagged release, so a
+change reaches the machine with `git push` and nothing else — no tap commit, no
+version bump, no tag.
+
+```sh
+brew upgrade --fetch-HEAD kxdesk
+brew services restart kxdesk
+```
+
+Note that a plain `brew upgrade` will *not* move it: a HEAD install is versioned
+`HEAD-<sha>`, so it needs `--fetch-HEAD` (or `brew reinstall --HEAD kxdesk`).
+
+### Switch back to releases when the iterating stops
+
+This is the part to not forget. The tap formula
+(`kvndrsslr/formulae/kxdesk.rb`) is pinned to **v0.1.23** and has not been
+updated since HEAD installs took over, so it is stale:
+
+1. Bump `.version` in `build.zig.zon`, commit, and tag the release.
+2. Point the tap's `tag:` and `revision:` at that tag and push the tap.
+3. Replace the HEAD install with the released one:
+
+   ```sh
+   brew unlink kxdesk
+   brew install kvndrsslr/formulae/kxdesk
+   brew services restart kxdesk
+   ```
+
+4. Delete this section, or reduce it to the ordinary install instructions.
+
+## Building from a checkout
+
+```sh
+zig build                  # ReleaseFast, into zig-out/bin/kxdesk
+./zig-out/bin/kxdesk daemon
+```
+
+The daemon registers two bootstrap names on one receive port: `org.kdressler.kxdesk`
+for SketchyBar item events (the value items carry as `mach_helper`) and
+`org.kdressler.kxdesk.control` for `kxdesk <command>` clients. Only one daemon
+can hold them, so stop the agent (`brew services stop kxdesk`) before running a
+checkout's `daemon`.
+
+Two provider tokens are read from the state database rather than the
+environment, since the daemon runs under launchd:
+
+```sh
+kxdesk state set neuralwatt.token 'sk-…'
+kxdesk state set openrouter.token 'sk-or-v1-…'
+```
