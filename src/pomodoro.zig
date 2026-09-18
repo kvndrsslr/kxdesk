@@ -459,14 +459,23 @@ pub const Timer = struct {
         const heading = std.fmt.bufPrintZ(&title, "{s}", .{notice.title}) catch return;
         const text = std.fmt.bufPrintZ(&body, "{s}", .{notice.body}) catch return;
 
+        // The shell function also passed `-sender com.apple.Finder`, so that the
+        // notification looked like Finder's. terminal-notifier no longer
+        // supports it - overriding its bundle identifier is something the
+        // notification framework does not allow - and says so on stderr while
+        // ignoring the flag, so it is gone. Everything else is unchanged.
         const vector = [_:null]?[*:0]const u8{
-            program.ptr,     "-title",   heading.ptr,
-            "-message",      text.ptr,   "-group",
-            "pomo",          "-ignoreDnD", "-sound",
-            "default",       "-sender",  "com.apple.Finder",
-            null,
+            program.ptr, "-title",    heading.ptr,
+            "-message",  text.ptr,    "-group",
+            "pomo",      "-ignoreDnD", "-sound",
+            "default",   null,
         };
-        _ = platform.sb_exec_status(&vector);
+        // A ring that did not happen is worth saying out loud: the timer would
+        // otherwise look like it worked, and the notification is the point.
+        const status = platform.sb_exec_status(&vector);
+        if (status != 0) {
+            std.debug.print("kxdesk: could not post the interval notification (status {d})\n", .{status});
+        }
     }
 
     const Notice = struct { title: []const u8, body: []const u8 };
