@@ -48,7 +48,16 @@ pub fn refreshRules(context: *Context, args: []const []const u8) anyerror![]cons
 
     const listed = try context.yabai.query([]yabai.Labeled, arena, &.{ "-m", "rule", "--list" });
     for (listed) |rule| removeByLabel(arena, context.yabai, "rule", rule.@"label") catch {};
-    for (managed_rules) |rule| try context.yabai.command(arena, rule);
+
+    // zsh keeps going after a failed add (no `set -e`) and the function's exit
+    // is the last add's status. On this machine the `display=^3` rule can
+    // never be added - yabai locates no display with arrangement index 3 -
+    // and the shell still exited 0 because the final add succeeded.
+    var last_add: anyerror!void = {};
+    for (managed_rules) |rule| {
+        last_add = context.yabai.command(arena, rule);
+    }
+    try last_add;
     return "";
 }
 
@@ -59,7 +68,13 @@ pub fn refreshSignals(context: *Context, args: []const []const u8) anyerror![]co
     try clearSignalsInner(context, true);
 
     const arena = context.arena;
-    for (managed_signals) |signal| try context.yabai.command(arena, signal);
+    // Same last-add-status semantics as `refreshRules`: the telegram add was
+    // the shell's final statement, and only its status reached the caller.
+    var last_add: anyerror!void = {};
+    for (managed_signals) |signal| {
+        last_add = context.yabai.command(arena, signal);
+    }
+    try last_add;
     return "";
 }
 
