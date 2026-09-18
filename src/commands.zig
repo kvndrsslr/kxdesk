@@ -62,6 +62,7 @@ pub const all = [_]Command{
 
     // Provisioning, reached from `~/.yabairc` and from the bindings that
     // reload the rules and signals after an edit.
+    .{ .name = "apply_settings", .run = yabai_ops.applySettings },
     .{ .name = "refresh_rules", .run = yabai_ops.refreshRules },
     .{ .name = "refresh_signals", .run = yabai_ops.refreshSignals },
     .{ .name = "clear_signals", .run = yabai_ops.clearSignals },

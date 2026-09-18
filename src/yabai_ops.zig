@@ -38,6 +38,55 @@ const managed_signals = [_][]const []const u8{
     &.{ "-m", "signal", "--add", "event=window_created", "app=Telegram", "label=telegram-display-enforcement", "action=zsh -c \"sleep 1.5 && yabai -m window $YABAI_WINDOW_ID --display 1 --focus\"" },
 };
 
+/// Every setting kxdesk asserts on yabai, in the order `~/.yabairc` set them.
+///
+/// Flat `key, value, key, value`, because that is the shape `yabai -m config`
+/// reads, and the whole table has to reach yabai in one invocation: the shell
+/// spawned a `yabai` per setting - twenty-three processes and about 460 ms here,
+/// against 77 ms for the one - so these are batched.
+///
+/// Settings that file had commented out are not here: they were off.
+const settings = [_][]const u8{
+    "mouse_follows_focus",     "off",
+    "focus_follows_mouse",     "off",
+    "window_placement",        "second_child",
+    "window_shadow",           "off",
+    "window_opacity",          "off",
+    "active_window_opacity",   "0.97",
+    "normal_window_opacity",   "0.93",
+    "insert_feedback_color",   "0xffd75f5f",
+    "split_ratio",             "0.50",
+    "auto_balance",            "off",
+    "mouse_modifier",          "fn",
+    "mouse_action1",           "move",
+    "mouse_action2",           "resize",
+    "mouse_drop_action",       "swap",
+    "layout",                  "stack",
+    "top_padding",             "0",
+    "bottom_padding",          "0",
+    "left_padding",            "0",
+    "right_padding",           "0",
+    "window_gap",              "3",
+    "external_bar",            "all:26:0",
+    "display_arrangement_order", "horizontal",
+    "debug_output",            "on",
+};
+
+/// `yabai -m config` followed by every setting: one argument vector, one
+/// process, however many settings there are.
+const settings_argv = [_][]const u8{ "-m", "config" } ++ settings;
+
+/// Re-assert every setting on yabai: the padding and gaps, the opacity, the
+/// mouse bindings and the rest, all in one `yabai -m config`.
+///
+/// `~/.yabairc` runs this when yabai starts, which is when its configuration is
+/// its defaults again.
+pub fn applySettings(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
+    try context.yabai.command(context.arena, &settings_argv);
+    return "";
+}
+
 /// Re-provision the yabai rules: drop whatever is configured, then add the six
 /// managed ones, in the shell's order. An empty `--list` is not an error, as
 /// the shell's `xargs` over empty input also succeeded; failed removals did
