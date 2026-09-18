@@ -156,6 +156,10 @@ const agent_labels = [_][]const u8{ "sh.brew.kxdesk", "homebrew.mxcl.kxdesk" };
 const start_timeout_ms: u32 = 2_000;
 const start_poll_ms: u32 = 50;
 
+/// How long a client that reached a daemon which then went away waits before
+/// asking again.
+const retry_delay_ms: u32 = 250;
+
 /// Ask the daemon to run `verb` with `args`, returning its reply.
 ///
 /// The daemon is a launchd agent, so a client that finds nothing listening asks
@@ -171,6 +175,29 @@ pub fn submit(
     const message = try frameRequest(gpa, verb, args);
     defer gpa.free(message);
 
+    var attempt: u8 = 0;
+    while (true) : (attempt += 1) {
+        const reply = try exchange(gpa, io, message, out) orelse {
+            // A daemon that is being replaced holds its port for a moment after
+            // it stops reading, and the instance that replaces it answers on a
+            // new port. One retry finds that instance, rather than failing a key
+            // binding or the bar's `apply` in the middle of a restart.
+            if (attempt > 0) return error.DaemonUnavailable;
+            std.Io.sleep(io, std.Io.Duration.fromMilliseconds(retry_delay_ms), .awake) catch {};
+            continue;
+        };
+        return reply;
+    }
+}
+
+/// Send one request and return the reply, or null when a daemon that the
+/// bootstrap service named did not answer it.
+fn exchange(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    message: []const u8,
+    out: []u8,
+) !?[]const u8 {
     const port = try connect(gpa, io);
     defer platform.sb_port_release(port);
 
@@ -183,8 +210,9 @@ pub fn submit(
         reply_timeout_ms,
     );
     return switch (written) {
-        -1 => error.DaemonUnavailable,
-        -2 => error.DaemonTimeout,
+        // Sent, but nothing read it: the port belonged to a daemon that is
+        // leaving. Or the name resolved to a port that is already dead.
+        -1, -2 => null,
         else => out[0..@min(@as(usize, @intCast(written)), out.len)],
     };
 }

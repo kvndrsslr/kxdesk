@@ -294,8 +294,10 @@ fn usage(io: std.Io) noreturn {
 
 fn fail(io: std.Io, err: anyerror) noreturn {
     emit(io, .stderr, switch (err) {
-        error.DaemonUnavailable => "kxdesk: daemon not running - brew services start kxdesk",
-        error.DaemonTimeout => "kxdesk: daemon did not answer",
+        // Either nothing is listening, or the daemon that was listening while
+        // the request was sent went away without answering it. Both are fixed
+        // the same way, and a client cannot tell them apart from a distance.
+        error.DaemonUnavailable => "kxdesk: no daemon answered - brew services start kxdesk",
         error.MalformedReply => "kxdesk: daemon sent a malformed reply",
         else => @errorName(err),
     });
