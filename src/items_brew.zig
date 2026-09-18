@@ -12,8 +12,7 @@ const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const theme = @import("theme.zig");
 
-/// The item this refresh owns. `bar.zig` names the item from here, so the two
-/// cannot drift apart.
+/// The item this refresh owns. `dispatch.zig` routes its events by this name.
 pub const item = "brew";
 
 pub fn refresh(io: std.Io, gpa: std.mem.Allocator) anyerror!void {

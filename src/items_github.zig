@@ -16,7 +16,10 @@ const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const theme = @import("theme.zig");
 
-/// Items this refresh owns. `bar.zig` names them from here.
+/// The bell this refresh owns, and the template item a popup row is cloned
+/// from. `bar.zig` declares both items, `dispatch.zig` routes the bell's events
+/// by name, and neither imports this file - so the names are stated once here
+/// and once there.
 pub const bell = "github.bell";
 pub const template = "github.template";
 

@@ -15,7 +15,14 @@ pub const Props = struct {
     len: usize = 0,
 
     /// Append a pre-built property.
+    ///
+    /// The list is bounded rather than grown: a `Props` is a handful of
+    /// properties assembled on the stack for one `--set`, and the bound is far
+    /// above the largest item in `bar.zig`. Running past it is a mistake in this
+    /// file, so it is caught here rather than by writing over the fields that
+    /// follow.
     pub fn raw(self: *Props, property: []const u8) void {
+        std.debug.assert(self.len < self.items.len);
         self.items[self.len] = property;
         self.len += 1;
     }

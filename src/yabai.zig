@@ -34,6 +34,10 @@ pub const Window = struct {
     display: u32 = 0,
     space: u32 = 0,
     @"stack-index": u32 = 0,
+    /// Set on the one window yabai has focused. The bar reads it only when the
+    /// space query failed and the front window cannot be derived from the space
+    /// a display is showing.
+    @"has-focus": bool = false,
     @"is-minimized": bool = false,
     @"is-hidden": bool = false,
     @"is-sticky": bool = false,

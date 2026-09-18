@@ -2,8 +2,8 @@
 //!
 //! SketchyBar redraws once per received message, so every update is expressed as
 //! a single batch of commands. Driving the bar this way - instead of spawning the
-//! `sketchybar` CLI once per property change - is what makes a mach helper cheap:
-//! no `fork`/`exec`, no argument re-tokenisation, one redraw.
+//! `sketchybar` CLI once per property change - is what makes kxdesk cheap: no
+//! `fork`/`exec`, no argument re-tokenisation, one redraw.
 
 const std = @import("std");
 
@@ -95,7 +95,7 @@ pub const Client = struct {
     port: u32 = 0,
     args: std.ArrayList(u8) = .empty,
     /// Echo every batch to stderr when `KXDESK_TRACE` is set. SketchyBar keeps
-    /// no log of what a helper asked for, so this is the only way to see the
+    /// no log of what a client asked it for, so this is the only way to see the
     /// command stream a configuration produces.
     trace: bool = false,
 
@@ -118,7 +118,7 @@ pub const Client = struct {
 
     /// Resolve the bootstrap service. No retry is needed: SketchyBar registers
     /// `git.felix.sketchybar` before it runs the config script, and the daemon
-    /// registers its own name before it starts serving.
+    /// registers both of its names before it starts serving.
     pub fn connect(self: *Client) !void {
         if (self.port == 0) self.port = platform.sb_bootstrap_lookup(self.service);
         if (self.port == 0) return Error.SketchyBarUnavailable;
@@ -166,18 +166,26 @@ pub const Client = struct {
 
     /// Send the queued batch and forget it. SketchyBar applies every command in
     /// the batch before it redraws, so items never flash an intermediate state.
+    ///
+    /// The batch is dropped whether or not it was sent: it describes the state of
+    /// the world at the moment it was built, and every caller rebuilds it from a
+    /// fresh query, so keeping a failed one would only mix stale commands into the
+    /// next update - and grow without bound, since the events that trigger an
+    /// update keep arriving.
     pub fn commit(self: *Client) !void {
         if (self.args.items.len == 0) return;
+        defer self.clear();
+
         _ = try self.transmit(null);
-        self.clear();
     }
 
     /// Send the queued batch and copy SketchyBar's textual response into `out`.
     /// The response is written straight into `out`, so this stays safe to call
     /// from several tasks at once.
     pub fn commitInto(self: *Client, out: []u8) ![]u8 {
+        defer self.clear();
+
         const length = try self.transmit(out);
-        self.clear();
         if (length > out.len) return Error.ResponseTooLong;
         return out[0..length];
     }
@@ -189,20 +197,36 @@ pub const Client = struct {
         try self.args.append(self.gpa, 0);
         defer self.args.items.len -= 1;
 
-        if (self.port == 0) return Error.SketchyBarUnavailable;
-
         const payload = self.args.items;
         if (self.trace) traceBatch(payload);
 
-        const written = platform.sb_send(
-            self.port,
-            payload.ptr,
-            payload.len,
-            if (out) |buffer| buffer.ptr else null,
-            if (out) |buffer| buffer.len else 0,
-            query_timeout_ms,
-        );
-        if (written < 0) return Error.SketchyBarUnavailable;
-        return @intCast(written);
+        // SketchyBar registers its bootstrap name again when it is restarted, and
+        // a send right held from before then names a dead port. Resolving a name
+        // is cheap, so a client that has no right - or whose right just failed -
+        // resolves it again rather than going silent for the rest of the
+        // process's life: the daemon's own client is built once and used by every
+        // item event, so a single stale right used to mean a bar that never drew
+        // again.
+        var attempt: u8 = 0;
+        while (true) : (attempt += 1) {
+            if (self.port == 0) self.port = platform.sb_bootstrap_lookup(self.service);
+            if (self.port == 0) return Error.SketchyBarUnavailable;
+
+            const written = platform.sb_send(
+                self.port,
+                payload.ptr,
+                payload.len,
+                if (out) |buffer| buffer.ptr else null,
+                if (out) |buffer| buffer.len else 0,
+                query_timeout_ms,
+            );
+            if (written >= 0) return @intCast(written);
+
+            // The right is dead, or nothing answered on it. Drop it, so the next
+            // pass resolves the name of whichever SketchyBar is running now.
+            platform.sb_port_release(self.port);
+            self.port = 0;
+            if (attempt > 0) return Error.SketchyBarUnavailable;
+        }
     }
 };

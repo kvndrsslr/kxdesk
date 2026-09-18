@@ -2,9 +2,10 @@
 //! `colors.sh`, `icons.sh` and the `items/*.sh` files.
 //!
 //! Everything is emitted into one command batch, so SketchyBar applies the whole
-//! configuration and redraws exactly once. Every item that carries data is
-//! served by this daemon and declares `mach_helper=`; nothing here forks a
-//! process, and no item keeps a shell `script=` or `click_script`.
+//! configuration and redraws exactly once. Every item whose data this daemon
+//! computes declares `mach_helper=`; the space, front-app, alias and separator
+//! items are driven from the helper's own batches instead, and nothing here
+//! forks a process or keeps a shell `script=` or `click_script`.
 //!
 //! Items outlive a configuration reload, so three properties have to be restated
 //! every time or an earlier configuration leaks through: `script` and
@@ -275,8 +276,8 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("calendar");
     try c.arg("mouse.clicked");
 
-    // Homebrew: `brew outdated` is genuinely slow, so it stays a coarsely
-    // scheduled shell plugin.
+    // Homebrew: `brew outdated` is genuinely slow, so the item asks for it
+    // coarsely, and the daemon runs it off the event path.
     try c.arg("--add");
     try c.arg("event");
     try c.arg("brew_update");

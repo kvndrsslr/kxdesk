@@ -40,6 +40,10 @@ pub const Updater = struct {
     /// Set when a display turned out to be missing from the map, which means it
     /// went stale and has to be rebuilt before the next update.
     stale: bool = false,
+    /// The last failure reported for each query the updater depends on, so a
+    /// failure that keeps happening is logged when it changes rather than on
+    /// every window focus. Cleared by that query answering again.
+    last_error: struct { spaces: ?[]const u8 = null, displays: ?[]const u8 = null } = .{},
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -67,13 +71,33 @@ pub const Updater = struct {
     }
 
     /// Refresh every space, `front_app` and `yabai_status` item.
+    ///
+    /// A query that fails degrades rather than taking the update down: the strips
+    /// and the front-app labels come from different queries, and yabai refuses
+    /// the space and display queries on this machine whenever it cannot place a
+    /// display (it aborts mid-serialisation and answers `[`). Losing the strips
+    /// for one update is a smaller failure than freezing everything.
     pub fn update(self: *Updater) !void {
         const arena = self.scratch.allocator();
         defer _ = self.scratch.reset(.retain_capacity);
 
-        const spaces = try self.yabai_client.spaces(arena);
+        // A failed space query costs the strips their colours and the front-app
+        // items their icon; a failed display query costs the front-app items
+        // everything. Neither is worth freezing the bar over, so both degrade and
+        // say so once.
+        var spaces: []yabai.Space = &.{};
+        if (self.yabai_client.spaces(arena)) |answered| {
+            spaces = answered;
+            self.last_error.spaces = null;
+        } else |err| {
+            report(&self.last_error.spaces, err);
+        }
+
         const windows = try self.yabai_client.windows(arena);
-        const arrangement = try self.displayArrangement();
+        const arrangement = self.displayArrangement() catch |err| blk: {
+            report(&self.last_error.displays, err);
+            break :blk DisplayMap{};
+        };
 
         const layout = try Layout.build(arena, spaces, windows, arrangement, self.icons);
         try self.emitSpaces(layout);
@@ -89,7 +113,10 @@ pub const Updater = struct {
         const arena = self.scratch.allocator();
         defer _ = self.scratch.reset(.retain_capacity);
 
-        const window = self.yabai_client.window(arena, window_id) catch return;
+        const window = self.yabai_client.window(arena, window_id) catch |err| {
+            report(&self.last_error.spaces, err);
+            return;
+        };
         const arrangement = try self.displayArrangement();
         const display = arrangement.get(window.display) orelse {
             self.stale = true;
@@ -104,6 +131,18 @@ pub const Updater = struct {
         try props.text("label", truncateTitle(window.title, &title_buf));
         try self.bar.set(item, props.slice());
         try self.bar.commit();
+    }
+
+    /// Report a failed query once, into the guard for that query. The bar asks
+    /// again on every window focus, so a failure that keeps happening must not be
+    /// logged every time; a different one is worth saying.
+    fn report(guard: *?[]const u8, err: anyerror) void {
+        const name = @errorName(err);
+        if (guard.*) |previous| {
+            if (std.mem.eql(u8, previous, name)) return;
+        }
+        guard.* = name;
+        std.debug.print("kxdesk: yabai query failed: {s}\n", .{name});
     }
 
     /// Map a yabai display *index* to the SketchyBar arrangement id used by
@@ -121,7 +160,19 @@ pub const Updater = struct {
         if (self.arrangement) |cached| return cached;
 
         const arena = self.displays.allocator();
-        const displays = try self.yabai_client.displays(arena);
+        // The whole display list, or the one display that is in focus when yabai
+        // refuses to serialise the list: the map only has to place the display a
+        // window is on, and that is the focused one for as long as yabai cannot
+        // name the others.
+        const displays = if (self.yabai_client.displays(arena)) |list| blk: {
+            self.last_error.displays = null;
+            break :blk list;
+        } else |err| blk: {
+            report(&self.last_error.displays, err);
+            break :blk self.yabai_client.query([]yabai.Display, arena, &.{
+                "-m", "query", "--displays", "--display",
+            }) catch return error.DisplayMapUnavailable;
+        };
 
         // The query must be the only command in flight, so start from a clean
         // batch: callers run this before queueing updates.
@@ -301,8 +352,12 @@ const Layout = struct {
         arrangement: DisplayMap,
         app_icon_map: *const app_icons.Mapping,
     ) !Layout {
+        // Sized from the windows as well as the spaces: the space query can fail
+        // while the window query answers, and the front-app items still need their
+        // stack totals then.
         var space_count: usize = 0;
         for (spaces) |space| space_count = @max(space_count, space.index);
+        for (windows) |window| space_count = @max(space_count, window.space);
         var display_count: usize = 0;
         for (spaces) |space| display_count = @max(display_count, space.display);
         for (windows) |window| display_count = @max(display_count, window.display);
@@ -376,6 +431,21 @@ const Layout = struct {
                     try std.fmt.allocPrint(arena, "{s}{s}", .{ value, tail[index] })
                 else
                     value;
+            }
+        }
+
+        // With no space to ask about visibility - the space query failing is the
+        // reason this runs - the display that has focus is placed from the window
+        // that has it. The label and the application matter more than the icon,
+        // which needs a space's type and falls back to the default one.
+        for (windows, 0..) |window, index| {
+            if (!window.@"has-focus") continue;
+            if (!std.mem.eql(u8, window.@"role", "AXWindow")) continue;
+            if (window.@"is-minimized" or window.@"is-hidden") continue;
+            if (window.display == 0 or window.display >= layout.front_window.len) continue;
+
+            if (layout.front_window[window.display] == null) {
+                layout.front_window[window.display] = index;
             }
         }
 

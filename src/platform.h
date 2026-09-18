@@ -126,8 +126,13 @@ void* sb_osa_compile(const char* source, const char* language);
 /// pass a NULL `out` to just execute it. Returns false if the script errored.
 bool sb_osa_run(void* script, char* out, size_t cap);
 
+/// Release a compiled script. `sb_osa_compile` hands over a reference, so a
+/// caller that compiles per invocation has to give it back.
+void sb_osa_release(void* script);
+
 /// Open a URL with the user's default handler.
 bool sb_open_url(const char* url);
 
-/// Absolute path of this executable, for embedding in a `click_script`.
+/// Absolute path of this executable, for a file that has to name it without
+/// relying on `PATH` - the generated `~/.skhdrc`.
 bool sb_self_path(char* out, size_t cap);

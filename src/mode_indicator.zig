@@ -88,7 +88,10 @@ fn writeModeFile(io: std.Io, colour: []const u8) !void {
 /// script means "not dark": the shell's `osascript` printed nothing in that
 /// case and its comparison against `true` failed, which returned light.
 fn darkMode() bool {
+    // Compiled per call and released per call: the daemon runs until logout, and
+    // every mode binding would otherwise leave a compiled script behind.
     const script = platform.sb_osa_compile(dark_mode_source, "JavaScript") orelse return false;
+    defer platform.sb_osa_release(script);
 
     var buffer: [16]u8 = undefined;
     if (!platform.sb_osa_run(script, &buffer, buffer.len)) return false;

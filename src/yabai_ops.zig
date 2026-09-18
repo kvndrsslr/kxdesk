@@ -114,46 +114,52 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
 
     const wanted = parseLabels(args[0], arena);
 
-    // The machine's unfiltered `query --spaces` aborts mid-serialisation (a
-    // phantom display), so spaces are enumerated with the filtered per-display
-    // query, walking display indexes 1.. until yabai refuses one.
-    var focused_display: ?u32 = null;
-    var final_focus: ?yabai.Space = null;
-
-    // First pass: which display currently holds focus. Determined globally,
-    // before any focusing, as the shell's separate jq pass did.
-    var display_index: u32 = 1;
-    while (display_index <= max_display_index) : (display_index += 1) {
-        const spaces = (try displaySpaces(arena, context.yabai, display_index)) orelse break;
-        for (spaces) |space| {
-            if (space.@"has-focus") {
-                focused_display = space.display;
-                break;
-            }
-        }
-        if (focused_display != null) break;
+    // The spaces of every display, asked for one display at a time and kept: the
+    // command passes over them twice, and a query per pass would double the
+    // processes it spawns. The displays themselves come from a display query
+    // rather than from counting upwards, so a machine whose arrangement has a
+    // gap cannot hide a display above it.
+    const displays = displayList(arena, context.yabai);
+    const per_display = try arena.alloc([]yabai.Space, displays.len);
+    for (displays, 0..) |display, position| {
+        per_display[position] = spacesOf(arena, context.yabai, display.index);
     }
 
-    // Second pass: matches on other displays are focused first, in index
-    // order; on the focused display, only the focused match is kept for last
-    // (the shell's `.[-1]` after intersecting with that display), and the
-    // last so it is the one left focused. The shell ran every focus through
-    // one `xargs`, which runs the rest even when one invocation fails and
-    // then reports failure - so remember failures instead of aborting.
+    // Which display decides the order: the shell took `sort_by(."has-focus") |
+    // .[-1].display` over every space, so it is the one holding the highest-index
+    // space that has focus, not the first display that has one. Determined before
+    // anything is focused, as the shell's separate pass did.
+    var focused_display: ?u32 = null;
+    for (per_display) |spaces| {
+        for (spaces) |space| {
+            if (space.@"has-focus") focused_display = space.display;
+        }
+    }
+
+    // The shell's two lists, run through one `xargs` in this order: matches on the
+    // other displays are focused first, in index order, and the deciding display's
+    // matches are left for last - the one that is chosen is the one left focused.
+    // A focus that fails is remembered rather than aborting: `xargs` ran the rest
+    // and then reported the failure, which is this command's exit status.
+    var final_focus: ?yabai.Space = null;
     var failed = false;
-    display_index = 1;
-    while (display_index <= max_display_index) : (display_index += 1) {
-        const spaces = (try displaySpaces(arena, context.yabai, display_index)) orelse break;
+    for (per_display) |spaces| {
         sort(spaces);
 
         for (spaces) |space| {
             if (!isSelected(wanted, space.@"label")) continue;
 
             if (focused_display != null and space.display == focused_display.?) {
-                // The shell kept `.[-1]` of this display's matches: focused
-                // one when a match holds focus (it sorts last), else the last
-                // in index order - both are the last write in this walk.
-                final_focus = space;
+                // `.[-1]` of `sort_by(."has-focus")` over this display's matches:
+                // a match that holds focus sorts last and so wins, and otherwise
+                // the last match in index order does.
+                const chosen_holds_focus = if (final_focus) |chosen| chosen.@"has-focus" else false;
+                if (space.@"has-focus" or
+                    (!chosen_holds_focus and
+                        (final_focus == null or space.index > final_focus.?.index)))
+                {
+                    final_focus = space;
+                }
             } else {
                 focusSpace(arena, context.yabai, space.index) catch {
                     failed = true;
@@ -162,7 +168,7 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
         }
     }
 
-    // The focused-display match goes last, so it is the one left focused.
+    // The deciding display's match goes last, so it is the one left focused.
     if (final_focus) |space| {
         focusSpace(arena, context.yabai, space.index) catch {
             failed = true;
@@ -206,8 +212,7 @@ pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror!
     const arena = context.arena;
     const reverse = hasFlag(args, "--reverse");
 
-    // Same query the shell used - the current display's spaces (this is the
-    // one space query that works on this machine, the unfiltered one aborts).
+    // The current display's spaces, which is the scope this command works on.
     const spaces = try context.yabai.query([]yabai.Space, arena, &.{ "-m", "query", "--spaces", "--display" });
     if (spaces.len == 0) return error.YabaiFailed;
 
@@ -270,20 +275,26 @@ pub fn cycleDisplays(context: *Context, args: []const []const u8) anyerror![]con
     return error.YabaiFailed;
 }
 
-/// Upper bound for the per-display enumeration; yabai refuses past the last
-/// display, which is what actually ends `switchWorkspace`'s walk.
-const max_display_index: u32 = 16;
+/// Every display yabai knows, or the one that is in focus when it refuses the
+/// list - the shape of the same failure the bar's own display query handles.
+fn displayList(arena: std.mem.Allocator, client: *yabai.Client) []yabai.Display {
+    return client.displays(arena) catch |err| blk: {
+        std.debug.print("kxdesk: yabai query failed: {s}\n", .{@errorName(err)});
+        break :blk client.query([]yabai.Display, arena, &.{
+            "-m", "query", "--displays", "--display",
+        }) catch &.{};
+    };
+}
 
-/// The spaces of display `index`, or null once `index` is past the last
-/// display. A refused query ends the walk: yabai prints the reason to stderr
-/// and writes nothing to stdout, which surfaces through the client as
-/// `InvalidJson` (parsing an empty response) rather than `YabaiFailed`.
-fn displaySpaces(arena: std.mem.Allocator, client: *yabai.Client, index: u32) !?[]yabai.Space {
-    var buffer: [64]u8 = undefined;
-    const index_argument = std.fmt.bufPrint(&buffer, "{d}", .{index}) catch unreachable;
-    return client.query([]yabai.Space, arena, &.{ "-m", "query", "--spaces", "--display", index_argument }) catch |err| switch (err) {
-        error.YabaiFailed, error.InvalidJson => null,
-        else => return err,
+/// The spaces of one display, or none when yabai will not answer for it: the
+/// caller remembers that a focus was missed, as the shell's `xargs` reported
+/// failure for the invocations that failed while running the ones that did not.
+fn spacesOf(arena: std.mem.Allocator, client: *yabai.Client, display: u32) []yabai.Space {
+    var buffer: [16]u8 = undefined;
+    const index = std.fmt.bufPrint(&buffer, "{d}", .{display}) catch unreachable;
+    return client.query([]yabai.Space, arena, &.{ "-m", "query", "--spaces", "--display", index }) catch |err| blk: {
+        std.debug.print("kxdesk: yabai query failed: {s}\n", .{@errorName(err)});
+        break :blk &.{};
     };
 }
 

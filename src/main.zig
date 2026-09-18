@@ -50,10 +50,6 @@ const Daemon = struct {
     /// so sharing it is safe; commands build their own.
     bar: *sb.Client,
     yabai_client: *yabai.Client,
-    /// Arena the item updaters share, reset on every update.
-    scratch: *std.heap.ArenaAllocator,
-    response: []u8,
-    icons: *app_icons.Mapping,
     dispatcher: dispatch.Dispatcher,
     started: std.Io.Timestamp,
 
@@ -226,9 +222,6 @@ fn runDaemon(init: std.process.Init) !void {
         .io = init.io,
         .bar = &bar,
         .yabai_client = &yabai_client,
-        .scratch = &scratch,
-        .response = response,
-        .icons = &icons,
         .dispatcher = .{
             .bar = &bar,
             .io = init.io,

@@ -1,4 +1,4 @@
-//! Running the external commands the bar's items depend on.
+//! Resolving the external commands the bar's items and commands depend on.
 //!
 //! Binaries are resolved rather than assumed: the daemon is started by launchd,
 //! whose `PATH` contains neither Homebrew nor anything under the home directory.

@@ -463,6 +463,12 @@ void* sb_osa_compile(const char* source, const char* language_name) {
   return (__bridge_retained void*)script;
 }
 
+void sb_osa_release(void* script) {
+  if (!script) return;
+  // Compiled with `__bridge_retained`, so this balances that reference.
+  CFRelease((CFTypeRef)script);
+}
+
 bool sb_osa_run(void* script, char* out, size_t cap) {
   if (!script) return false;
 
@@ -484,8 +490,8 @@ bool sb_self_path(char* out, size_t cap) {
   uint32_t size = (uint32_t)cap;
   if (_NSGetExecutablePath(out, &size) != 0) return false;
 
-  // The result may still be relative or contain `..`, which a click script
-  // cannot use, so it goes through realpath.
+  // The result may still be relative or contain `..`, which a config file that
+  // names this binary cannot use, so it goes through realpath.
   char resolved[PATH_MAX];
   if (realpath(out, resolved) && strlen(resolved) < cap) {
     strcpy(out, resolved);
