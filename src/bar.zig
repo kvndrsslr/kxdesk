@@ -421,7 +421,13 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     brew.raw("label=");
     try brew.fmt("icon.badge={s}", .{"?"});
     try brew.fmt("icon.badge.font={s}:Bold:9.0", .{theme.font});
-    brew.raw("icon.badge.anchor=top_right");
+    brew.raw("icon.badge.anchor=bottom_right");
+    try brew.num("icon.badge.x_offset", 2);
+    try brew.num("icon.badge.y_offset", -1);
+    try brew.color("icon.badge.background.color", theme.badge_background);
+    brew.raw("icon.badge.background.drawing=on");
+    try brew.num("icon.badge.background.padding_left", 3);
+    try brew.num("icon.badge.background.padding_right", 3);
     try brew.num("associated_display", 1);
     brew.raw("drawing=on");
     try c.set("brew", brew.slice());
@@ -453,7 +459,13 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     bell.raw("label=");
     try bell.fmt("icon.badge={s}", .{theme.glyph.loading});
     try bell.fmt("icon.badge.font={s}:Bold:9.0", .{theme.font});
-    bell.raw("icon.badge.anchor=top_right");
+    bell.raw("icon.badge.anchor=bottom_right");
+    try bell.num("icon.badge.x_offset", 2);
+    try bell.num("icon.badge.y_offset", -1);
+    try bell.color("icon.badge.background.color", theme.badge_background);
+    bell.raw("icon.badge.background.drawing=on");
+    try bell.num("icon.badge.background.padding_left", 3);
+    try bell.num("icon.badge.background.padding_right", 3);
     bell.raw("popup.align=right");
     // Dynamic rather than the fixed width an earlier configuration gave it: a
     // fixed width swallows the padding, which is what made this item overlap the
