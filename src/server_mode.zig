@@ -412,13 +412,27 @@ fn enter(arena: std.mem.Allocator, io: std.Io, paths: Paths) anyerror![]const u8
 /// Stop serving: put back everything `enter` changed, then take down what it
 /// started.
 fn leave(arena: std.mem.Allocator, io: std.Io, paths: Paths) anyerror![]const u8 {
-    if (!exists(io, paths.cookie)) return error.ServerModeInactive;
+    if (!exists(io, paths.cookie)) {
+        // Nothing to leave - but an exit that was interrupted, or killed, has
+        // taken the cookie off already, and what it did not get to is the
+        // materialized keys. The one command anyone would reach for is this one,
+        // so it takes them with it rather than reporting the mode gone and
+        // leaving private key material on the disk.
+        wipeAgentAndKeys(arena, io, paths);
+        return error.ServerModeInactive;
+    }
     std.Io.Dir.deleteFileAbsolute(io, paths.cookie) catch {};
 
     restoreSshConfig(arena, io, paths);
     restoreGit(arena, io, paths);
-    try setCaffeinate(arena, io, false);
+
+    // The keys and the agent go whatever else happens: `setCaffeinate` can fail,
+    // and an exit that leaves the private keys materialized is worse than one
+    // that leaves the keep-awake service loaded. Its error is answered after the
+    // wipe, not instead of it.
+    const caffeinate = setCaffeinate(arena, io, false);
     wipeAgentAndKeys(arena, io, paths);
+    try caffeinate;
 
     return "server mode ended: ssh and git restored, keys wiped";
 }
