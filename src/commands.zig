@@ -12,7 +12,6 @@ const items_usage = @import("items_usage.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
 const sb = @import("sb.zig");
-const server_mode = @import("server_mode.zig");
 const state = @import("store.zig");
 const skhdrc = @import("skhdrc.zig");
 const yabai = @import("yabai.zig");
@@ -95,8 +94,11 @@ pub const Command = struct {
     args: []const Arg = &.{},
     /// Flags, accepted anywhere the command accepts arguments.
     flags: []const Flag = &.{},
-    /// Where the command runs. Null for `help` and `completions`, which this
-    /// binary answers itself and the daemon is never asked about.
+    /// Where the command runs. Null for the commands this binary answers itself,
+    /// which the daemon is never asked about: `help` and `completions`, which a
+    /// shell asks for while it is being set up, before any daemon need be
+    /// running, and `server-mode`, which drives `op` and so belongs to the
+    /// session that asked rather than to launchd's daemon.
     run: ?*const fn (*Context, []const []const u8) anyerror![]const u8 = null,
 };
 
@@ -333,7 +335,9 @@ pub const all = [_]Command{
     },
 
     // This machine as a remote coding server: the 1Password keys served over one
-    // ssh-agent, and the ssh and git configuration that points at it.
+    // ssh-agent, and the ssh and git configuration that points at it. The one
+    // command with no `run`: it is the client's, because it drives `op` and
+    // 1Password's unlock is granted to the session that asked, not to the daemon.
     .{
         .name = "server-mode",
         .summary = "serve this machine as a remote coding server",
@@ -343,7 +347,6 @@ pub const all = [_]Command{
             .{ .name = "status", .summary = "say whether the mode is on, and what it serves", .default = true },
             .{ .name = "refresh", .summary = "exit, then enter: for a key or remote added since" },
         },
-        .run = server_mode.serverMode,
     },
 };
 

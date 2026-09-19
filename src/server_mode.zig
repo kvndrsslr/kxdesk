@@ -13,6 +13,15 @@
 //!
 //! Only the personal account is ever read. The business one is off-limits.
 //!
+//! Unlike every other command, this one is run by the client and not by the
+//! daemon. It is the only command that drives `op`, and 1Password's unlock is the
+//! desktop app's to grant, in the session that asked: a launchd agent cannot
+//! complete it - the daemon spawns `op` with no terminal and stdin at
+//! `/dev/null`, and `op` exits non-zero rather than waiting for an approval
+//! nobody there can give - and the client's own reply deadline is far shorter
+//! than the handful of `op` round trips `enter` makes. Run from the shell that
+//! asked for it, the prompt lands in front of the person who can answer it.
+//!
 //! The shell script kept its state in `~/.local/share/kxb-server-mode`, piped
 //! `op` through `jq`, rewrote the ssh config by handing `sed` an expression and
 //! snapshotted git by appending to a file. The same work happens here: the state
@@ -23,11 +32,8 @@
 
 const std = @import("std");
 
-const commands = @import("commands.zig");
 const exec = @import("exec.zig");
 const platform = @import("platform.zig");
-
-const Context = commands.Context;
 
 /// The 1Password account whose keys are served, and the only one this touches.
 const account = "my.1password.com";
@@ -91,21 +97,25 @@ const caffeinate_plist =
 /// `kxdesk server-mode [enter|exit|status|refresh]`, `status` by default: with no
 /// verb the command says what the mode is doing, as the script's `status` did
 /// and as `pomodoro` answers here.
-pub fn serverMode(context: *Context, args: []const []const u8) anyerror![]const u8 {
+///
+/// Called by the client, not by the daemon - see the module comment - so the
+/// arena and the io are the client's own and are handed in rather than taken
+/// from a command context.
+pub fn serverMode(arena: std.mem.Allocator, io: std.Io, args: []const []const u8) anyerror![]const u8 {
     const verb = if (args.len > 0) args[0] else "status";
     if (args.len > 1) return error.UnknownArgument;
 
-    const paths = try Paths.derive(context.arena);
+    const paths = try Paths.derive(arena);
 
-    if (std.mem.eql(u8, verb, "enter")) return enter(context, paths);
-    if (std.mem.eql(u8, verb, "exit")) return leave(context, paths);
+    if (std.mem.eql(u8, verb, "enter")) return enter(arena, io, paths);
+    if (std.mem.eql(u8, verb, "exit")) return leave(arena, io, paths);
     if (std.mem.eql(u8, verb, "refresh")) {
         // Leaving first is what makes a key or a remote added in 1Password since
         // the last enter show up: enter materializes the account from scratch.
-        _ = try leave(context, paths);
-        return enter(context, paths);
+        _ = try leave(arena, io, paths);
+        return enter(arena, io, paths);
     }
-    if (std.mem.eql(u8, verb, "status")) return report(context, paths);
+    if (std.mem.eql(u8, verb, "status")) return report(arena, io, paths);
     return error.UnknownArgument;
 }
 
@@ -170,10 +180,7 @@ const Item = struct {
 
 /// Start serving: materialize the keys, load them into an agent, and point the
 /// machine at that agent.
-fn enter(context: *Context, paths: Paths) anyerror![]const u8 {
-    const io = context.io;
-    const arena = context.arena;
-
+fn enter(arena: std.mem.Allocator, io: std.Io, paths: Paths) anyerror![]const u8 {
     if (exists(io, paths.cookie)) return error.ServerModeActive;
 
     try makeDir(io, paths.dir, directory_mode);
@@ -224,10 +231,7 @@ fn enter(context: *Context, paths: Paths) anyerror![]const u8 {
 
 /// Stop serving: put back everything `enter` changed, then take down what it
 /// started.
-fn leave(context: *Context, paths: Paths) anyerror![]const u8 {
-    const io = context.io;
-    const arena = context.arena;
-
+fn leave(arena: std.mem.Allocator, io: std.Io, paths: Paths) anyerror![]const u8 {
     if (!exists(io, paths.cookie)) return error.ServerModeInactive;
     std.Io.Dir.deleteFileAbsolute(io, paths.cookie) catch {};
 
@@ -240,10 +244,7 @@ fn leave(context: *Context, paths: Paths) anyerror![]const u8 {
 }
 
 /// What the mode is doing, for a prompt or a probe.
-fn report(context: *Context, paths: Paths) anyerror![]const u8 {
-    const io = context.io;
-    const arena = context.arena;
-
+fn report(arena: std.mem.Allocator, io: std.Io, paths: Paths) anyerror![]const u8 {
     if (!exists(io, paths.cookie)) return "server mode: inactive";
 
     // An agent that is gone is the one way this can be on and still not work -
@@ -775,7 +776,10 @@ fn succeeded(scratch: std.mem.Allocator, argv: []const []const u8) bool {
 
 /// Run `argv` to completion and return its standard output, or null when it did
 /// not exit zero - and when it could not be started at all, which is said in the
-/// log so that a missing binary is not mistaken for an empty answer.
+/// log so that a missing binary is not mistaken for an empty answer. A non-zero
+/// exit is said in the log too, with whatever the command wrote to stderr: that
+/// is the whole explanation of a refusal, and it is read by the person who asked
+/// for the run, since server mode is the client's and not the daemon's.
 fn output(
     scratch: std.mem.Allocator,
     io: std.Io,
@@ -787,7 +791,15 @@ fn output(
         return null;
     };
     switch (result.term) {
-        .exited => |code| if (code != 0) return null,
+        .exited => |code| if (code != 0) {
+            const said = std.mem.trim(u8, result.stderr, " \t\r\n");
+            if (said.len == 0) {
+                std.debug.print("kxdesk: {s} exited {d}\n", .{ argv[0], code });
+            } else {
+                std.debug.print("kxdesk: {s} exited {d}: {s}\n", .{ argv[0], code, said });
+            }
+            return null;
+        },
         else => return null,
     }
     return result.stdout;

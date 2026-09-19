@@ -126,6 +126,12 @@ kxdesk state set openrouter.token 'sk-or-v1-…'
 given. It is the port of the standalone `kxb-server-mode` script, which it
 replaces along with that script's own state directory.
 
+Unlike every other command, it runs in the client rather than in the daemon. It
+drives `op`, and 1Password's unlock is the desktop app's to grant, in the session
+that asked for it: a launchd agent has no such session, so `op` run by the daemon
+exits non-zero instead of waiting for an approval nobody there can give, and the
+command fails with `OnePasswordUnavailable`.
+
 - **enter** materializes every SSH key of the personal 1Password account
   (`my.1password.com`; the business account is never read) under
   `~/Library/Application Support/kxdesk/server-mode/keys`, loads them into one

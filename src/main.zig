@@ -18,6 +18,10 @@
 //! other spelling is a client that asks the daemon to run the command; the
 //! command line is described once, in `commands.zig`, and `cli.zig` draws both
 //! the help and the completions from it.
+//!
+//! `server-mode` is answered by the client too, and for the opposite reason: it
+//! drives `op`, whose 1Password unlock the desktop app grants only to the session
+//! that asked - which a launchd agent is not.
 
 const std = @import("std");
 
@@ -33,6 +37,7 @@ const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
 const platform = @import("platform.zig");
 const pomodoro = @import("pomodoro.zig");
+const server_mode = @import("server_mode.zig");
 const state = @import("store.zig");
 const sb = @import("sb.zig");
 const yabai = @import("yabai.zig");
@@ -118,8 +123,13 @@ const Daemon = struct {
         var bar = sb.Client.init(arena_state.allocator(), sb.sketchybar_service);
         defer bar.deinit();
 
+        // A command this binary answers itself has no daemon side; a client old
+        // enough to ask anyway is told so rather than dereferenced.
+        const run = commands.all[index].run orelse
+            return control.postReply(reply_port, .{ .err = "this command runs in the client" });
+
         var command_context = self.context(arena_state.allocator(), &bar);
-        if (commands.all[index].run.?(&command_context, args)) |payload| {
+        if (run(&command_context, args)) |payload| {
             control.postReply(reply_port, .{ .ok = payload });
         } else |err| {
             control.postReply(reply_port, .{ .err = @errorName(err) });
@@ -260,25 +270,32 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, mode, "__complete")) return runCompletions(init, arguments[2..]);
-    if (std.mem.eql(u8, mode, "help") or std.mem.eql(u8, mode, "completions")) {
-        return runLocally(init, mode, arguments[2..]);
-    }
 
     // `kxdesk <command> --help`: answered here so it works with no daemon
     // listening, and so a command that needs arguments can be asked about without
-    // supplying any.
+    // supplying any. Before the local commands below, which would otherwise
+    // refuse a `--help` as the wrong kind of argument.
     for (arguments[2..]) |argument| {
         if (std.mem.eql(u8, argument, "--help") or std.mem.eql(u8, argument, "-h")) {
             return describe(init, mode);
         }
     }
 
+    // The commands this binary answers itself; see the module comment.
+    if (std.mem.eql(u8, mode, "help") or
+        std.mem.eql(u8, mode, "completions") or
+        std.mem.eql(u8, mode, "server-mode"))
+    {
+        return runLocally(init, mode, arguments[2..]);
+    }
+
     return runClient(init, mode, arguments[2..]);
 }
 
-/// The commands this binary answers itself: `help` and `completions`. Both are
-/// checked against their own description, so a wrong shell or an unknown command
-/// name is refused with the same kind of message as a daemon command.
+/// The commands this binary answers itself: `help`, `completions` and
+/// `server-mode`. All are checked against their own description, so a wrong shell
+/// or an unknown command name is refused with the same kind of message as a
+/// daemon command.
 fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8) !void {
     const arena = init.arena.allocator();
     const command = cli.find(mode) orelse return;
@@ -294,6 +311,12 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
             return;
         }
         return describe(init, args[0]);
+    }
+
+    if (std.mem.eql(u8, mode, "server-mode")) {
+        const payload = server_mode.serverMode(arena, init.io, args) catch |err| return fail(init.io, err);
+        if (payload.len > 0) emit(init.io, .stdout, payload);
+        return;
     }
 
     writeText(init.io, .stdout, cli.script(args[0]) orelse return);
