@@ -57,6 +57,31 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("IOKit", .{});
 
     b.installArtifact(exe);
+
+    const t = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    t.root_module.addImport("sqlite", sqlite.createModule());
+    t.root_module.linkSystemLibrary("sqlite3", .{});
+    t.root_module.addIncludePath(b.path("vendor"));
+    t.root_module.addIncludePath(b.path("src"));
+    t.root_module.addCSourceFile(.{
+        .file = b.path("src/platform.m"),
+        .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" },
+    });
+    t.root_module.linkFramework("AppKit", .{});
+    t.root_module.linkFramework("CoreFoundation", .{});
+    t.root_module.linkFramework("CoreText", .{});
+    t.root_module.linkFramework("Foundation", .{});
+    t.root_module.linkFramework("IOKit", .{});
+
+    const run = b.addRunArtifact(t);
+    b.step("test", "Run unit tests").dependOn(&run.step);
 }
 
 /// The version build.zig.zon declares.

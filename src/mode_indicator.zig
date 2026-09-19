@@ -7,10 +7,8 @@
 
 const std = @import("std");
 
-const commands = @import("commands.zig");
+const Context = @import("context.zig").Context;
 const platform = @import("platform.zig");
-
-const Context = commands.Context;
 
 /// The file the mode index is recorded in, for tooling that reads it. That file
 /// is the shell's interface and survives a restart of this daemon, but not a

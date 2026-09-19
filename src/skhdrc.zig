@@ -10,10 +10,8 @@
 //! the shell pipeline that the baseline's two spaces before `<` depend on.
 
 const std = @import("std");
-const commands = @import("commands.zig");
+const Context = @import("context.zig").Context;
 const platform = @import("platform.zig");
-
-const Context = commands.Context;
 const Allocator = std.mem.Allocator;
 
 /// What every expansion in the generated file calls this tool.
@@ -226,5 +224,3 @@ fn home(arena: Allocator) ?[]const u8 {
     if (!platform.sb_env("HOME", &buffer, buffer.len)) return null;
     return arena.dupe(u8, std.mem.sliceTo(&buffer, 0)) catch null;
 }
-
-

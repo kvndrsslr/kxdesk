@@ -8,70 +8,13 @@
 const std = @import("std");
 
 const bar_config = @import("bar.zig");
+const Context = @import("context.zig").Context;
 const items_usage = @import("items_usage.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
-const sb = @import("sb.zig");
-const state = @import("store.zig");
 const skhdrc = @import("skhdrc.zig");
-const yabai = @import("yabai.zig");
 const yabai_ops = @import("yabai_ops.zig");
 const zen = @import("zen.zig");
-
-/// What a command gets to work with.
-pub const Context = struct {
-    /// Everything the command allocates comes from here, and the task frees the
-    /// whole arena when it returns, so nothing has to be handed back.
-    arena: std.mem.Allocator,
-    io: std.Io,
-    /// A SketchyBar connection belonging to this command alone: the receive
-    /// loop's client must not see a batch it did not build.
-    bar: *sb.Client,
-    yabai: *yabai.Client,
-    /// The pomodoro timer, which the receive loop ticks and these commands
-    /// start, stop and set.
-    pomodoro: *pomodoro.Timer,
-    /// Durable state: what the daemon remembers across restarts, and what the
-    /// `state` command reads and writes for everything else.
-    store: *state.Store,
-    /// Whether SketchyBar is known to be up. Written by the receive loop.
-    bar_present: *std.atomic.Value(bool),
-    /// Bootstrap name items carry as `mach_helper`, so re-applying the
-    /// configuration points them back at this daemon.
-    event_service: []const u8,
-    /// When this daemon started, for the uptime in `status`.
-    started: std.Io.Timestamp,
-
-    /// Connect to SketchyBar, resolving its bootstrap name again first: a bar
-    /// that was restarted between two commands registers that name for a new
-    /// instance, and the send right held for the old one is dead.
-    ///
-    /// A bar that is still starting has not registered that name yet, and the one
-    /// moment this matters is when `sketchybarrc` applies this configuration: it
-    /// runs as the bar starts. A single look arriving too early used to leave a
-    /// freshly restarted bar with nothing on it, so this waits for as long as a
-    /// start takes - the same wait the control client makes for this daemon, for
-    /// the same reason.
-    pub fn ensureBar(self: *Context) !void {
-        var attempt: u8 = 0;
-        while (true) : (attempt += 1) {
-            self.bar.reconnect();
-            self.bar.connect() catch |err| {
-                if (attempt >= bar_connect_attempts) return err;
-                std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(bar_connect_delay_ms), .awake) catch {};
-                continue;
-            };
-            self.bar_present.store(true, .monotonic);
-            return;
-        }
-    }
-};
-
-/// How long `ensureBar` waits for a bar that is starting: long enough to cover a
-/// restart, short enough that a command on a machine with no bar at all still
-/// fails quickly.
-const bar_connect_attempts = 20;
-const bar_connect_delay_ms = 150;
 
 /// What a command takes after its name, in the terms the usage line is drawn
 /// from: `kxdesk pomodoro set 25 5` is `set` (a `Sub`) with `<work>` and

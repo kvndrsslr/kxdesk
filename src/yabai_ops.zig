@@ -9,12 +9,10 @@
 
 const std = @import("std");
 
-const commands = @import("commands.zig");
+const Context = @import("context.zig").Context;
 const exec = @import("exec.zig");
 const platform = @import("platform.zig");
 const yabai = @import("yabai.zig");
-
-const Context = commands.Context;
 
 /// One `rule --add`, complete: the exact argv tokens, spaces inside tokens
 /// exactly as the shell passed them - quoting them differently would change
@@ -35,10 +33,27 @@ const managed_rules = [_][]const []const u8{
 /// One `signal --add`, complete: the exact argv tokens. `$YABAI_WINDOW_ID` is
 /// substituted by yabai at signal time, so it must reach yabai verbatim; argv
 /// tokens rather than a shell keep it intact.
+/// The `sb_*` family fans every event that changes what the bar renders - a
+/// window arriving on a space, leaving it, closing, hiding - into the one
+/// `yabai_update` trigger the helper serves. The strip and front-app items are
+/// built from yabai queries, and a window moved to another space shows up
+/// without any focus or space change: yabai retiles it there, so
+/// `window_resized` is the event that arrives (measured - `window_moved` is the
+/// positional one, a drag in place), and `window_focused`/`space_changed` alone
+/// leave the bar showing a window that has already left. The display list is
+/// left to the bar's own `display_change` subscription.
 const managed_signals = [_][]const []const u8{
     &.{ "-m", "signal", "--add", "event=window_title_changed", "label=sb_atc", "action=sketchybar --trigger yabai_update ONLY=title YABAI_WINDOW_ID=$YABAI_WINDOW_ID", "active=yes" },
     &.{ "-m", "signal", "--add", "event=window_focused", "label=sb_wf", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_moved", "label=sb_wm", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_resized", "label=sb_wr", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_created", "label=sb_wc", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_destroyed", "label=sb_wd", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_minimized", "label=sb_wmin", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_deminimized", "label=sb_wdemin", "action=sketchybar --trigger yabai_update" },
     &.{ "-m", "signal", "--add", "event=space_changed", "label=sb_sc", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=space_created", "label=sb_spc", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=space_destroyed", "label=sb_spd", "action=sketchybar --trigger yabai_update" },
     &.{ "-m", "signal", "--add", "event=window_created", "app=Telegram", "label=telegram-display-enforcement", "action=zsh -c \"sleep 1.5 && yabai -m window $YABAI_WINDOW_ID --display 1 --focus\"" },
 };
 
@@ -51,30 +66,35 @@ const managed_signals = [_][]const []const u8{
 ///
 /// Settings that file had commented out are not here: they were off.
 const settings = [_][]const u8{
-    "mouse_follows_focus",     "off",
-    "focus_follows_mouse",     "off",
-    "window_placement",        "second_child",
-    "window_shadow",           "off",
+    "mouse_follows_focus",         "off",
+    "focus_follows_mouse",         "off",
+    "window_placement",            "second_child",
+    "window_shadow",               "off",
     "skip_window_focus_animation", "on",
-    "window_opacity",          "off",
-    "active_window_opacity",   "0.97",
-    "normal_window_opacity",   "0.93",
-    "insert_feedback_color",   "0xffd75f5f",
-    "split_ratio",             "0.50",
-    "auto_balance",            "off",
-    "mouse_modifier",          "fn",
-    "mouse_action1",           "move",
-    "mouse_action2",           "resize",
-    "mouse_drop_action",       "swap",
-    "layout",                  "stack",
-    "top_padding",             "0",
-    "bottom_padding",          "0",
-    "left_padding",            "0",
-    "right_padding",           "0",
-    "window_gap",              "3",
-    "external_bar",            "all:26:0",
-    "display_arrangement_order", "horizontal",
-    "debug_output",            "on",
+    "window_opacity",              "off",
+    "active_window_opacity",       "0.97",
+    "normal_window_opacity",       "0.93",
+    "insert_feedback_color",       "0xffd75f5f",
+    "split_ratio",                 "0.50",
+    "auto_balance",                "off",
+    "mouse_modifier",              "fn",
+    "mouse_action1",               "move",
+    "mouse_action2",               "resize",
+    "mouse_drop_action",           "swap",
+    "layout",                      "stack",
+    "top_padding",                 "0",
+    "bottom_padding",              "0",
+    "left_padding",                "0",
+    "right_padding",               "0",
+    "window_gap",                  "3",
+    "external_bar",                "all:26:0",
+    "display_arrangement_order",   "horizontal",
+    // Off, where `~/.yabairc` had it on. With it on, yabai writes every event it
+    // handles - and every query the bar's refresh sends it - to its stdout in
+    // `/tmp/yabai_kdressler.out.log`, on the same thread that processes them,
+    // and the file only grows: 104 MiB in twenty-five minutes here. A drag emits
+    // one event per frame, so the log is written to on the drag path.
+    "debug_output",                "off",
 };
 
 /// `yabai -m config` followed by every setting: one argument vector, one
@@ -104,7 +124,7 @@ pub fn refreshRules(context: *Context, args: []const []const u8) anyerror![]cons
     const arena = context.arena;
 
     const listed = try context.yabai.query([]yabai.Labeled, arena, &.{ "-m", "rule", "--list" });
-    for (listed) |rule| removeByLabel(arena, context.yabai, "rule", rule.@"label") catch {};
+    for (listed) |rule| removeByLabel(arena, context.yabai, "rule", rule.label) catch {};
 
     // zsh keeps going after a failed add (no `set -e`) and the function's exit
     // is the last add's status. On this machine the `display=^3` rule can
@@ -118,8 +138,8 @@ pub fn refreshRules(context: *Context, args: []const []const u8) anyerror![]cons
     return "";
 }
 
-/// Re-provision the yabai signals: clear, then add the four that survive the
-/// migration. The shell's fifth (`kme`) only ran a command that is not ported.
+/// Re-provision the yabai signals: clear, then add every one in
+/// `managed_signals`.
 pub fn refreshSignals(context: *Context, args: []const []const u8) anyerror![]const u8 {
     _ = args;
     try clearSignalsInner(context, true);
@@ -150,7 +170,7 @@ fn clearSignalsInner(context: *Context, tolerate_removal_failure: bool) !void {
 
     const listed = try context.yabai.query([]yabai.Labeled, arena, &.{ "-m", "signal", "--list" });
     for (listed) |signal| {
-        removeByLabel(arena, context.yabai, "signal", signal.@"label") catch |err| {
+        removeByLabel(arena, context.yabai, "signal", signal.label) catch |err| {
             if (!tolerate_removal_failure) return err;
         };
     }
@@ -204,7 +224,7 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
         sort(spaces);
 
         for (spaces) |space| {
-            if (!isSelected(wanted, space.@"label")) continue;
+            if (!isSelected(wanted, space.label)) continue;
 
             if (focused_display != null and space.display == focused_display.?) {
                 // `.[-1]` of `sort_by(."has-focus")` over this display's matches:
@@ -324,10 +344,10 @@ pub fn spaceLabels(context: *Context, args: []const []const u8) anyerror![]const
 
     var labels = std.ArrayList([]const u8).empty;
     for (spaces) |space| {
-        if (space.@"label".len == 0) continue;
+        if (space.label.len == 0) continue;
         // A label may be on more than one space; it is offered once.
-        if (isSelected(labels.items, space.@"label")) continue;
-        try labels.append(arena, space.@"label");
+        if (isSelected(labels.items, space.label)) continue;
+        try labels.append(arena, space.label);
     }
     return std.mem.join(arena, "\n", labels.items) catch return error.OutOfMemory;
 }

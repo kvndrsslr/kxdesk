@@ -10,9 +10,13 @@
 //! the bar.
 //!
 //! Most events are handled inline, because the answers come from yabai or from
-//! the kernel and take microseconds. The two items whose refresh reaches the
-//! network are handed to `std.Io.async` instead, so the receive loop keeps
-//! running while they work; see `background.zig`.
+//! the kernel and cost about a tenth of a second: a full refresh forks yabai
+//! twice (`--spaces`, `--windows`), so a lone change refreshes the strips at
+//! once and a stream of them - a drag, a flood of `window_moved` - is collapsed
+//! to one refresh per `yabai_refresh_interval_ms`, drained by the receive loop's
+//! timer. Only the two items whose refresh reaches the network are handed to
+//! `std.Io.async` instead, so the receive loop keeps running while they work;
+//! see `background.zig`.
 
 const std = @import("std");
 
@@ -63,6 +67,42 @@ pub const Dispatcher = struct {
     brew: background.Slot = .{},
     github: background.Slot = .{},
     usage: background.Slot = .{},
+    /// A refresh asked for while one ran too recently to repeat. The receive
+    /// loop's timer drains it through `pollYabai` once the interval closes.
+    yabai_pending: bool = false,
+    /// Awake-clock instant the last full refresh started; `.zero` for none yet.
+    yabai_refreshed: std.Io.Timestamp = .zero,
+
+    /// A full refresh forks yabai twice and rebuilds every strip, and a drag or
+    /// a space flood turns into a stream of `window_moved` events. The loop runs
+    /// one update at a time, so a stream would otherwise cost one fork per
+    /// event and every click behind them would wait; holding refreshes this far
+    /// apart collapses the stream into one while a lone event still refreshes at
+    /// once.
+    const yabai_refresh_interval_ms: i64 = 120;
+
+    /// Milliseconds since the last full refresh; effectively infinite before the
+    /// first one, so that an event with nothing in flight refreshes immediately.
+    fn refreshAgeMs(self: *const Dispatcher) i64 {
+        if (self.yabai_refreshed.nanoseconds == 0) return std.math.maxInt(i64);
+        const age = self.yabai_refreshed.durationTo(std.Io.Timestamp.now(self.io, .awake));
+        return @intCast(@divTrunc(age.nanoseconds, std.time.ns_per_ms));
+    }
+
+    /// Refresh the strips now, or hold the refresh for the timer when one ran
+    /// inside `yabai_refresh_interval_ms`.
+    fn requestYabai(self: *Dispatcher) !void {
+        if (self.refreshAgeMs() < yabai_refresh_interval_ms) {
+            self.yabai_pending = true;
+            return;
+        }
+        return self.refreshYabai();
+    }
+
+    fn refreshYabai(self: *Dispatcher) !void {
+        self.yabai_refreshed = std.Io.Timestamp.now(self.io, .awake);
+        return self.yabai_items.update();
+    }
 
     pub fn handle(self: *Dispatcher, block: [*:0]const u8) !void {
         const env = sb.Env{ .block = block };
@@ -71,7 +111,6 @@ pub const Dispatcher = struct {
         if (std.mem.eql(u8, env.getOrEmpty("SENDER"), "mouse.clicked")) {
             return self.click(name, env);
         }
-
         if (std.mem.eql(u8, name, "system.yabai")) {
             // The display map is cached, so a display change has to drop it; the
             // full update below then rebuilds it.
@@ -84,7 +123,7 @@ pub const Dispatcher = struct {
             if (std.mem.eql(u8, env.getOrEmpty("ONLY"), "title")) {
                 return self.yabai_items.updateTitle(env.getOrEmpty("YABAI_WINDOW_ID"));
             }
-            return self.yabai_items.update();
+            return self.requestYabai();
         }
         if (std.mem.eql(u8, name, items_system.ring_item)) return self.system_items.battery();
         if (std.mem.eql(u8, name, "calendar")) return self.system_items.calendar();
@@ -151,24 +190,6 @@ pub const Dispatcher = struct {
         // A provider's number opens that provider's usage page.
         if (std.mem.eql(u8, name, items_usage.neuralwatt_item)) return openPage(items_usage.neuralwatt_url);
         if (std.mem.eql(u8, name, items_usage.openrouter_item)) return openPage(items_usage.openrouter_url);
-        // The provider items are refreshed by the receive loop's clock, not by
-        // their own events: a refresh pushes labels back to the items, and an
-        // item that is subscribed to updates turns that push into another event.
-        // Here only the mouse matters.
-        // Only the balance with windows has a popup to show; the other item is
-        // subscribed to clicks alone.
-        if (std.mem.eql(u8, name, items_usage.neuralwatt_item)) {
-            const sender = env.getOrEmpty("SENDER");
-            if (std.mem.eql(u8, sender, "mouse.entered")) {
-                return self.setUsagePopup(name, .show);
-            }
-            if (std.mem.eql(u8, sender, "mouse.exited") or
-                std.mem.eql(u8, sender, "mouse.exited.global"))
-            {
-                return self.setUsagePopup(name, .hide);
-            }
-            return;
-        }
         if (std.mem.eql(u8, name, items_github.bell)) {
             return items_github.setPopup(self.bar, .toggle);
         }
@@ -196,6 +217,29 @@ pub const Dispatcher = struct {
             return 1000;
         }
         return items_usage.waitMs(self.io);
+    }
+
+    /// Drain a refresh that was held back because one had just run, and report
+    /// how long the receive loop may wait next. Called from that loop's timer,
+    /// on the loop's own thread, so the refresh it runs shares nothing with a
+    /// handler mid-flight.
+    ///
+    /// Follows the loop's convention that 0 means "nothing scheduled": a
+    /// refresh still inside the interval reports the wait left, so the loop
+    /// wakes when the interval closes instead of sleeping through it.
+    pub fn pollYabai(self: *Dispatcher) u32 {
+        if (!self.yabai_pending) return 0;
+
+        const age = self.refreshAgeMs();
+        if (age < yabai_refresh_interval_ms) {
+            return @intCast(yabai_refresh_interval_ms - age);
+        }
+
+        self.yabai_pending = false;
+        self.refreshYabai() catch |err| {
+            std.debug.print("kxdesk: yabai refresh failed: {s}\n", .{@errorName(err)});
+        };
+        return 0;
     }
 
     /// Show or hide the rows under one of the provider items.

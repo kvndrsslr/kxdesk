@@ -31,6 +31,7 @@ const build_options = @import("build_options");
 const bar_config = @import("bar.zig");
 const cli = @import("cli.zig");
 const commands = @import("commands.zig");
+const context = @import("context.zig");
 const control = @import("control.zig");
 const dispatch = @import("dispatch.zig");
 const items_system = @import("items_system.zig");
@@ -77,7 +78,7 @@ const Daemon = struct {
     /// twice at once and the receive loop never waits for a task to finish.
     slots: [commands.all.len]background.Slot = @splat(.{}),
 
-    fn context(self: *Daemon, arena: std.mem.Allocator, bar: *sb.Client) commands.Context {
+    fn commandContext(self: *Daemon, arena: std.mem.Allocator, bar: *sb.Client) context.Context {
         return .{
             .arena = arena,
             .io = self.io,
@@ -128,10 +129,11 @@ const Daemon = struct {
         const run = commands.all[index].run orelse
             return control.postReply(reply_port, .{ .err = "this command runs in the client" });
 
-        var command_context = self.context(arena_state.allocator(), &bar);
+        var command_context = self.commandContext(arena_state.allocator(), &bar);
         if (run(&command_context, args)) |payload| {
             control.postReply(reply_port, .{ .ok = payload });
         } else |err| {
+            std.debug.print("kxdesk: command {s} failed: {s}\n", .{ verb, @errorName(err) });
             control.postReply(reply_port, .{ .err = @errorName(err) });
         }
     }
@@ -229,9 +231,12 @@ fn onTimer() callconv(.c) u32 {
     const bar = if (daemon.present.load(.monotonic)) daemon.bar else null;
     daemon.pomodoro.tick(daemon.io, bar);
 
-    // Three things want the clock, and the loop wakes for whichever is soonest.
+    // Four things want the clock, and the loop wakes for whichever is soonest.
+    // A held-back yabai refresh reports the wait it still owes, so the loop
+    // wakes when that closes rather than sleeping through it.
     const load_wait = daemon.dispatcher.system_items.pollLoad(daemon.io, bar);
-    return soonest(soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage()), load_wait);
+    const yabai_wait = daemon.dispatcher.pollYabai();
+    return soonest(soonest(soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage()), load_wait), yabai_wait);
 }
 
 /// The sooner of two waits, in the loop's convention that 0 means "nothing
@@ -454,8 +459,8 @@ fn runDaemon(init: std.process.Init) !void {
         {
             var restore_state_arena = std.heap.ArenaAllocator.init(gpa);
             defer restore_state_arena.deinit();
-            var context = daemon.context(restore_state_arena.allocator(), &bar);
-            commands.restoreState(&context);
+            var command_context = daemon.commandContext(restore_state_arena.allocator(), &bar);
+            commands.restoreState(&command_context);
         }
     } else |_| {}
 

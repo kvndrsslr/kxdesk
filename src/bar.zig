@@ -1,6 +1,11 @@
 //! Declarative bar configuration - the native replacement for `sketchybarrc`,
 //! `colors.sh`, `icons.sh` and the `items/*.sh` files.
 //!
+//! Every property list is declared as a nested struct and compiled to the flat
+//! `key=value` arguments SketchyBar consumes by `config.node`, entirely at
+//! compile time (see `config.zig`). Nothing is formatted or concatenated at
+//! runtime: the string the compiler baked is the one that goes out.
+//!
 //! Everything is emitted into one command batch, so SketchyBar applies the whole
 //! configuration and redraws exactly once. Every item whose data this daemon
 //! computes declares `mach_helper=`; the space, front-app and separator
@@ -16,49 +21,15 @@
 const std = @import("std");
 
 const sb = @import("sb.zig");
+const config = @import("config.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const pomodoro = @import("pomodoro.zig");
-const Props = @import("props.zig").Props;
 const theme = @import("theme.zig");
-
-/// Items live in SketchyBar, not in this file: reloading the configuration
-/// re-declares them but never removes properties an earlier configuration set.
-/// Every item the helper takes over therefore clears the shell `script` it used
-/// to carry - `plugins/yabai.sh` in particular - otherwise SketchyBar would still
-/// fork that script on every event, and it would race the helper's own updates.
-const clear_script = "script=";
-
-/// The same trap applies to `click_script`: an item that a previous
-/// configuration gave a click handler keeps it, so taking one away means saying
-/// so. The bell's click is now an event the helper handles.
-const clear_click_script = "click_script=";
 
 /// Items an earlier configuration declared and this one does not. SketchyBar
 /// keeps items across reloads, so retiring one means removing it here: nothing
 /// else will, and a leftover item would keep running the plugin it was given.
-/// The air around every item, in points, so that every gap on the bar is the
-/// same 2 x this.
-///
-/// An item's padding is inside its own frame and the gap to its neighbour is the
-/// sum of their two paddings, so one value applied to every item is what makes
-/// the spacing uniform.
-const item_padding = 4;
-
-/// How wide each of the two graphs is, in points. Both are this wide, so their
-/// windows hold the same number of samples and the same stretch of time.
-const graph_width = 60;
-
-/// The battery ring's diameter, in points. A ring takes exactly this much of the
-/// bar, and the bar is 24 points tall.
-const battery_ring_diameter = 20;
-
-/// Give an item the bar's standard padding on both sides.
-fn pad(props: *Props, points: u32) !void {
-    try props.num("padding_left", points);
-    try props.num("padding_right", points);
-}
-
 const retired_items = [_][]const u8{
     // The Spotify popup left the configuration; its plugin is gone.
     "/spotify\\..*/",
@@ -82,6 +53,22 @@ const retired_items = [_][]const u8{
     "/^network_alias$/",
 };
 
+/// The air around every item, in points, so that every gap on the bar is the
+/// same 2 x this.
+///
+/// An item's padding is inside its own frame and the gap to its neighbour is the
+/// sum of their two paddings, so one value applied to every item is what makes
+/// the spacing uniform.
+const item_padding = 4;
+
+/// How wide each of the two graphs is, in points. Both are this wide, so their
+/// windows hold the same number of samples and the same stretch of time.
+const graph_width = 60;
+
+/// The battery ring's diameter, in points. A ring takes exactly this much of the
+/// bar, and the bar is 24 points tall.
+const battery_ring_diameter = 20;
+
 /// Spaces 1..16 exist as items; yabai decides which ones are real.
 pub const max_spaces = 16;
 /// Displays 1..4 get a `front_app` / `yabai_status` pair.
@@ -93,8 +80,17 @@ pub const Config = struct {
     helper: []const u8,
 };
 
+/// Apply a compile-time item config, then the one property whose value is only
+/// known at runtime: the bootstrap name the daemon registered under, which is
+/// what routes the item's events back to it. It lands in the same `--set`, since
+/// nothing else queues a command word between the two.
+fn applyHelper(c: *sb.Client, item: []const u8, script: config.Script, helper: []const u8) !void {
+    try script.apply(c, item);
+    try c.prop("mach_helper", helper);
+}
+
 /// Emit the complete configuration.
-pub fn apply(c: *sb.Client, config: Config) !void {
+pub fn apply(c: *sb.Client, config_input: Config) !void {
     for (retired_items) |pattern| {
         try c.arg("--remove");
         try c.arg(pattern);
@@ -102,54 +98,69 @@ pub fn apply(c: *sb.Client, config: Config) !void {
 
     try bar(c);
     try spaces(c);
-    try frontAppItems(c, config);
-    try rightItems(c, config);
+    try frontAppItems(c, config_input);
+    try rightItems(c, config_input);
     try c.arg("--update");
     try c.commit();
 }
 
 fn bar(c: *sb.Client) !void {
+    @setEvalBranchQuota(1_000_000);
     try c.arg("--bar");
-    try c.propFmt("height", "{d}", .{theme.bar_height});
-    try c.propFmt("color", "0x{x:0>8}", .{theme.bar_color});
-    try c.prop("shadow", "off");
-    try c.prop("position", "top");
-    try c.prop("sticky", "on");
-    try c.prop("topmost", "off");
-    try c.prop("padding_right", "8");
-    try c.prop("padding_left", "2");
-    try c.prop("corner_radius", "0");
-    try c.prop("y_offset", "0");
-    try c.prop("margin", "0");
-    try c.prop("blur_radius", "20");
-    try c.prop("notch_width", "225");
+    const bar_cfg = config.node(.{
+        .height = theme.bar_height,
+        .color = config.color(theme.bar_color),
+        .shadow = false,
+        .position = "top",
+        .sticky = true,
+        .topmost = false,
+        .padding_right = 8,
+        .padding_left = 2,
+        .corner_radius = 0,
+        .y_offset = 0,
+        .margin = 0,
+        .blur_radius = 20,
+        .notch_width = 225,
+    });
+    try bar_cfg.queue(c);
 
     // Defaults are copied into items when they are created, so they must precede
     // every `--add`.
     try c.arg("--default");
-    try c.prop("updates", "when_shown");
-    try c.propFmt("icon.font", "{s}:Bold:14.0", .{theme.font});
-    try c.propFmt("icon.color", "0x{x:0>8}", .{theme.icon_color});
-    try c.propFmt("icon.padding_left", "{d}", .{theme.padding});
-    try c.propFmt("icon.padding_right", "{d}", .{theme.padding});
-    try c.propFmt("label.font", "{s}:SemiBold:13.0", .{theme.font});
-    try c.propFmt("label.color", "0x{x:0>8}", .{theme.label_color});
-    try c.propFmt("label.padding_left", "{d}", .{theme.padding});
-    try c.propFmt("label.padding_right", "{d}", .{theme.padding});
-    try c.propFmt("background.padding_right", "{d}", .{theme.padding});
-    try c.propFmt("background.padding_left", "{d}", .{theme.padding});
-    try c.propFmt("background.height", "{d}", .{theme.bar_height});
-    try c.prop("background.corner_radius", "9");
-    try c.prop("popup.background.border_width", "0");
-    try c.prop("popup.background.corner_radius", "0");
-    try c.propFmt("popup.background.border_color", "0x{x:0>8}", .{theme.black});
-    try c.propFmt("popup.background.color", "0x{x:0>8}", .{theme.black});
-    try c.prop("popup.background.shadow.drawing", "off");
+    const defaults = config.node(.{
+        .updates = "when_shown",
+        .icon = .{
+            .font = theme.font ++ ":Bold:14.0",
+            .color = config.color(theme.icon_color),
+            .padding_left = theme.padding,
+            .padding_right = theme.padding,
+        },
+        .label = .{
+            .font = theme.font ++ ":SemiBold:13.0",
+            .color = config.color(theme.label_color),
+            .padding_left = theme.padding,
+            .padding_right = theme.padding,
+        },
+        .background = .{
+            .padding_right = theme.padding,
+            .padding_left = theme.padding,
+            .height = theme.bar_height,
+            .corner_radius = 9,
+        },
+        .popup = .{ .background = .{
+            .border_width = 0,
+            .corner_radius = 0,
+            .border_color = config.color(theme.black),
+            .color = config.color(theme.black),
+            .shadow = .{ .drawing = false },
+        } },
+    });
+    try defaults.queue(c);
 }
 
 fn spaces(c: *sb.Client) !void {
-    var index: u32 = 1;
-    while (index <= max_spaces) : (index += 1) {
+    @setEvalBranchQuota(1_000_000);
+    inline for (1..max_spaces + 1) |index| {
         var name: [16]u8 = undefined;
         const item = try std.fmt.bufPrint(&name, "space.{d}", .{index});
 
@@ -158,37 +169,47 @@ fn spaces(c: *sb.Client) !void {
         try c.arg(item);
         try c.arg("left");
 
-        var props: Props = .{};
-        // Older configurations attached a highlight script to space items; the
-        // helper owns `icon.highlight` now.
-        props.raw(clear_script);
-        try props.num("associated_space", index);
-        try props.num("icon", index);
-        try props.num("icon.padding_left", 10);
-        try props.num("icon.padding_right", 10);
-        try props.color("icon.color", theme.white);
-        try props.color("icon.highlight_color", theme.green);
-        try props.fmt("icon.font={s}:ExtraBold:13.0", .{theme.font});
-        try pad(&props, item_padding);
-        try props.color("background.color", theme.black);
-        props.raw("background.drawing=off");
-        try props.fmt("label.font={s}:Regular:14", .{theme.app_font});
-        try props.num("label.y_offset", -1);
-        try props.num("label.background.height", 28);
-        props.raw("label.background.drawing=on");
-        try props.color("label.background.color", theme.background_2);
-        try props.color("label.color", theme.white);
-        try props.color("label.highlight_color", theme.background_1);
-        props.raw("label.width=dynamic");
-        try props.num("label.padding_right", 6);
-        try props.num("label.padding_left", 6);
-        try props.num("label.background.corner_radius", 0);
-        try props.num("background.corner_radius", 0);
-        props.raw("label.drawing=off");
-        // A click used to fork `yabai` through a shell. It arrives as an event
-        // instead, and the click block already carries the space's `SID`.
-        props.raw(clear_click_script);
-        try c.set(item, props.slice());
+        // `icon.value` is the space number: `value` collapses to its parent's
+        // key, so `icon` is set to the number *and* carries font and colours.
+        const script = config.node(.{
+            // Older configurations attached a highlight script to space items;
+            // the helper owns `icon.highlight` now.
+            .script = null,
+            .click_script = null,
+            .associated_space = index,
+            .padding_left = item_padding,
+            .padding_right = item_padding,
+            .icon = .{
+                .value = index,
+                .padding_left = 10,
+                .padding_right = 10,
+                .color = config.color(theme.white),
+                .highlight_color = config.color(theme.green),
+                .font = theme.font ++ ":ExtraBold:13.0",
+            },
+            .label = .{
+                .font = theme.app_font ++ ":Regular:14",
+                .y_offset = -1,
+                .color = config.color(theme.white),
+                .highlight_color = config.color(theme.background_1),
+                .width = "dynamic",
+                .padding_right = 6,
+                .padding_left = 6,
+                .background = .{
+                    .height = 28,
+                    .drawing = true,
+                    .color = config.color(theme.background_2),
+                    .corner_radius = 0,
+                },
+                .drawing = false,
+            },
+            .background = .{
+                .color = config.color(theme.black),
+                .drawing = false,
+                .corner_radius = 0,
+            },
+        });
+        try script.apply(c, item);
 
         try c.arg("--subscribe");
         try c.arg(item);
@@ -199,17 +220,22 @@ fn spaces(c: *sb.Client) !void {
     try c.arg("item");
     try c.arg("separator");
     try c.arg("left");
-    var props: Props = .{};
-    props.raw("drawing=on");
-    try props.fmt("icon={s}", .{theme.glyph.separator});
-    try props.fmt("icon.font={s}:Regular:11.0", .{theme.font});
-    try pad(&props, item_padding);
-    props.raw("label.drawing=off");
-    try props.color("icon.color", theme.separator_icon);
-    try c.set("separator", props.slice());
+    const separator = config.node(.{
+        .drawing = true,
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .icon = .{
+            .value = theme.glyph.separator,
+            .font = theme.font ++ ":Regular:11.0",
+            .color = config.color(theme.separator_icon),
+        },
+        .label = .{ .drawing = false },
+    });
+    try separator.apply(c, "separator");
 }
 
-fn frontAppItems(c: *sb.Client, config: Config) !void {
+fn frontAppItems(c: *sb.Client, config_input: Config) !void {
+    @setEvalBranchQuota(1_000_000);
     // A single hidden driver item receives `yabai_update` and lets the helper
     // refresh every space and per-display item from one batch.
     try c.arg("--add");
@@ -220,21 +246,20 @@ fn frontAppItems(c: *sb.Client, config: Config) !void {
     try c.arg("item");
     try c.arg("system.yabai");
     try c.arg("left");
-    var driver: Props = .{};
-    driver.raw(clear_script);
-    driver.raw("drawing=off");
-    driver.raw("updates=on");
-    try driver.num("associated_display", 1);
-    try driver.text("mach_helper", config.helper);
-    try c.set("system.yabai", driver.slice());
+    const driver = config.node(.{
+        .script = null,
+        .drawing = false,
+        .updates = true,
+        .associated_display = 1,
+    });
+    try applyHelper(c, "system.yabai", driver, config_input.helper);
 
     try c.arg("--subscribe");
     try c.arg("system.yabai");
     try c.arg("yabai_update");
     try c.arg("display_change");
 
-    var display: u32 = 1;
-    while (display <= max_displays) : (display += 1) {
+    inline for (1..max_displays + 1) |display| {
         var name: [24]u8 = undefined;
 
         const status = try std.fmt.bufPrint(&name, "yabai_status.{d}", .{display});
@@ -243,19 +268,25 @@ fn frontAppItems(c: *sb.Client, config: Config) !void {
         try c.arg(status);
         try c.arg("left");
 
-        var status_props: Props = .{};
-        status_props.raw(clear_script);
-        status_props.raw("drawing=on");
-        try status_props.fmt("icon.font={s}:Bold:14.0", .{theme.font});
-        status_props.raw("label.drawing=off");
-        try status_props.fmt("label.font={s}:Regular:12.0", .{theme.font});
-        try pad(&status_props, item_padding);
-        try status_props.num("icon.width", 24);
-        try status_props.fmt("icon={s}", .{theme.glyph.yabai_grid});
-        try status_props.color("icon.color", theme.orange);
-        status_props.raw("updates=off");
-        try status_props.num("associated_display", display);
-        try c.set(status, status_props.slice());
+        const status_cfg = config.node(.{
+            .script = null,
+            .drawing = true,
+            .padding_left = item_padding,
+            .padding_right = item_padding,
+            .icon = .{
+                .value = theme.glyph.yabai_grid,
+                .width = 24,
+                .font = theme.font ++ ":Bold:14.0",
+                .color = config.color(theme.orange),
+            },
+            .label = .{
+                .drawing = false,
+                .font = theme.font ++ ":Regular:12.0",
+            },
+            .updates = false,
+            .associated_display = display,
+        });
+        try status_cfg.apply(c, status);
 
         const front = try std.fmt.bufPrint(&name, "front_app.{d}", .{display});
         try c.arg("--add");
@@ -263,19 +294,26 @@ fn frontAppItems(c: *sb.Client, config: Config) !void {
         try c.arg(front);
         try c.arg("left");
 
-        var front_props: Props = .{};
-        front_props.raw("drawing=on");
-        try pad(&front_props, item_padding);
-        try front_props.color("icon.color", theme.white);
-        try front_props.fmt("icon.font={s}:ExtraBold:12.0", .{theme.font});
-        try front_props.color("label.color", theme.grey);
-        try front_props.fmt("label.font={s}:Italic:12.0", .{theme.font});
-        try front_props.num("associated_display", display);
-        try c.set(front, front_props.slice());
+        const front_cfg = config.node(.{
+            .drawing = true,
+            .padding_left = item_padding,
+            .padding_right = item_padding,
+            .icon = .{
+                .color = config.color(theme.white),
+                .font = theme.font ++ ":ExtraBold:12.0",
+            },
+            .label = .{
+                .color = config.color(theme.grey),
+                .font = theme.font ++ ":Italic:12.0",
+            },
+            .associated_display = display,
+        });
+        try front_cfg.apply(c, front);
     }
 }
 
-fn rightItems(c: *sb.Client, config: Config) !void {
+fn rightItems(c: *sb.Client, config_input: Config) !void {
+    @setEvalBranchQuota(1_000_000);
     // The battery: read from IOKit in-process instead of spawning `pmset`, and
     // shown as one ring rather than as an item and a ring. Its value is the charge
     // and the battery's own level glyph sits inside it as the marker, so it reads
@@ -287,37 +325,42 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg(items_system.ring_item);
     try c.arg("right");
     try c.arg(std.fmt.comptimePrint("{d}", .{battery_ring_diameter}));
-    var ring: Props = .{};
-    // Drawn from the start: the charge is this item's to show, and on a bar that
-    // is already up the drawing a previous configuration left behind is the only
-    // other thing that could say. This is also what `items_system.battery` sets
-    // with every reading.
-    ring.raw("drawing=on");
-    // The air between the ring and the clock, which is the item to its left, is
-    // the ring's left padding and the clock's right padding - and a ring is
-    // round, so the same number of points reads wider there than between two
-    // glyphs. The ring's own side of that gap is dropped, since the clock's is
-    // enough, and the ring keeps the bar's standard padding on its other side.
-    try ring.num("padding_left", 0);
-    try ring.num("padding_right", item_padding);
-    try ring.color("ring.color", theme.green);
-    try ring.color("ring.track_color", theme.dark_grey);
-    // The diameter is given to `--add` and also set here: that argument only lands
-    // when the item is created, and an item that outlives the configuration keeps
-    // whatever a later `--set` gave it - which is the same trap `script` and
-    // `click_script` fall into.
-    try ring.num("ring.width", battery_ring_diameter);
-    try ring.num("ring.line_width", 2);
-    ring.raw("ring.marker.position=center");
-    try ring.fmt("ring.marker.font={s}:Bold:12.0", .{theme.font});
-    ring.raw(clear_script);
-    ring.raw(clear_click_script);
-    try ring.text("mach_helper", config.helper);
-    // The battery's own readings, and how often they are asked for again: a
-    // battery that is not changing sends nothing, so the level is re-read on the
-    // item's own clock.
-    try ring.num("update_freq", 120);
-    try c.set(items_system.ring_item, ring.slice());
+    const ring = config.node(.{
+        // Drawn from the start: the charge is this item's to show, and on a bar
+        // that is already up the drawing a previous configuration left behind is
+        // the only other thing that could say. This is also what
+        // `items_system.battery` sets with every reading.
+        .drawing = true,
+        // The air between the ring and the clock, which is the item to its left,
+        // is the ring's left padding and the clock's right padding - and a ring
+        // is round, so the same number of points reads wider there than between
+        // two glyphs. The ring's own side of that gap is dropped, since the
+        // clock's is enough, and the ring keeps the bar's standard padding on its
+        // other side.
+        .padding_left = 0,
+        .padding_right = item_padding,
+        .ring = .{
+            .color = config.color(theme.green),
+            .track_color = config.color(theme.dark_grey),
+            // The diameter is given to `--add` and also set here: that argument
+            // only lands when the item is created, and an item that outlives the
+            // configuration keeps whatever a later `--set` gave it - which is the
+            // same trap `script` and `click_script` fall into.
+            .width = battery_ring_diameter,
+            .line_width = 2,
+            .marker = .{
+                .position = "center",
+                .font = theme.font ++ ":Bold:12.0",
+            },
+        },
+        .script = null,
+        .click_script = null,
+        // The battery's own readings, and how often they are asked for again: a
+        // battery that is not changing sends nothing, so the level is re-read on
+        // the item's own clock.
+        .update_freq = 120,
+    });
+    try applyHelper(c, items_system.ring_item, ring, config_input.helper);
     try c.arg("--subscribe");
     try c.arg(items_system.ring_item);
     try c.arg("battery");
@@ -329,22 +372,27 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("item");
     try c.arg("calendar");
     try c.arg("right");
-    var calendar: Props = .{};
-    try pad(&calendar, item_padding);
-    calendar.raw("icon=cal");
-    try calendar.fmt("icon.font={s}:ExtraBold:11.0", .{theme.font});
-    try calendar.num("icon.padding_right", 8);
-    try calendar.color("icon.color", theme.calendar_icon);
-    try calendar.num("icon.y_offset", -2);
-    try calendar.num("icon.padding_left", 0);
-    calendar.raw("icon.drawing=on");
-    try calendar.num("label.width", 40);
-    calendar.raw("label.align=right");
-    try calendar.num("update_freq", 5);
-    calendar.raw(clear_script);
-    calendar.raw(clear_click_script);
-    try calendar.text("mach_helper", config.helper);
-    try c.set("calendar", calendar.slice());
+    const calendar = config.node(.{
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .icon = .{
+            .value = "cal",
+            .font = theme.font ++ ":ExtraBold:11.0",
+            .padding_right = 8,
+            .color = config.color(theme.calendar_icon),
+            .y_offset = -2,
+            .padding_left = 0,
+            .drawing = true,
+        },
+        .label = .{
+            .width = 40,
+            .@"align" = "right",
+        },
+        .update_freq = 5,
+        .script = null,
+        .click_script = null,
+    });
+    try applyHelper(c, "calendar", calendar, config_input.helper);
     try c.arg("--subscribe");
     try c.arg("calendar");
     try c.arg("mouse.clicked");
@@ -369,7 +417,7 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     //
     // They are drawn over one another rather than side by side, and neither
     // carries text: the graph is the whole item and its colour is its only label.
-    for ([_]struct { name: []const u8, color: theme.Color }{
+    inline for ([_]struct { name: []const u8, color: theme.Color }{
         .{ .name = items_system.cpu_item, .color = theme.graph_cpu },
         .{ .name = items_system.gpu_item, .color = theme.graph_gpu },
     }, 0..) |series, index| {
@@ -379,30 +427,37 @@ fn rightItems(c: *sb.Client, config: Config) !void {
         try c.arg("right");
         try c.arg(std.fmt.comptimePrint("{d}", .{graph_width}));
 
-        var graph: Props = .{};
-        try pad(&graph, item_padding);
+        const graph = config.node(.{
+            .padding_left = item_padding,
+            .padding_right = item_padding,
+            .drawing = true,
+            .associated_display = 1,
+            // The transparent background is not for looks: giving a graph a
+            // background is what makes it draw inside that background's height
+            // instead of across the whole 24-point bar, which is the frame the
+            // original helper's graphs used. Both text slots are off, so neither
+            // reserves room.
+            .label = .{ .drawing = false },
+            .icon = .{ .drawing = false },
+            .background = .{
+                .drawing = true,
+                .color = config.color(theme.graph_no_fill),
+                .height = 20,
+            },
+            .graph = .{
+                .color = config.color(series.color),
+                .fill_color = config.color(theme.graph_no_fill),
+                .line_width = 1,
+            },
+            .script = null,
+            .click_script = null,
+        });
+        try graph.apply(c, series.name);
         // The first of the two takes no room of its own, so the second begins at
         // the same x and the two graphs are drawn over one another. The width is
         // not lost from the bar: the second graph still occupies its own, and that
         // is what the item after the pair is placed against.
-        if (index == 0) graph.raw("width=0");
-        graph.raw("drawing=on");
-        try graph.num("associated_display", 1);
-        // The transparent background is not for looks: giving a graph a background
-        // is what makes it draw inside that background's height instead of across
-        // the whole 24-point bar, which is the frame the original helper's graphs
-        // used. Both text slots are off, so neither reserves room.
-        graph.raw("label.drawing=off");
-        graph.raw("icon.drawing=off");
-        graph.raw("background.drawing=on");
-        graph.raw("background.color=0x00000000");
-        try graph.num("background.height", 20);
-        try graph.color("graph.color", series.color);
-        try graph.color("graph.fill_color", theme.graph_no_fill);
-        try graph.num("graph.line_width", 1);
-        graph.raw(clear_script);
-        graph.raw(clear_click_script);
-        try c.set(series.name, graph.slice());
+        if (index == 0) try c.prop("width", "0");
     }
 
     // The pair is placed between the date and the Homebrew status by moving it
@@ -428,33 +483,41 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("item");
     try c.arg("brew");
     try c.arg("right");
-    var brew: Props = .{};
-    try pad(&brew, item_padding);
-    brew.raw(clear_script);
-    try brew.text("mach_helper", config.helper);
-    try brew.fmt("icon={s}", .{theme.glyph.brew});
-    try brew.num("update_freq", 3600);
-    // The number is a badge here too, for the same reason: a count with two digits
-    // must not widen the item and shift what is beside it.
-    brew.raw("label.drawing=off");
-    brew.raw("label=");
-    try brew.fmt("icon.badge={s}", .{"?"});
-    try brew.fmt("icon.badge.font={s}:Bold:9.0", .{theme.font});
-    brew.raw("icon.badge.anchor=bottom_right");
-    try brew.num("icon.badge.x_offset", 2);
-    try brew.num("icon.badge.y_offset", -1);
-    try brew.color("icon.badge.background.color", theme.badge_background);
-    brew.raw("icon.badge.background.drawing=on");
-    // Dynamic box with 1px air on every side, so the chip hugs the count -
-    // a circle for a single digit - instead of a fixed-height pill.
-    brew.raw("icon.badge.width=dynamic");
-    brew.raw("icon.badge.background.height=0");
-    brew.raw("icon.badge.background.corner_radius=6");
-    try brew.num("icon.badge.background.padding_left", 1);
-    try brew.num("icon.badge.background.padding_right", 1);
-    try brew.num("associated_display", 1);
-    brew.raw("drawing=on");
-    try c.set("brew", brew.slice());
+    const brew = config.node(.{
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .script = null,
+        .icon = .{
+            .value = theme.glyph.brew,
+            .badge = .{
+                // A count with two digits must not widen the item and shift what
+                // is beside it - the numeral is a badge on the icon, like the
+                // bell's, for the same reason.
+                .value = "?",
+                .font = theme.font ++ ":Bold:9.0",
+                .anchor = config.Anchors.bottom_right,
+                .x_offset = 2,
+                .y_offset = -1,
+                .background = .{
+                    .drawing = true,
+                    .color = config.color(theme.badge_background),
+                    // Dynamic box with 1px air on every side, so the chip hugs
+                    // the count - a circle for a single digit - instead of a
+                    // fixed-height pill.
+                    .width = "dynamic",
+                    .height = 0,
+                    .corner_radius = 6,
+                    .padding_left = 1,
+                    .padding_right = 1,
+                },
+            },
+        },
+        .label = .{ .value = null, .drawing = false },
+        .update_freq = 3600,
+        .associated_display = 1,
+        .drawing = true,
+    });
+    try applyHelper(c, "brew", brew, config_input.helper);
     try c.arg("--subscribe");
     try c.arg("brew");
     try c.arg("brew_update");
@@ -464,47 +527,53 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("item");
     try c.arg("github.bell");
     try c.arg("right");
-    var bell: Props = .{};
-    bell.raw("drawing=on");
-    try bell.num("update_freq", 180);
-    try bell.fmt("icon.font={s}:Bold:15.0", .{theme.font});
-    try bell.fmt("icon={s}", .{theme.glyph.github});
-    try bell.color("icon.color", theme.blue);
-    // The count is a badge on the icon rather than the item's label. A badge is
-    // drawn over its parent and takes no room in the bar, so the item is the width
-    // of the bell however long the number gets and nothing beside it shifts. The
-    // label still has to be emptied and switched off, because an item outlives the
-    // configuration that set it.
-    //
-    // `badge.*` and the `ring` below come from the local SketchyBar fork, not from
-    // a release: an upstream bar rejects the unknown properties and draws no badge,
-    // which costs the count and nothing else.
-    bell.raw("label.drawing=off");
-    bell.raw("label=");
-    try bell.fmt("icon.badge={s}", .{theme.glyph.loading});
-    try bell.fmt("icon.badge.font={s}:Bold:9.0", .{theme.font});
-    bell.raw("icon.badge.anchor=bottom_right");
-    try bell.num("icon.badge.x_offset", 2);
-    try bell.num("icon.badge.y_offset", -1);
-    try bell.color("icon.badge.background.color", theme.badge_background);
-    bell.raw("icon.badge.background.drawing=on");
-    // Compact chip hugging the count; see the brew item.
-    bell.raw("icon.badge.width=dynamic");
-    bell.raw("icon.badge.background.height=0");
-    bell.raw("icon.badge.background.corner_radius=6");
-    try bell.num("icon.badge.background.padding_left", 1);
-    try bell.num("icon.badge.background.padding_right", 1);
-    bell.raw("popup.align=right");
-    // Dynamic rather than the fixed width an earlier configuration gave it: a
-    // fixed width swallows the padding, which is what made this item overlap the
-    // balance beside it.
-    bell.raw("width=dynamic");
-    try pad(&bell, item_padding);
-    try bell.num("associated_display", 1);
-    bell.raw(clear_script);
-    bell.raw(clear_click_script);
-    try bell.text("mach_helper", config.helper);
-    try c.set("github.bell", bell.slice());
+    const bell = config.node(.{
+        .drawing = true,
+        .update_freq = 180,
+        // The count is a badge on the icon rather than the item's label. A badge
+        // is drawn over its parent and takes no room in the bar, so the item is
+        // the width of the bell however long the number gets and nothing beside
+        // it shifts. The label still has to be emptied and switched off, because
+        // an item outlives the configuration that set it.
+        //
+        // `badge.*` comes from the local SketchyBar fork, not from a release: an
+        // upstream bar rejects the unknown properties and draws no badge, which
+        // costs the count and nothing else.
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .icon = .{
+            .value = theme.glyph.github,
+            .font = theme.font ++ ":Bold:15.0",
+            .color = config.color(theme.blue),
+            .badge = .{
+                .value = theme.glyph.loading,
+                .font = theme.font ++ ":Bold:9.0",
+                .anchor = config.Anchors.bottom_right,
+                .x_offset = 2,
+                .y_offset = -1,
+                // Compact chip hugging the count; see the brew item.
+                .background = .{
+                    .drawing = true,
+                    .color = config.color(theme.badge_background),
+                    .width = "dynamic",
+                    .height = 0,
+                    .corner_radius = 6,
+                    .padding_left = 1,
+                    .padding_right = 1,
+                },
+            },
+        },
+        .label = .{ .value = null, .drawing = false },
+        .popup = .{ .@"align" = "right" },
+        // Dynamic rather than the fixed width an earlier configuration gave it: a
+        // fixed width swallows the padding, which is what made this item overlap
+        // the balance beside it.
+        .width = "dynamic",
+        .associated_display = 1,
+        .script = null,
+        .click_script = null,
+    });
+    try applyHelper(c, "github.bell", bell, config_input.helper);
     try c.arg("--subscribe");
     try c.arg("github.bell");
     try c.arg("mouse.entered");
@@ -516,22 +585,28 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("item");
     try c.arg("github.template");
     try c.arg("popup.github.bell");
-    var template: Props = .{};
-    template.raw("drawing=off");
-    try template.num("background.corner_radius", 12);
-    try template.num("background.padding_left", 7);
-    try template.num("background.padding_right", 7);
-    try template.color("background.color", theme.black);
-    template.raw("background.drawing=off");
-    try template.num("icon.background.height", 2);
-    try template.num("icon.background.y_offset", -12);
+    const template = config.node(.{
+        .drawing = false,
+        .background = .{
+            .corner_radius = 12,
+            .padding_left = 7,
+            .padding_right = 7,
+            .color = config.color(theme.black),
+            .drawing = false,
+        },
+        .icon = .{
+            .background = .{
+                .height = 2,
+                .y_offset = -12,
+            },
+        },
+        .updates = true,
+        .click_script = null,
+    });
     // A popup row is built by `--clone`, and a row is clicked long after the
     // refresh that built it, so the routing is stated here *and* per row: the
     // row is what SketchyBar resolves, and the template is only its ancestor.
-    try template.text("mach_helper", config.helper);
-    template.raw(clear_click_script);
-    template.raw("updates=on");
-    try c.set("github.template", template.slice());
+    try applyHelper(c, "github.template", template, config_input.helper);
     try c.arg("--subscribe");
     try c.arg("github.template");
     try c.arg("mouse.clicked");
@@ -545,29 +620,33 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("item");
     try c.arg(items_usage.neuralwatt_item);
     try c.arg("right");
-    var neuralwatt: Props = .{};
-    neuralwatt.raw("drawing=on");
-    try neuralwatt.num("associated_display", 1);
-    try pad(&neuralwatt, item_padding);
-    // `dynamic` is SketchyBar's automatic width, and the default - but a
-    // property an earlier configuration set stays set otherwise, which is the
-    // same trap the empty `script=` and `click_script=` below exist for.
-    neuralwatt.raw("width=dynamic");
-    // Smaller than its neighbour on purpose: the app font's icons are not the
-    // same shape at the same size. Measured at 16 points, `:neuralwatt:` inks a
-    // full 16x16 square where `:openrouter:` is 16x13.7 and `:clock:` is
-    // 15.5x15.6, so at the same size it reads much heavier than the rest.
-    try neuralwatt.fmt("icon.font={s}:Regular:14.0", .{theme.app_font});
-    try neuralwatt.num("icon.padding_right", 2);
-    neuralwatt.raw("icon=:neuralwatt:");
-    // Dim until the first answer arrives: the colour is the daemon's to set, and
-    // a reading that stopped refreshing is dimmed rather than left bright.
-    try neuralwatt.color("icon.color", theme.dark_grey);
-    neuralwatt.raw("label=?");
-    neuralwatt.raw(clear_script);
-    neuralwatt.raw(clear_click_script);
-    try neuralwatt.text("mach_helper", config.helper);
-    try c.set(items_usage.neuralwatt_item, neuralwatt.slice());
+    const neuralwatt = config.node(.{
+        .drawing = true,
+        .associated_display = 1,
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        // `dynamic` is SketchyBar's automatic width, and the default - but a
+        // property an earlier configuration set stays set otherwise, which is the
+        // same trap the empty `script=` and `click_script=` below exist for.
+        .width = "dynamic",
+        // Smaller than its neighbour on purpose: the app font's icons are not the
+        // same shape at the same size. Measured at 16 points, `:neuralwatt:`
+        // inks a full 16x16 square where `:openrouter:` is 16x13.7 and `:clock:`
+        // is 15.5x15.6, so at the same size it reads much heavier than the rest.
+        .icon = .{
+            .value = ":neuralwatt:",
+            .font = theme.app_font ++ ":Regular:14.0",
+            .padding_right = 2,
+            // Dim until the first answer arrives: the colour is the daemon's to
+            // set, and a reading that stopped refreshing is dimmed rather than
+            // left bright.
+            .color = config.color(theme.dark_grey),
+        },
+        .label = .{ .value = "?" },
+        .script = null,
+        .click_script = null,
+    });
+    try applyHelper(c, items_usage.neuralwatt_item, neuralwatt, config_input.helper);
     try c.arg("--subscribe");
     try c.arg(items_usage.neuralwatt_item);
     try c.arg("mouse.entered");
@@ -579,20 +658,23 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("item");
     try c.arg(items_usage.openrouter_item);
     try c.arg("right");
-    var openrouter: Props = .{};
-    openrouter.raw("drawing=on");
-    try openrouter.num("associated_display", 1);
-    try pad(&openrouter, item_padding);
-    openrouter.raw("width=dynamic");
-    try openrouter.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
-    try openrouter.num("icon.padding_right", 2);
-    openrouter.raw("icon=:openrouter:");
-    try openrouter.color("icon.color", theme.dark_grey);
-    openrouter.raw("label=?");
-    openrouter.raw(clear_script);
-    openrouter.raw(clear_click_script);
-    try openrouter.text("mach_helper", config.helper);
-    try c.set(items_usage.openrouter_item, openrouter.slice());
+    const openrouter = config.node(.{
+        .drawing = true,
+        .associated_display = 1,
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .width = "dynamic",
+        .icon = .{
+            .value = ":openrouter:",
+            .font = theme.app_font ++ ":Regular:16.0",
+            .padding_right = 2,
+            .color = config.color(theme.dark_grey),
+        },
+        .label = .{ .value = "?" },
+        .script = null,
+        .click_script = null,
+    });
+    try applyHelper(c, items_usage.openrouter_item, openrouter, config_input.helper);
     // A click opens its usage page. There is no popup: this provider has no
     // daily or weekly figure to put in one.
     try c.arg("--subscribe");
@@ -601,10 +683,10 @@ fn rightItems(c: *sb.Client, config: Config) !void {
 
     // One popup row per window, per provider. They are declared rather than
     // cloned, because the number of rows does not vary.
-    for ([_]struct { parent: []const u8, color: theme.Color }{
+    inline for ([_]struct { parent: []const u8, color: theme.Color }{
         .{ .parent = items_usage.neuralwatt_item, .color = theme.green },
     }) |provider| {
-        for ([_]struct { suffix: []const u8, nominal: []const u8 }{
+        inline for ([_]struct { suffix: []const u8, nominal: []const u8 }{
             .{ .suffix = "day", .nominal = "24h" },
             .{ .suffix = "week", .nominal = "7d" },
         }) |row| {
@@ -619,20 +701,25 @@ fn rightItems(c: *sb.Client, config: Config) !void {
             try c.arg(name);
             try c.arg(position);
 
-            var detail: Props = .{};
-            detail.raw("drawing=on");
-            try detail.num("background.corner_radius", 12);
-            try detail.num("background.padding_left", 7);
-            try detail.num("background.padding_right", 7);
-            try detail.color("background.color", theme.black);
-            detail.raw("background.drawing=off");
-            try detail.num("label.padding_left", 7);
-            try detail.num("label.padding_right", 7);
-            try detail.color("label.color", provider.color);
-            try detail.fmt("label={s} -", .{row.nominal});
-            detail.raw(clear_script);
-            detail.raw(clear_click_script);
-            try c.set(name, detail.slice());
+            const detail = config.node(.{
+                .drawing = true,
+                .background = .{
+                    .corner_radius = 12,
+                    .padding_left = 7,
+                    .padding_right = 7,
+                    .color = config.color(theme.black),
+                    .drawing = false,
+                },
+                .label = .{
+                    .value = row.nominal ++ " -",
+                    .padding_left = 7,
+                    .padding_right = 7,
+                    .color = config.color(provider.color),
+                },
+                .script = null,
+                .click_script = null,
+            });
+            try detail.apply(c, name);
         }
     }
 
@@ -644,24 +731,28 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try c.arg("item");
     try c.arg(pomodoro.item);
     try c.arg("e");
-    var timer: Props = .{};
-    timer.raw("icon=:clock:");
-    try pad(&timer, item_padding);
-    try timer.num("associated_display", 1);
-    try timer.fmt("icon.font={s}:Regular:16.0", .{theme.app_font});
-    try timer.num("icon.padding_right", 2);
-    try timer.color("icon.color", theme.dark_grey);
-    timer.raw("icon.drawing=on");
-    try timer.num("label.width", 52);
-    timer.raw("label.align=left");
-    try timer.color("label.color", theme.dark_grey);
-    timer.raw("label=");
-    timer.raw(clear_script);
-    timer.raw(clear_click_script);
-    try timer.text("mach_helper", config.helper);
-    try c.set(pomodoro.item, timer.slice());
+    const timer = config.node(.{
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .associated_display = 1,
+        .icon = .{
+            .value = ":clock:",
+            .font = theme.app_font ++ ":Regular:16.0",
+            .padding_right = 2,
+            .color = config.color(theme.dark_grey),
+            .drawing = true,
+        },
+        .label = .{
+            .value = null,
+            .width = 52,
+            .@"align" = "left",
+            .color = config.color(theme.dark_grey),
+        },
+        .script = null,
+        .click_script = null,
+    });
+    try applyHelper(c, pomodoro.item, timer, config_input.helper);
     try c.arg("--subscribe");
     try c.arg(pomodoro.item);
     try c.arg("mouse.clicked");
 }
-

@@ -8,6 +8,7 @@
 const std = @import("std");
 
 const platform = @import("platform.zig");
+const timeouts = @import("timeouts.zig");
 
 /// Bootstrap service name of the running SketchyBar instance.
 pub const sketchybar_service: [:0]const u8 = "git.felix.sketchybar";
@@ -25,11 +26,6 @@ pub const Error = error{
     /// Building the command batch ran out of memory.
     OutOfMemory,
 };
-
-/// How long to wait for SketchyBar to answer a query. It applies commands on its
-/// own thread and answers immediately, so this only elapses when it is wedged;
-/// the daemon's event path must not sit on a query for longer than that.
-pub const query_timeout_ms: u32 = 1000;
 
 fn traceBatch(payload: []const u8) void {
     std.debug.print("--- batch\n", .{});
@@ -232,7 +228,7 @@ pub const Client = struct {
                 payload.len,
                 if (out) |buffer| buffer.ptr else null,
                 if (out) |buffer| buffer.len else 0,
-                query_timeout_ms,
+                timeouts.query_timeout_ms,
             );
             if (written >= 0) return @intCast(written);
 

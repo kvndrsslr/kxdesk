@@ -24,6 +24,7 @@ const std = @import("std");
 const exec = @import("exec.zig");
 const platform = @import("platform.zig");
 const sb = @import("sb.zig");
+const timeouts = @import("timeouts.zig");
 
 /// First token of a control request.
 pub const tag = "CMD";
@@ -139,11 +140,6 @@ pub fn decode(reply: []const u8) ?Answer {
     return null;
 }
 
-/// How long a client waits for the daemon to answer. A provisioning command
-/// such as `refresh_signals` runs a dozen yabai commands, so this is generous;
-/// it only elapses when the daemon is wedged.
-pub const reply_timeout_ms: u32 = 30_000;
-
 /// launchd labels a `brew services` agent for this formula can carry.
 ///
 /// Homebrew names an agent `sh.brew.<name>` and keeps `homebrew.mxcl.<name>` for
@@ -151,15 +147,6 @@ pub const reply_timeout_ms: u32 = 30_000;
 /// itself. Which one applies is a property of the deployment, so both are
 /// offered and the first one launchd accepts wins.
 const agent_labels = [_][]const u8{ "sh.brew.kxdesk", "homebrew.mxcl.kxdesk" };
-
-/// How long to wait for a daemon that was just started to publish its name, and
-/// how often to look.
-const start_timeout_ms: u32 = 2_000;
-const start_poll_ms: u32 = 50;
-
-/// How long a client that reached a daemon which then went away waits before
-/// asking again.
-const retry_delay_ms: u32 = 250;
 
 /// Ask the daemon to run `verb` with `args`, returning its reply.
 ///
@@ -184,7 +171,7 @@ pub fn submit(
             // new port. One retry finds that instance, rather than failing a key
             // binding or the bar's `apply` in the middle of a restart.
             if (attempt > 0) return error.DaemonUnavailable;
-            std.Io.sleep(io, std.Io.Duration.fromMilliseconds(retry_delay_ms), .awake) catch {};
+            std.Io.sleep(io, std.Io.Duration.fromMilliseconds(timeouts.retry_delay_ms), .awake) catch {};
             continue;
         };
         return reply;
@@ -216,7 +203,7 @@ pub fn query(
         message.len,
         out.ptr,
         out.len,
-        reply_timeout_ms,
+        timeouts.reply_timeout_ms,
     );
     return switch (written) {
         -1, -2 => null,
@@ -241,7 +228,7 @@ fn exchange(
         message.len,
         out.ptr,
         out.len,
-        reply_timeout_ms,
+        timeouts.reply_timeout_ms,
     );
     return switch (written) {
         // Sent, but nothing read it: the port belonged to a daemon that is
@@ -280,8 +267,8 @@ fn connect(gpa: std.mem.Allocator, io: std.Io) !u32 {
     if (!try startAgent(gpa, io)) return error.DaemonUnavailable;
 
     var waited: u32 = 0;
-    while (waited < start_timeout_ms) : (waited += start_poll_ms) {
-        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(start_poll_ms), .awake) catch {};
+    while (waited < timeouts.start_timeout_ms) : (waited += timeouts.start_poll_ms) {
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(timeouts.start_poll_ms), .awake) catch {};
         const port = platform.sb_bootstrap_lookup(sb.control_service);
         if (port != 0) return port;
     }
