@@ -10,6 +10,7 @@ const config = @import("config.zig");
 const items_system = @import("items_system.zig");
 const store = @import("store.zig");
 const theme = @import("theme.zig");
+const zen = @import("zen.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
@@ -169,4 +170,21 @@ test "formatRate keeps a reading inside three digits and a unit" {
         // is a contract and not a coincidence of these cases.
         try std.testing.expect(text.len <= 5);
     }
+}
+
+test "zen keeps the collapsed bar's furniture and hides the rest" {
+    // Spaces keep whole, the clock keeps, and everything the bar carries news in
+    // is hidden - which is what makes zen opt-out: an item is hidden unless it is
+    // named, and these are the only names.
+    try std.testing.expect(zen.isKept("space.7"));
+    try std.testing.expect(zen.isKept("calendar"));
+    try std.testing.expect(zen.isKept("battery.ring"));
+    try std.testing.expect(zen.isKept("pomodoro"));
+
+    try std.testing.expect(!zen.isKept("cpu"));
+    try std.testing.expect(!zen.isKept("net.down"));
+    try std.testing.expect(!zen.isKept("net.up"));
+    try std.testing.expect(!zen.isKept("net.link"));
+    try std.testing.expect(!zen.isKept("brew"));
+    try std.testing.expect(!zen.isKept("front_app.2"));
 }
