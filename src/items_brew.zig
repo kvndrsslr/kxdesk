@@ -32,11 +32,16 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator) anyerror!void {
     try client.connect();
 
     var props: Props = .{};
+    // Numbers read at 9pt like the bell's; the idle checkmark in the same
+    // Nerd Font draws oversized next to them, so it gets 8pt. Same chip,
+    // same anchor - only the glyph size differs per state.
     if (count == 0) {
         try props.fmt("icon.badge={s}", .{theme.glyph.brew_current});
+        try props.fmt("icon.badge.font={s}:Bold:8.0", .{theme.font});
         try props.color("icon.color", theme.green);
     } else {
         try props.fmt("icon.badge={d}", .{count});
+        try props.fmt("icon.badge.font={s}:Bold:9.0", .{theme.font});
         try props.color("icon.color", outdatedColor(count));
     }
 

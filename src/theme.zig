@@ -19,10 +19,10 @@ pub const dark_grey: Color = 0xff7c6f64;
 pub const dark_green: Color = 0xff79740e;
 pub const aqua: Color = 0xff8ec07c;
 
-/// The chip behind a badge count: half the value of the bar's own black, so the
-/// badge reads as something sitting on the bar rather than as loose text. The bar
-/// is `black`; this has to be darker than it to be visible at all.
-pub const badge_background: Color = 0xff0e1010;
+/// The chip behind a badge count: `background_2`, two shades brighter than
+/// the bar's `black`, so the badge reads as sitting on the bar rather than
+/// as loose text.
+pub const badge_background: Color = background_2;
 
 pub const bar_color: Color = black;
 pub const icon_color: Color = white;

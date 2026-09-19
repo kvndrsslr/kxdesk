@@ -445,8 +445,13 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try brew.num("icon.badge.y_offset", -1);
     try brew.color("icon.badge.background.color", theme.badge_background);
     brew.raw("icon.badge.background.drawing=on");
-    try brew.num("icon.badge.background.padding_left", 3);
-    try brew.num("icon.badge.background.padding_right", 3);
+    // Dynamic box with 1px air on every side, so the chip hugs the count -
+    // a circle for a single digit - instead of a fixed-height pill.
+    brew.raw("icon.badge.width=dynamic");
+    brew.raw("icon.badge.background.height=0");
+    brew.raw("icon.badge.background.corner_radius=6");
+    try brew.num("icon.badge.background.padding_left", 1);
+    try brew.num("icon.badge.background.padding_right", 1);
     try brew.num("associated_display", 1);
     brew.raw("drawing=on");
     try c.set("brew", brew.slice());
@@ -483,8 +488,12 @@ fn rightItems(c: *sb.Client, config: Config) !void {
     try bell.num("icon.badge.y_offset", -1);
     try bell.color("icon.badge.background.color", theme.badge_background);
     bell.raw("icon.badge.background.drawing=on");
-    try bell.num("icon.badge.background.padding_left", 3);
-    try bell.num("icon.badge.background.padding_right", 3);
+    // Compact chip hugging the count; see the brew item.
+    bell.raw("icon.badge.width=dynamic");
+    bell.raw("icon.badge.background.height=0");
+    bell.raw("icon.badge.background.corner_radius=6");
+    try bell.num("icon.badge.background.padding_left", 1);
+    try bell.num("icon.badge.background.padding_right", 1);
     bell.raw("popup.align=right");
     // Dynamic rather than the fixed width an earlier configuration gave it: a
     // fixed width swallows the padding, which is what made this item overlap the
