@@ -55,6 +55,9 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("CoreText", .{});
     exe.root_module.linkFramework("Foundation", .{});
     exe.root_module.linkFramework("IOKit", .{});
+    // SystemConfiguration answers which interface carries the internet, for the
+    // link icon; it is the store `scutil` prints, not a probe.
+    exe.root_module.linkFramework("SystemConfiguration", .{});
 
     b.installArtifact(exe);
 
@@ -79,6 +82,7 @@ pub fn build(b: *std.Build) void {
     t.root_module.linkFramework("CoreText", .{});
     t.root_module.linkFramework("Foundation", .{});
     t.root_module.linkFramework("IOKit", .{});
+    t.root_module.linkFramework("SystemConfiguration", .{});
 
     const run = b.addRunArtifact(t);
     b.step("test", "Run unit tests").dependOn(&run.step);

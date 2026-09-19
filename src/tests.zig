@@ -7,6 +7,7 @@ const std = @import("std");
 
 const cli = @import("cli.zig");
 const config = @import("config.zig");
+const items_system = @import("items_system.zig");
 const store = @import("store.zig");
 const theme = @import("theme.zig");
 
@@ -125,4 +126,47 @@ test "config: single flag becomes one NUL-terminated arg" {
     const cfg = config.node(.{ .drawing = true });
     try expectArgs(cfg.args, &.{"drawing=on"});
     try std.testing.expectEqual(@as(usize, 11), cfg.args.len);
+}
+
+test "netLevel maps a rate onto the graph logarithmically" {
+    // A rate at the graph's floor is a line on the bottom, and the graph is six
+    // decades tall, so a decade is a sixth of its height.
+    try std.testing.expectEqual(@as(f64, 0), items_system.netLevel(0));
+    try std.testing.expectEqual(@as(f64, 0), items_system.netLevel(1_000));
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0 / 6.0), items_system.netLevel(10_000), 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), items_system.netLevel(1_000_000), 1e-9);
+    // A rate at the ceiling fills the graph, and one past it stays in it.
+    try std.testing.expectApproxEqAbs(@as(f64, 1), items_system.netLevel(1_000_000_000), 1e-9);
+    try std.testing.expectEqual(@as(f64, 1), items_system.netLevel(10_000_000_000));
+}
+
+test "formatRate keeps a reading inside three digits and a unit" {
+    const cases = [_]struct { rate: f64, text: []const u8 }{
+        .{ .rate = 0, .text = "0B" },
+        .{ .rate = 512, .text = "512B" },
+        .{ .rate = 999.9, .text = "999B" },
+        .{ .rate = 1_000, .text = "1.00K" },
+        .{ .rate = 9_999, .text = "9.99K" },
+        .{ .rate = 10_000, .text = "10.0K" },
+        .{ .rate = 99_999, .text = "99.9K" },
+        .{ .rate = 100_000, .text = "100K" },
+        .{ .rate = 999_999, .text = "999K" },
+        .{ .rate = 1_000_000, .text = "1.00M" },
+        .{ .rate = 9_999_999, .text = "9.99M" },
+        .{ .rate = 10_000_000, .text = "10.0M" },
+        .{ .rate = 29_700_000, .text = "29.7M" },
+        .{ .rate = 999_999_999, .text = "999M" },
+        .{ .rate = 1_000_000_000, .text = "1.00G" },
+        .{ .rate = 42_000_000_000, .text = "42.0G" },
+    };
+
+    for (cases) |case| {
+        var buffer: [8]u8 = undefined;
+        const text = try items_system.formatRate(case.rate, &buffer);
+        try std.testing.expectEqualStrings(case.text, text);
+        // Three digits, one separator and the unit is what the graph's right
+        // padding is sized for - see `readout_chars` in `bar.zig` - so the width
+        // is a contract and not a coincidence of these cases.
+        try std.testing.expect(text.len <= 5);
+    }
 }

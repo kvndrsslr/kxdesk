@@ -52,5 +52,12 @@ pub extern "c" fn sb_clock(
 
 pub extern "c" fn sb_cpu_load() f64;
 pub extern "c" fn sb_gpu_load() f64;
+pub extern "c" fn sb_net_bytes(received: *u64, sent: *u64) bool;
+
+/// The internet link the machine is on, in the order `src/platform.h` spells it:
+/// no primary interface at all, Wi-Fi, or anything else.
+pub const Link = enum(u8) { disconnected = 0, wifi = 1, wired = 2 };
+
+pub extern "c" fn sb_net_link() u8;
 pub extern "c" fn sb_dark_mode() bool;
 pub extern "c" fn sb_open_url(url: [*:0]const u8) bool;

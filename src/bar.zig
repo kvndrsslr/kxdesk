@@ -61,8 +61,8 @@ const retired_items = [_][]const u8{
 /// the spacing uniform.
 const item_padding = 4;
 
-/// How wide each of the two graphs is, in points. Both are this wide, so their
-/// windows hold the same number of samples and the same stretch of time.
+/// How wide each graph is, in points. Every graph on the bar is this wide, so all
+/// of their windows hold the same number of samples and the same stretch of time.
 const graph_width = 60;
 
 /// The battery ring's diameter, in points. A ring takes exactly this much of the
@@ -312,6 +312,219 @@ fn frontAppItems(c: *sb.Client, config_input: Config) !void {
     }
 }
 
+/// One graph item: its name, the colour of its line, and whether the newest
+/// reading is drawn on it.
+const Graph = struct {
+    name: []const u8,
+    color: theme.Color,
+    /// The series' newest reading, written in the series' own colour over the
+    /// graph, in the room the pair keeps free at the graph's right end. The value
+    /// is the daemon's to keep up with every tick; this declares where it goes.
+    readout: bool = false,
+    /// Whether the reading sits in the top half of the item rather than the
+    /// bottom one. The two readings of a pair are stacked in the same column, so
+    /// this is the whole of what tells them apart on the bar.
+    top: bool = false,
+    /// Whether the reading keeps a character of air between itself and the graph.
+    /// The network pair does: its rates run to five characters and would start on
+    /// the line without it. The load pair's percentages are a character shorter
+    /// and read better sitting that character closer.
+    air: bool = true,
+};
+
+/// A graph item's text slot: `graphSlot` fills one in, and the pair of them is
+/// all a graph item declares about text.
+const Slot = struct {
+    drawing: bool,
+    value: ?[]const u8,
+    padding_left: u32,
+    padding_right: u32,
+    badge: Badge,
+};
+
+const Badge = struct {
+    drawing: bool,
+    font: []const u8,
+    color: []const u8,
+    @"align": []const u8,
+    anchor: config.Anchors,
+    width: u32,
+    x_offset: i32,
+    y_offset: i32,
+    background: Background,
+};
+
+/// The chip behind a reading - of which there is none. It is declared, with
+/// `drawing = off`, rather than simply left out of the configuration: an item
+/// outlives the configuration that set it, so a background an earlier
+/// configuration drew has to be turned off by name or it stays on the bar.
+const Background = struct {
+    drawing: bool,
+};
+
+/// The font the readings are drawn in, and how wide the widest of them is.
+///
+/// The reading is at most three digits, one separator and a unit - `12.3K`, or a
+/// whole percent, `100%` - so five characters is the most it can be, and
+/// JetBrains Mono sets every glyph six tenths of its size wide, which makes the
+/// room one needs a number this file can work out rather than a guess.
+const readout_font_size = 9;
+const readout_chars = 5;
+const readout_font = theme.font ++ ":Bold:" ++ std.fmt.comptimePrint("{d}.0", .{readout_font_size});
+
+/// One character of that font, in tenths of a point.
+const readout_char_tenths = readout_font_size * 6;
+
+/// The box a reading is right-aligned in, in points: the characters the widest
+/// reading of its pair can take, the air it keeps from the graph, and the point
+/// of padding the fork keeps around glyph ink.
+///
+/// The air belongs *inside* the box rather than in front of it, because a reading
+/// is right-aligned in its box: the leftmost character of the longest reading
+/// sits a box's width less its own characters away from the graph, so a box with
+/// a character of air in it holds that character and a box without holds none.
+fn readoutBox(comptime air: usize) u32 {
+    return (readout_chars + air) * readout_char_tenths / 10 + 1;
+}
+
+/// What the graph keeps free on its right for the readings: their box, and a
+/// point of air at each end of it. It is the label slot's padding - see
+/// `graphSlot` - which is also what makes the item wide enough to draw them in.
+fn readoutRoom(comptime air: usize) u32 {
+    return readoutBox(air) + 2;
+}
+
+/// The air between a reading's end and the edge of the room it is drawn in.
+const readout_air = 1;
+
+/// How tall a reading is, and so how far the one in the bottom half of the item
+/// is moved down out of the top half: nine-point digits are about this tall.
+const readout_height = 8;
+
+/// One of a graph item's two text slots - `icon` tells them apart - as the pair
+/// declares them: both off the graph, both carrying no text of their own.
+///
+/// A reading is drawn on the *label* slot of the item it belongs to, which is the
+/// slot after the graph: the two items of a pair overlay each other exactly, so
+/// their label slots are in the same place and the two readings line up without
+/// either item being moved by an empty slot's own width. The icon slot is
+/// declared switched off, which is also what keeps the bar's default icon padding
+/// from being taken out of the item's left end.
+///
+/// The room the readings are drawn in is the label slot's *padding*, and that is
+/// not a detail: an item's own padding lies outside the window it draws into, so
+/// a reading put there would be cut off, and a slot that is not drawn has no
+/// length, so the room only exists while this slot is on. The slot's padding is
+/// therefore what the graph keeps free on its right - sized, by `readoutRoom`, to
+/// the widest reading the pair can produce.
+///
+/// `high` is which half of the item the reading sits in, and the anchor does not
+/// say it: a badge hangs *up* from its slot's bounds, and an empty slot has no
+/// line of text to have bounds - what it has is the point where its text would
+/// have been, on the item's vertical middle. So the reading in the top half is
+/// placed where that point puts it, and the one in the bottom half is moved a
+/// reading's height down from it.
+fn graphSlot(comptime series: Graph, comptime icon: bool, comptime high: bool) Slot {
+    const reading = series.readout and !icon;
+    const air: usize = if (series.air) 1 else 0;
+    return .{
+        .drawing = reading,
+        .value = null,
+        .padding_left = 0,
+        .padding_right = if (reading) readoutRoom(air) else 0,
+        .badge = .{
+            .drawing = reading,
+            .font = readout_font,
+            .color = config.color(series.color),
+            // Right-aligned in a box as wide as the widest reading, so every
+            // reading ends on the same point however long it is.
+            .@"align" = "right",
+            .anchor = config.Anchors.bottom_left,
+            .width = readoutBox(air),
+            .x_offset = readout_air,
+            .y_offset = if (high) 0 else -readout_height,
+            // The reading is the whole badge: no chip behind it.
+            .background = .{ .drawing = false },
+        },
+    };
+}
+
+/// Declare a pair of graph items drawn over one another, so that two series share
+/// one window.
+///
+/// A graph's ring is exactly as wide as the graph is, and each tick appends one
+/// point to each of them, so equal widths are what hold the two windows together:
+/// a wider graph would hold a longer stretch of time and the two would drift apart
+/// in what they were showing.
+///
+/// They are drawn over one another rather than side by side, and a pair that
+/// carries no readout carries no text at all: the graph is the whole item and its
+/// colour is its only label. A pair that carries readings keeps room for them to
+/// the graph's right - see `graphSlot` - so the lines are never drawn under the
+/// numbers and neither reading is cut off by the edge of the item.
+fn graphPair(c: *sb.Client, comptime pair: [2]Graph) !void {
+    @setEvalBranchQuota(1_000_000);
+    inline for (pair, 0..) |series, index| {
+        try c.arg("--add");
+        try c.arg("graph");
+        try c.arg(series.name);
+        try c.arg("right");
+        try c.arg(std.fmt.comptimePrint("{d}", .{graph_width}));
+
+        // A pair's readings are drawn on each item's own label slot - the two
+        // items overlay, so those slots are in the same place - and they are
+        // stacked: which one is the top of the column is declared per series.
+        const icon_slot = comptime graphSlot(series, true, series.top);
+        const label_slot = comptime graphSlot(series, false, series.top);
+
+        const graph = config.node(.{
+            .padding_left = item_padding,
+            .padding_right = item_padding,
+            .drawing = true,
+            .associated_display = 1,
+            // The transparent background is not for looks: giving a graph a
+            // background is what makes it draw inside that background's height
+            // instead of across the whole 24-point bar, which is the frame the
+            // original helper's graphs used.
+            .icon = icon_slot,
+            .label = label_slot,
+            .background = .{
+                .drawing = true,
+                .color = config.color(theme.graph_no_fill),
+                .height = 20,
+            },
+            .graph = .{
+                .color = config.color(series.color),
+                .fill_color = config.color(theme.graph_no_fill),
+                .line_width = 1,
+            },
+            .script = null,
+            .click_script = null,
+        });
+        try graph.apply(c, series.name);
+        // The first of the two takes no room of its own, so the second begins at
+        // the same x and the two graphs are drawn over one another. The width is
+        // not lost from the bar: the second graph still occupies its own, and that
+        // is what the item after the pair is placed against.
+        if (index == 0) try c.prop("width", "0");
+    }
+}
+
+/// Move `item` to the right of `anchor` on the bar - `--move <item> before
+/// <anchor>`, the right side being laid out in the list's order from the right
+/// edge inwards.
+///
+/// An item keeps the place it was given when it was created: an `--add` of an
+/// item that already exists changes nothing, and one that has to be created again
+/// lands at the end of the list. Moving it is what makes a configuration hold on
+/// a bar that is already running, and not only on a fresh one.
+fn move(c: *sb.Client, item: []const u8, anchor: []const u8) !void {
+    try c.arg("--move");
+    try c.arg(item);
+    try c.arg("before");
+    try c.arg(anchor);
+}
+
 fn rightItems(c: *sb.Client, config_input: Config) !void {
     @setEvalBranchQuota(1_000_000);
     // The battery: read from IOKit in-process instead of spawning `pmset`, and
@@ -397,82 +610,74 @@ fn rightItems(c: *sb.Client, config_input: Config) !void {
     try c.arg("calendar");
     try c.arg("mouse.clicked");
 
-    // The ring is moved against the calendar - before it in the item list, which
-    // is to the right of it on the bar - rather than left to the place it was
-    // given when it was created. An item keeps that place, and one that has to be
-    // created again lands at the end of the list, which is the far left of the
-    // right side; this is the same move the graphs below make, for the same
-    // reason. It runs after the calendar is declared so that a fresh bar has the
-    // item to move against.
-    try c.arg("--move");
-    try c.arg(items_system.ring_item);
-    try c.arg("before");
-    try c.arg("calendar");
+    // The ring sits against the calendar, to its right, as the outermost item of
+    // the right side. It is declared first, but an item that has to be created
+    // again lands at the end of the list - the far left of the right side - so it
+    // is moved into place as well, and after the calendar is declared, so that a
+    // fresh bar has the item to move against.
+    try move(c, items_system.ring_item, "calendar");
 
-    // CPU and GPU: two graphs over one window, sitting between the date and the
-    // Homebrew status. A graph's ring is exactly as wide as the graph is, and each
-    // tick appends one point to each, so equal widths are what hold the two
-    // windows together - a wider graph would hold a longer stretch of time and the
-    // two would drift apart in what they were showing.
+    // CPU and GPU, then the network: two pairs of graphs over one window each,
+    // sitting between the date and the Homebrew status - the load pair first,
+    // since it is the one nearer the clock. Both pairs carry readings: a number
+    // is what tells one line at half height from another on a different scale,
+    // and the load pair's are the share of the time the CPU was busy and the
+    // utilization the GPU reports.
     //
-    // They are drawn over one another rather than side by side, and neither
-    // carries text: the graph is the whole item and its colour is its only label.
-    inline for ([_]struct { name: []const u8, color: theme.Color }{
-        .{ .name = items_system.cpu_item, .color = theme.graph_cpu },
-        .{ .name = items_system.gpu_item, .color = theme.graph_gpu },
-    }, 0..) |series, index| {
-        try c.arg("--add");
-        try c.arg("graph");
-        try c.arg(series.name);
-        try c.arg("right");
-        try c.arg(std.fmt.comptimePrint("{d}", .{graph_width}));
+    // Within a pair the two readings are stacked in one column: the CPU's over
+    // the GPU's, and the upload's over the download's. The load pair's readings
+    // also sit a character closer to their line than the network pair's, which is
+    // what `air` says.
+    try graphPair(c, .{
+        .{ .name = items_system.cpu_item, .color = theme.graph_cpu, .readout = true, .top = true, .air = false },
+        .{ .name = items_system.gpu_item, .color = theme.graph_gpu, .readout = true, .air = false },
+    });
+    // The network pair's readings are rates, which the line cannot say either:
+    // whether the machine is moving a megabyte a second or fifty.
+    try graphPair(c, .{
+        .{ .name = items_system.net_down_item, .color = theme.graph_net_down, .readout = true },
+        .{ .name = items_system.net_up_item, .color = theme.graph_net_up, .readout = true, .top = true },
+    });
 
-        const graph = config.node(.{
-            .padding_left = item_padding,
-            .padding_right = item_padding,
+    // The link icon: what the machine is connected through, beside the graphs
+    // whose lines say how much is going over it. It is the one thing about the
+    // network the graphs cannot say - a link that is up and carrying nothing
+    // draws a flat line, which is what a link that is down draws too. Its glyph
+    // and colour are the daemon's to set with every tick; this declares where it
+    // sits and nothing else.
+    try c.arg("--add");
+    try c.arg("item");
+    try c.arg(items_system.link_item);
+    try c.arg("right");
+    const link = config.node(.{
+        .drawing = true,
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .associated_display = 1,
+        .icon = .{
+            .value = null,
+            .font = theme.font ++ ":Bold:14.0",
             .drawing = true,
-            .associated_display = 1,
-            // The transparent background is not for looks: giving a graph a
-            // background is what makes it draw inside that background's height
-            // instead of across the whole 24-point bar, which is the frame the
-            // original helper's graphs used. Both text slots are off, so neither
-            // reserves room.
-            .label = .{ .drawing = false },
-            .icon = .{ .drawing = false },
-            .background = .{
-                .drawing = true,
-                .color = config.color(theme.graph_no_fill),
-                .height = 20,
-            },
-            .graph = .{
-                .color = config.color(series.color),
-                .fill_color = config.color(theme.graph_no_fill),
-                .line_width = 1,
-            },
-            .script = null,
-            .click_script = null,
-        });
-        try graph.apply(c, series.name);
-        // The first of the two takes no room of its own, so the second begins at
-        // the same x and the two graphs are drawn over one another. The width is
-        // not lost from the bar: the second graph still occupies its own, and that
-        // is what the item after the pair is placed against.
-        if (index == 0) try c.prop("width", "0");
-    }
+        },
+        .label = .{ .value = null, .drawing = false },
+        .script = null,
+        .click_script = null,
+    });
+    try link.apply(c, items_system.link_item);
 
-    // The pair is placed between the date and the Homebrew status by moving it
-    // there, rather than by the order it was added in: an item keeps the place it
-    // was given when it was created, so on a bar that is already running an
-    // `--add` of an existing item changes nothing and a re-added one lands at the
-    // end. Moving them is what makes this hold on any bar, fresh or not.
-    try c.arg("--move");
-    try c.arg(items_system.gpu_item);
-    try c.arg("before");
-    try c.arg("brew");
-    try c.arg("--move");
-    try c.arg(items_system.cpu_item);
-    try c.arg("before");
-    try c.arg(items_system.gpu_item);
+    // The five are placed between the date and the Homebrew status by moving
+    // them there, rather than by the order they were added in: an item keeps the
+    // place it was given when it was created, so on a bar that is already
+    // running an `--add` of an existing item changes nothing and a re-added one
+    // lands at the end of the list, which is the far left of the right side.
+    // Each is moved against the item to its right, so the five keep their order
+    // on a fresh bar, on a bar this configuration already ran on, and on one
+    // left over from an earlier configuration.
+    try move(c, items_system.link_item, "brew");
+    try move(c, items_system.net_up_item, items_system.link_item);
+    try move(c, items_system.net_down_item, items_system.net_up_item);
+    try move(c, items_system.gpu_item, items_system.net_down_item);
+    try move(c, items_system.cpu_item, items_system.gpu_item);
 
     // Homebrew: `brew outdated` is genuinely slow, so the item asks for it
     // coarsely, and the daemon runs it off the event path.

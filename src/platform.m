@@ -5,6 +5,7 @@
 #include <IOKit/IOKitLib.h>
 #include <IOKit/ps/IOPSKeys.h>
 #include <IOKit/ps/IOPowerSources.h>
+#include <SystemConfiguration/SystemConfiguration.h>
 #include <bootstrap.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -13,9 +14,15 @@
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 #include <mach/message.h>
+#include <net/if.h>
+#include <net/if_media.h>
+#include <net/route.h>
 #include <spawn.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/sysctl.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -497,7 +504,7 @@ void sb_clock(char* icon, size_t icon_cap, char* label, size_t label_cap) {
   strftime(label, label_cap, "%H:%M", &local);
 }
 
-/* -- JavaScript for Automation -------------------------------------------- */
+/* -- kernel readings ------------------------------------------------------- */
 
 double sb_cpu_load(void) {
   // Ticks are cumulative, so there is no "current" CPU usage to read: what is
@@ -566,6 +573,107 @@ double sb_gpu_load(void) {
   IOObjectRelease(services);
 
   return percent / 100.0;
+}
+
+/// Interface families whose bytes are not the user's traffic, by name prefix -
+/// macOS gives an `awdl0` and an `en0` the same flags, so there is nothing but
+/// the name to tell them apart.
+///
+/// The tunnels (`utun`, `gif`, `stf`, `ipsec`) run over a link that is counted
+/// itself; the radio's own (`awdl`, `llw`, `ap`) carry AirDrop and peer-to-peer
+/// traffic beside the same radio's `en0`, and `awdl0` reports transfers that
+/// never left the machine; the bridges (`bridge`, `vmenet`) count their member
+/// ports' bytes a second time; and `anpi`, `anri` and `nan` are the interfaces
+/// the system keeps for itself, up on every machine and carrying nothing of the
+/// user's.
+static const char* const sb_virtual_links[] = {
+    "awdl", "llw", "ap", "utun", "gif", "stf", "ipsec", "tun", "tap",
+    "bridge", "vmenet", "anpi", "anri", "nan", NULL,
+};
+
+static bool sb_virtual_link(const char* name) {
+  for (size_t i = 0; sb_virtual_links[i]; i++) {
+    if (strncmp(name, sb_virtual_links[i], strlen(sb_virtual_links[i])) == 0) return true;
+  }
+  return false;
+}
+
+bool sb_net_bytes(uint64_t* received, uint64_t* sent) {
+  // The 64-bit form of the interface list: the counters in the 32-bit `if_data`
+  // would wrap after 4 GB, which a fast link reaches in seconds.
+  int mib[6] = {CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0};
+
+  // A few kilobytes on a machine with a few dozen interfaces, and read once a
+  // second on the loop that also drives the bar, so it lives here rather than
+  // being allocated per reading. A list that ever outgrows it fails the call,
+  // and the tick after is asked again. Aligned for the message header the list
+  // is walked as.
+  static _Alignas(struct if_msghdr) char list[64 * 1024];
+  size_t length = sizeof(list);
+  if (sysctl(mib, 6, list, &length, NULL, 0) != 0) return false;
+
+  uint64_t in = 0;
+  uint64_t out = 0;
+  for (size_t offset = 0; offset + sizeof(struct if_msghdr) <= length;) {
+    struct if_msghdr* header = (struct if_msghdr*)(void*)(list + offset);
+    if (header->ifm_msglen == 0) break;
+
+    if (header->ifm_type == RTM_IFINFO2) {
+      struct if_msghdr2* link = (struct if_msghdr2*)(void*)header;
+      char name[IFNAMSIZ];
+      if ((link->ifm_flags & IFF_UP) != 0 && (link->ifm_flags & IFF_LOOPBACK) == 0 &&
+          if_indextoname(link->ifm_index, name) != NULL && !sb_virtual_link(name)) {
+        in += link->ifm_data.ifi_ibytes;
+        out += link->ifm_data.ifi_obytes;
+      }
+    }
+
+    offset += header->ifm_msglen;
+  }
+
+  *received = in;
+  *sent = out;
+  return true;
+}
+
+uint8_t sb_net_link(void) {
+  // The system's own answer to "what is the internet on": the primary
+  // interface, from the store the network stack keeps its state in - the record
+  // `scutil` prints. It is absent when nothing is connected, which is the whole
+  // of the disconnected case.
+  SCDynamicStoreRef store = SCDynamicStoreCreate(kCFAllocatorDefault, CFSTR("kxdesk"), NULL, NULL);
+  if (!store) return SB_NET_LINK_DISCONNECTED;
+
+  CFDictionaryRef global = SCDynamicStoreCopyValue(store, CFSTR("State:/Network/Global/IPv4"));
+  CFRelease(store);
+  if (!global) return SB_NET_LINK_DISCONNECTED;
+
+  char name[IFNAMSIZ] = {0};
+  CFStringRef primary = CFDictionaryGetValue(global, CFSTR("PrimaryInterface"));
+  const bool named = primary != NULL &&
+                     CFStringGetCString(primary, name, sizeof(name), kCFStringEncodingUTF8);
+  CFRelease(global);
+  if (!named || name[0] == '\0') return SB_NET_LINK_DISCONNECTED;
+
+  // Wi-Fi from anything else is the media the kernel reports for that
+  // interface, and not its name: `en0` is the Wi-Fi on a laptop and the wire on
+  // a desktop, and which one a machine has is nothing a lookup table here could
+  // know. An interface that reports no media at all - a tunnel, say - is not
+  // Wi-Fi, and the link it runs over is what the store named anyway.
+  struct ifmediareq media;
+  memset(&media, 0, sizeof(media));
+  snprintf(media.ifm_name, sizeof(media.ifm_name), "%s", name);
+
+  const int probe = socket(AF_INET, SOCK_DGRAM, 0);
+  if (probe < 0) return SB_NET_LINK_WIRED;
+  // `ifm_active` is what the interface is running as right now, where
+  // `ifm_current` is what it is configured for - and the network type is the
+  // high bits of it, `IFM_TYPE`, not the sub-type `IFM_TMASK` masks off.
+  const bool wireless = ioctl(probe, SIOCGIFMEDIA, &media) == 0 &&
+                        IFM_TYPE(media.ifm_active) == IFM_IEEE80211;
+  close(probe);
+
+  return wireless ? SB_NET_LINK_WIFI : SB_NET_LINK_WIRED;
 }
 
 bool sb_dark_mode(void) {

@@ -37,12 +37,18 @@ pub const calendar_icon: Color = dark_grey;
 /// Separator icon colour.
 pub const separator_icon: Color = background_2;
 
-/// The two graphs, drawn over one another in the same window: CPU in green and
-/// GPU in yellow. Both fills are fully transparent - a graph draws its fill by
-/// default, and two of them over the same pixels would only muddle each other,
-/// so what is left is two lines sharing one baseline.
+/// The load graphs, drawn over one another in one window: CPU in green and GPU
+/// in yellow. The network's pair sits beside them, in the cool half of the
+/// palette - what came in in blue, what went out in magenta - so that the two
+/// pairs read apart.
+///
+/// Neither pair draws a fill: a fill is what a graph draws by default, and two of
+/// them over the same pixels would only muddle each other, so what is left is two
+/// lines sharing one baseline.
 pub const graph_cpu: Color = green;
 pub const graph_gpu: Color = yellow;
+pub const graph_net_down: Color = blue;
+pub const graph_net_up: Color = magenta;
 pub const graph_no_fill: Color = 0x00000000;
 
 /// Bar geometry.
@@ -86,4 +92,12 @@ pub const glyph = struct {
     pub const yabai_float = "\u{10088c}";
     pub const yabai_grid = "\u{100933}";
 
+    /// The link icon: the two ways the machine is connected to the internet, and
+    /// the mark for when it is not. All three are Material Design's, so they are
+    /// drawn in one weight - the ethernet jack in particular is a port rather
+    /// than a cable, which is what the link is at. Checked by rendering them:
+    /// the first plausible codepoints are not always the ones that draw.
+    pub const wifi = "\u{f05a9}";
+    pub const ethernet = "\u{f0200}";
+    pub const disconnected = "\u{f05e9}";
 };

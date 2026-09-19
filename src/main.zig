@@ -234,9 +234,9 @@ fn onTimer() callconv(.c) u32 {
     // Four things want the clock, and the loop wakes for whichever is soonest.
     // A held-back yabai refresh reports the wait it still owes, so the loop
     // wakes when that closes rather than sleeping through it.
-    const load_wait = daemon.dispatcher.system_items.pollLoad(daemon.io, bar);
+    const graph_wait = daemon.dispatcher.system_items.pollGraphs(daemon.io, bar);
     const yabai_wait = daemon.dispatcher.pollYabai();
-    return soonest(soonest(soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage()), load_wait), yabai_wait);
+    return soonest(soonest(soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage()), graph_wait), yabai_wait);
 }
 
 /// The sooner of two waits, in the loop's convention that 0 means "nothing

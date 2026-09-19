@@ -146,6 +146,30 @@ double sb_cpu_load(void);
 /// zero when there is no accelerator to ask, as on a machine without one.
 double sb_gpu_load(void);
 
+/// Cumulative bytes the machine's links have received and transmitted, summed
+/// over the interfaces that carry the user's traffic: loopback, the tunnels and
+/// bridges that run over an already-counted link, and the radio's peer-to-peer
+/// interfaces are left out, so that nothing is counted twice - and `awdl0` in
+/// particular reports bursts that never left the machine.
+///
+/// The counters are cumulative, so they only mean anything as a difference
+/// between two readings. Returns false when the interface list could not be
+/// read.
+bool sb_net_bytes(uint64_t* received, uint64_t* sent);
+
+/// The link the machine is on, for the bar's link icon.
+enum {
+  /// No primary interface: nothing is connected.
+  SB_NET_LINK_DISCONNECTED = 0,
+  SB_NET_LINK_WIFI = 1,
+  SB_NET_LINK_WIRED = 2,
+};
+
+/// Which of those the machine is on, from the system's own record of the primary
+/// interface and the kernel's record of its media. No packet is sent and no
+/// permission is asked for.
+uint8_t sb_net_link(void);
+
 /// Whether the system appearance is dark, read from the preference the system
 /// records it in. Needs no Apple Event, so it needs no permission.
 bool sb_dark_mode(void);
