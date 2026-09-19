@@ -25,6 +25,7 @@ const config = @import("config.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const pomodoro = @import("pomodoro.zig");
+const server_mode = @import("server_mode.zig");
 const theme = @import("theme.zig");
 
 /// Items an earlier configuration declared and this one does not. SketchyBar
@@ -90,7 +91,7 @@ fn applyHelper(c: *sb.Client, item: []const u8, script: config.Script, helper: [
 }
 
 /// Emit the complete configuration.
-pub fn apply(c: *sb.Client, config_input: Config) !void {
+pub fn apply(c: *sb.Client, io: std.Io, config_input: Config) !void {
     for (retired_items) |pattern| {
         try c.arg("--remove");
         try c.arg(pattern);
@@ -99,7 +100,7 @@ pub fn apply(c: *sb.Client, config_input: Config) !void {
     try bar(c);
     try spaces(c);
     try frontAppItems(c, config_input);
-    try rightItems(c, config_input);
+    try rightItems(c, io, config_input);
     try c.arg("--update");
     try c.commit();
 }
@@ -525,7 +526,7 @@ fn move(c: *sb.Client, item: []const u8, anchor: []const u8) !void {
     try c.arg(anchor);
 }
 
-fn rightItems(c: *sb.Client, config_input: Config) !void {
+fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     @setEvalBranchQuota(1_000_000);
     // The battery: read from IOKit in-process instead of spawning `pmset`, and
     // shown as one ring rather than as an item and a ring. Its value is the charge
@@ -610,6 +611,45 @@ fn rightItems(c: *sb.Client, config_input: Config) !void {
     try c.arg("calendar");
     try c.arg("mouse.clicked");
 
+    // Server mode: whether this machine is serving its 1Password keys over ssh
+    // and signing git commits with them, which `kxdesk server-mode` turns on and
+    // off. The click is the one `click_script` on the bar, and it is not the
+    // mode's command: `op` is refused to a child of the bar, so the click hands
+    // the work to a launchd job, which is a context 1Password answers; see
+    // `server_mode.clickScript`. The client that runs as that job is what keeps
+    // the icon up to date, and the daemon only puts it back after a bar reload.
+    try c.arg("--add");
+    try c.arg("item");
+    try c.arg(server_mode.bar_item);
+    try c.arg("right");
+    var click_buffer: [4 * std.fs.max_path_bytes]u8 = undefined;
+    const server = config.node(.{
+        .drawing = true,
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .associated_display = 1,
+        // Nothing here refreshes it: the client that changes the mode is what
+        // sets the icon, and only a bar reload has to be told the state again.
+        .updates = false,
+        .icon = .{
+            // The plain state - the mode off, which is where a fresh bar starts
+            // from. The colour is the client's to set too, and so is the glyph
+            // while a change is in flight.
+            .value = theme.glyph.server,
+            .drawing = true,
+            .color = config.color(theme.dark_grey),
+        },
+        .label = .{ .value = null, .drawing = false },
+        .script = null,
+        // The click is the `click_script` below, not an event to the daemon: an
+        // item that carried a helper would have its clicks sent there instead -
+        // and the daemon cannot run the mode. Cleared by name, like `script`,
+        // because a property an earlier configuration set outlives it.
+        .mach_helper = null,
+    });
+    try server.apply(c, server_mode.bar_item);
+    try c.prop("click_script", try server_mode.clickScript(io, &click_buffer));
+
     // The ring sits against the calendar, to its right, as the outermost item of
     // the right side. It is declared first, but an item that has to be created
     // again lands at the end of the list - the far left of the right side - so it
@@ -678,6 +718,11 @@ fn rightItems(c: *sb.Client, config_input: Config) !void {
     try move(c, items_system.net_down_item, items_system.net_up_item);
     try move(c, items_system.gpu_item, items_system.net_down_item);
     try move(c, items_system.cpu_item, items_system.gpu_item);
+    // Server mode sits against the date, on the far side of the graphs: it is
+    // the machine's state rather than the traffic's, and it is the item the
+    // clock's neighbour is - after the graphs have been put in place, so that it
+    // has the cpu graph's final position to sit against.
+    try move(c, server_mode.bar_item, items_system.cpu_item);
 
     // Homebrew: `brew outdated` is genuinely slow, so the item asks for it
     // coarsely, and the daemon runs it off the event path.

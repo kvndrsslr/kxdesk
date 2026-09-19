@@ -12,6 +12,7 @@ const Context = @import("context.zig").Context;
 const items_usage = @import("items_usage.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
+const server_mode = @import("server_mode.zig");
 const skhdrc = @import("skhdrc.zig");
 const yabai_ops = @import("yabai_ops.zig");
 const zen = @import("zen.zig");
@@ -287,6 +288,7 @@ pub const all = [_]Command{
         .subcommands = &.{
             .{ .name = "enter", .summary = "materialize the keys, start the agent, and rewire ssh and git" },
             .{ .name = "exit", .summary = "put all of that back and wipe the keys" },
+            .{ .name = "toggle", .summary = "enter if the mode is off, exit if it is on" },
             .{ .name = "status", .summary = "say whether the mode is on, and what it serves", .default = true },
             .{ .name = "refresh", .summary = "exit, then enter: for a key or remote added since" },
         },
@@ -414,7 +416,7 @@ fn stateCommand(context: *Context, args: []const []const u8) ![]const u8 {
 /// SketchyBar that was restarted ends up with the items this process serves.
 fn apply(context: *Context, _: []const []const u8) ![]const u8 {
     try context.ensureBar();
-    try bar_config.apply(context.bar, .{ .helper = context.event_service });
+    try bar_config.apply(context.bar, context.io, .{ .helper = context.event_service });
     // A freshly built bar knows nothing about the state the last one was in, and
     // the provider items have just been given placeholder labels.
     restoreState(context);
@@ -423,7 +425,8 @@ fn apply(context: *Context, _: []const []const u8) ![]const u8 {
 }
 
 /// Put back the state the bar configuration cannot rebuild by itself: a bar that
-/// was collapsed, and the mode the spaces were highlighted in.
+/// was collapsed, the mode the spaces were highlighted in, and whether this
+/// machine is serving.
 ///
 /// Best effort by design - all of it is cosmetic, and none of it is a reason to
 /// fail the `apply` that just succeeded.
@@ -432,6 +435,10 @@ pub fn restoreState(context: *Context) void {
         std.debug.print("kxdesk: cannot restore the bar's collapsed state: {s}\n", .{@errorName(err)});
     };
     mode_indicator.restore(context);
+    // The server item's state lives in the file `enter` wrote, not in the store:
+    // the daemon never runs that command, and this is the one place it has to
+    // read it; see `server_mode.restore`.
+    server_mode.restore(context);
 }
 
 /// Report what the daemon is doing, in one line.

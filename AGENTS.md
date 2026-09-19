@@ -16,7 +16,7 @@ Single binary, single long-lived process (`src/main.zig:Daemon`).
 - Bar writes: batched `--set` via `sb.Client`; `bar.zig` emits whole config in one batch (single redraw). Commands calling bar use `Context.ensureBar` with reconnect+retry (`src/commands.zig:55-67`).
 - Platform seam: all Mach/ObjC/libc contact through `src/platform.zig` (`extern "c"`) → `src/platform.m`/`src/platform.h`. Everything else is platform-free logic.
 - State: `src/store.zig:Store` wraps one SQLite file; shared under `std.Io.Mutex`. Best-effort: open failure → `error.Unavailable`, daemon still runs.
-- Exception: `server-mode` runs in the client, not daemon — drives `op`/1Password, whose unlock needs the asking session (`src/server_mode.zig`, `src/main.zig:22-24`).
+- Exception: `server-mode` runs in the client, not daemon — drives `op`/1Password, whose app integration macOS grants to a shell and refuses to a child of the daemon, of the bar, or of a launchd job's binary (`src/server_mode.zig`, `src/main.zig:22-24`). Its bar item (`server`, `src/bar.zig`) carries the only `click_script` on the bar (`server_mode.clickScript`): a toggle whose `exit` needs no `op` and works, whose `enter` does not — so entering stays a shell command. The client renders that item and serializes changes on a lock in its state dir; the daemon only restores it on `apply` (`commands.restoreState`).
 
 ## Key Directories
 

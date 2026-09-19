@@ -451,7 +451,7 @@ fn runDaemon(init: std.process.Init) !void {
     // nothing to apply to, and the bar's config script asks instead.
     if (bar.connect()) |_| {
         daemon.present.store(true, .monotonic);
-        bar_config.apply(&bar, .{ .helper = event_service }) catch |err| {
+        bar_config.apply(&bar, init.io, .{ .helper = event_service }) catch |err| {
             std.debug.print("kxdesk: startup apply failed: {s}\n", .{@errorName(err)});
         };
         // A bar that has just been built knows nothing about the state the last

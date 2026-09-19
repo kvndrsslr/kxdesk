@@ -22,6 +22,11 @@
 //! than the handful of `op` round trips `enter` makes. Run from the shell that
 //! asked for it, the prompt lands in front of the person who can answer it.
 //!
+//! That is also why the bar's `server` item is written from here: its click is a
+//! `click_script` that runs this command - `bar.zig` - so the process that
+//! changes the mode is the one that shows it, and the daemon only puts the item
+//! back after a bar reload, from the cookie `enter` wrote.
+//!
 //! The shell script kept its state in `~/.local/share/kxb-server-mode`, piped
 //! `op` through `jq`, rewrote the ssh config by handing `sed` an expression and
 //! snapshotted git by appending to a file. The same work happens here: the state
@@ -32,8 +37,12 @@
 
 const std = @import("std");
 
+const Context = @import("context.zig").Context;
 const exec = @import("exec.zig");
 const platform = @import("platform.zig");
+const Props = @import("props.zig").Props;
+const sb = @import("sb.zig");
+const theme = @import("theme.zig");
 
 /// The 1Password account whose keys are served, and the only one this touches.
 const account = "my.1password.com";
@@ -41,6 +50,12 @@ const account = "my.1password.com";
 /// The keep-awake service, owned by server mode: installed on `enter`, removed
 /// on `exit`, so the machine sleeps normally as a laptop otherwise.
 const caffeinate_label = "local.caffeinate.ac";
+
+/// The bar item that says whether this machine is serving, and whose click runs
+/// this command. `bar.zig` declares it - switched off, with the click - and the
+/// client keeps its glyph and colour up to date, so the daemon owns only the
+/// state `restore` puts back after a bar reload.
+pub const bar_item = "server";
 
 /// Names another state directory. A probe uses it to run against a throwaway
 /// one; nothing else should.
@@ -94,29 +109,196 @@ const caffeinate_plist =
     \\
 ;
 
-/// `kxdesk server-mode [enter|exit|status|refresh]`, `status` by default: with no
-/// verb the command says what the mode is doing, as the script's `status` did
-/// and as `pomodoro` answers here.
+/// `kxdesk server-mode [enter|exit|toggle|status|refresh]`, `status` by
+/// default: with no verb the command says what the mode is doing, as the
+/// script's `status` did and as `pomodoro` answers here.
 ///
 /// Called by the client, not by the daemon - see the module comment - so the
 /// arena and the io are the client's own and are handed in rather than taken
-/// from a command context.
+/// from a command context. `toggle` is what the bar item's click asks for, and
+/// every verb that changes the mode shows it on that item while it runs; see
+/// `transition`.
 pub fn serverMode(arena: std.mem.Allocator, io: std.Io, args: []const []const u8) anyerror![]const u8 {
     const verb = if (args.len > 0) args[0] else "status";
     if (args.len > 1) return error.UnknownArgument;
 
     const paths = try Paths.derive(arena);
 
-    if (std.mem.eql(u8, verb, "enter")) return enter(arena, io, paths);
-    if (std.mem.eql(u8, verb, "exit")) return leave(arena, io, paths);
-    if (std.mem.eql(u8, verb, "refresh")) {
+    if (std.mem.eql(u8, verb, "enter")) return transition(arena, io, paths, .enter);
+    if (std.mem.eql(u8, verb, "exit")) return transition(arena, io, paths, .leave);
+    if (std.mem.eql(u8, verb, "refresh")) return transition(arena, io, paths, .refresh);
+    if (std.mem.eql(u8, verb, "toggle")) return transition(arena, io, paths, .toggle);
+    if (std.mem.eql(u8, verb, "status")) {
+        // Answering with the state is also what puts the item right after the
+        // mode was changed from a shell, which no daemon saw happen.
+        show(arena, modeOf(io, paths));
+        return report(arena, io, paths);
+    }
+    return error.UnknownArgument;
+}
+
+/// A change to the mode that the bar is told about, from the first `op` round
+/// trip to the last `launchctl` one.
+const Transition = enum { enter, leave, refresh, toggle };
+
+/// Run one of them, with the item saying a change is in flight - that is what a
+/// click on it gets: an `enter` makes a dozen `op` calls and asks 1Password for
+/// an unlock, so without it the bar would look as if the click had done nothing
+/// until it was over.
+///
+/// The item is put back the way the mode *ended up*, whether the command
+/// succeeded or failed: the cookie on disk is the truth both `leave` and
+/// `report` read, so a failed `enter` shows the mode as off and a failed `exit`
+/// as on.
+fn transition(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    paths: Paths,
+    change: Transition,
+) anyerror![]const u8 {
+    // One change at a time, whoever asks for it: a click hands the work to a job
+    // of its own, and this is what makes a second one - or a run started from a
+    // shell - do nothing rather than race the first. The directory is made first
+    // because the lock lives in it and an `enter` that has not run has not made
+    // it yet.
+    try makeDir(io, paths.dir, directory_mode);
+    const held = try lock(io, paths);
+    defer held.close(io);
+
+    show(arena, .working);
+    defer show(arena, modeOf(io, paths));
+
+    return switch (change) {
+        .enter => enter(arena, io, paths),
+        .leave => leave(arena, io, paths),
         // Leaving first is what makes a key or a remote added in 1Password since
         // the last enter show up: enter materializes the account from scratch.
-        _ = try leave(arena, io, paths);
-        return enter(arena, io, paths);
+        .refresh => blk: {
+            _ = try leave(arena, io, paths);
+            break :blk enter(arena, io, paths);
+        },
+        .toggle => if (exists(io, paths.cookie))
+            leave(arena, io, paths)
+        else
+            enter(arena, io, paths),
+    };
+}
+
+/// What the item shows: the mode is off, it is on, or a change is running.
+const Indicator = enum { inactive, active, working };
+
+/// The mode as the cookie has it.
+fn modeOf(io: std.Io, paths: Paths) Indicator {
+    return if (exists(io, paths.cookie)) .active else .inactive;
+}
+
+/// The item's `click_script`: the shell line SketchyBar runs when the `server`
+/// item is clicked - the mode's own command, with its output kept where a click
+/// can be read.
+///
+/// The click runs it as a child of the bar, and 1Password's app integration is
+/// not granted to such a child: `op` answers "No accounts configured for use
+/// with 1Password CLI", because the group container it asks the app through
+/// answers `Operation not permitted`. So entering the mode this way fails, and
+/// leaves the reason in the log below; leaving it - which asks 1Password nothing
+/// - works, and so does what the item is for, saying which state the mode is in.
+/// A launchd job does not help: 1Password is refused a third-party binary there
+/// too, and only a shell's own `op` is answered, which is how `enter` run from a
+/// terminal succeeds.
+///
+/// The line is composed here rather than in `bar.zig` so that the state
+/// directory, the log and the path this binary was started from are known in one
+/// place. `storage` is the caller's: the bar's configuration is built from fixed
+/// buffers and has no allocator to hand out.
+pub fn clickScript(io: std.Io, storage: []u8) ![]const u8 {
+    var exe_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const length = try std.process.executablePath(io, &exe_buffer);
+    const exe = exe_buffer[0..length];
+
+    var directory_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try stateDirectory(&directory_buffer);
+
+    return std.fmt.bufPrint(
+        storage,
+        "mkdir -p \"{s}\" && exec \"{s}\" server-mode toggle 2>>\"{s}/last-click.log\"",
+        .{ dir, exe, dir },
+    );
+}
+
+/// The state directory, in the caller's storage: the one path the click script
+/// needs, for callers that have no arena of their own.
+fn stateDirectory(storage: []u8) ![]const u8 {
+    var environment: [std.fs.max_path_bytes]u8 = undefined;
+    if (platform.sb_env(state_override, &environment, environment.len)) {
+        // Copied into the caller's storage: the buffer it was read into belongs
+        // to this frame and is gone by the time the caller uses the answer.
+        return std.fmt.bufPrint(storage, "{s}", .{std.mem.sliceTo(&environment, 0)});
     }
-    if (std.mem.eql(u8, verb, "status")) return report(arena, io, paths);
-    return error.UnknownArgument;
+
+    var home_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const home_dir = if (platform.sb_env("HOME", &home_buffer, home_buffer.len))
+        std.mem.sliceTo(&home_buffer, 0)
+    else
+        "/tmp";
+    return std.fmt.bufPrint(storage, "{s}/Library/Application Support/kxdesk/server-mode", .{home_dir});
+}
+
+/// Take the lock the mode's changes serialize on, or report that another one is
+/// already holding it.
+///
+/// The lock is held for as long as the change runs and is released when the
+/// process ends however it ends, so there is no state left behind to go stale:
+/// a change killed halfway does not leave the mode uncallable. The file itself
+/// holds nothing; only the lock matters.
+fn lock(io: std.Io, paths: Paths) !std.Io.File {
+    var file = std.Io.Dir.createFileAbsolute(io, paths.lock, .{ .truncate = false }) catch |err| return err;
+    errdefer file.close(io);
+    if (!try file.tryLock(io, .exclusive)) return error.ServerModeBusy;
+    return file;
+}
+
+/// Put the mode's state on the bar, in a connection of this command's own.
+///
+/// The item is written from here rather than from the daemon because the click
+/// that toggles it is a `click_script` - `bar.zig` - and so is this process:
+/// only a process in the session that asked can complete the 1Password unlock
+/// `enter` needs, and the daemon is not one. The daemon only puts the item back
+/// after a bar reload, from the same cookie, in `restore`.
+///
+/// Best effort: a command whose work succeeded must not fail because there was
+/// no bar to tell about it.
+fn show(arena: std.mem.Allocator, indicator: Indicator) void {
+    var client = sb.Client.init(arena, sb.sketchybar_service);
+    defer client.deinit();
+    client.connect() catch return;
+    setIndicator(&client, indicator) catch {};
+}
+
+/// The two properties the item is: its glyph, and the colour that says the
+/// state. One `--set` for both, so the bar redraws once.
+fn setIndicator(client: *sb.Client, indicator: Indicator) !void {
+    var props: Props = .{};
+    try props.text("icon", if (indicator == .working) theme.glyph.loading else theme.glyph.server);
+    try props.color("icon.color", switch (indicator) {
+        .working => theme.yellow,
+        .active => theme.green,
+        .inactive => theme.dark_grey,
+    });
+    try client.set(bar_item, props.slice());
+    try client.commit();
+}
+
+/// Put the item back the way the mode is. Called wherever the bar configuration
+/// is applied, because that is what declares the item - switched off - and
+/// nothing else there can know what the mode was: a freshly built bar has no
+/// memory of the one before it, and the daemon did not run the command that
+/// changed it.
+pub fn restore(context: *Context) void {
+    const paths = Paths.derive(context.arena) catch return;
+    // The `apply` this runs from has already connected, but a bar that went away
+    // between the two is not worth failing over.
+    context.bar.connect() catch return;
+    setIndicator(context.bar, modeOf(context.io, paths)) catch {};
 }
 
 /// Everything server mode keeps, under one directory: the materialized keys, the
@@ -131,15 +313,12 @@ const Paths = struct {
     backup: []const u8,
     ssh_backup: []const u8,
     git_backup: []const u8,
+    /// The file the mode's changes serialize on, one at a time; see `lock`.
+    lock: []const u8,
 
     fn derive(arena: std.mem.Allocator) !Paths {
-        var environment: [std.fs.max_path_bytes]u8 = undefined;
-        const dir = if (platform.sb_env(state_override, &environment, environment.len))
-            try arena.dupe(u8, std.mem.sliceTo(&environment, 0))
-        else
-            try std.fmt.allocPrint(arena, "{s}/Library/Application Support/kxdesk/server-mode", .{
-                try home(arena),
-            });
+        var directory_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const dir = try arena.dupe(u8, try stateDirectory(&directory_buffer));
 
         const backup = try under(arena, dir, "backup");
         return .{
@@ -151,6 +330,7 @@ const Paths = struct {
             .backup = backup,
             .ssh_backup = try under(arena, backup, "ssh_config"),
             .git_backup = try under(arena, backup, "git_state"),
+            .lock = try under(arena, dir, "lock"),
         };
     }
 
@@ -171,8 +351,8 @@ const Key = struct {
 /// key is materialized, and under what name, are modelled.
 const Item = struct {
     id: []const u8 = "",
-    @"title": []const u8 = "",
-    @"category": []const u8 = "",
+    title: []const u8 = "",
+    category: []const u8 = "",
     vault: Vault = .{},
 
     const Vault = struct { id: []const u8 = "" };
@@ -275,8 +455,17 @@ fn sshKeyItems(arena: std.mem.Allocator, io: std.Io, op: []const u8) ![]const It
         std.debug.print("kxdesk: 1Password sign-in did not finish; using the session op already has\n", .{});
     }
 
-    const listing = try output(arena, io, &.{ op, "item", "list", "--account", account, "--format=json" }, null) orelse
+    const listing = try output(arena, io, &.{ op, "item", "list", "--account", account, "--format=json" }, null) orelse {
+        // Said rather than returned silently: this is the failure a click
+        // produces, and its cause is not the mode's but the process's - a child
+        // of the bar, or of the daemon, is refused 1Password's app however well
+        // the CLI is set up, while a shell is answered.
+        std.debug.print(
+            "kxdesk: `op item list` answered nothing: either the CLI is not signed in, or this process is not one 1Password answers - a shell is, the bar and the daemon are not\n",
+            .{},
+        );
         return error.OnePasswordUnavailable;
+    };
 
     const items = std.json.parseFromSliceLeaky([]const Item, arena, listing, .{
         .ignore_unknown_fields = true,
@@ -287,7 +476,7 @@ fn sshKeyItems(arena: std.mem.Allocator, io: std.Io, op: []const u8) ![]const It
 
     var selected = std.ArrayList(Item).empty;
     for (items) |item| {
-        if (std.mem.eql(u8, item.@"category", "SSH_KEY")) try selected.append(arena, item);
+        if (std.mem.eql(u8, item.category, "SSH_KEY")) try selected.append(arena, item);
     }
     return selected.items;
 }
@@ -309,7 +498,7 @@ fn materialize(
     for (items) |item| {
         const name = try std.fmt.allocPrint(arena, "{s}/{s}_{s}", .{
             paths.keys,
-            try slug(arena, item.@"title"),
+            try slug(arena, item.title),
             item.id[0..@min(6, item.id.len)],
         });
 
@@ -321,7 +510,7 @@ fn materialize(
         });
         const private_key = try output(arena, io, &.{ op, "read", reference }, null) orelse {
             std.debug.print("kxdesk: skipping '{s}': 1Password would not hand over its private key\n", .{
-                item.@"title",
+                item.title,
             });
             continue;
         };
@@ -348,14 +537,14 @@ fn publicHalf(arena: std.mem.Allocator, io: std.Io, op: []const u8, item: Item) 
         fields: []const Field = &.{},
 
         const Field = struct {
-            @"label": []const u8 = "",
+            label: []const u8 = "",
             value: []const u8 = "",
         };
     };
 
     const detail_json = try output(arena, io, &.{
-        op,     "item",       "get",
-        item.id, "--account", account,
+        op,              "item",      "get",
+        item.id,         "--account", account,
         "--format=json",
     }, null) orelse return "";
     const detail = std.json.parseFromSliceLeaky(Detail, arena, detail_json, .{
@@ -364,7 +553,7 @@ fn publicHalf(arena: std.mem.Allocator, io: std.Io, op: []const u8, item: Item) 
     }) catch return "";
 
     for (detail.fields) |field| {
-        if (std.ascii.eqlIgnoreCase(field.@"label", "public key")) {
+        if (std.ascii.eqlIgnoreCase(field.label, "public key")) {
             return std.mem.trim(u8, field.value, " \t\r\n");
         }
     }

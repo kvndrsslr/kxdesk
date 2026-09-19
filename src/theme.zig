@@ -100,4 +100,11 @@ pub const glyph = struct {
     pub const wifi = "\u{f05a9}";
     pub const ethernet = "\u{f0200}";
     pub const disconnected = "\u{f05e9}";
+
+    /// The server-mode item: this machine serving its ssh keys and its git
+    /// signing to whoever connects. One glyph is enough - the state it is in is
+    /// what the colour says, and the loading symbol above is what a change in
+    /// flight says - so this is a plain rack. Present in the bar's own font:
+    /// checked against its `cmap`, so the bar needs no fallback to draw it.
+    pub const server = "\u{f233}";
 };

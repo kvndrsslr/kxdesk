@@ -122,15 +122,31 @@ kxdesk state set openrouter.token 'sk-or-v1-…'
 
 ## Server mode: this Mac as a remote coding server
 
-`kxdesk server-mode [enter|exit|status|refresh]` — `status` when no verb is
+`kxdesk server-mode [enter|exit|toggle|status|refresh]` — `status` when no verb is
 given. It is the port of the standalone `kxb-server-mode` script, which it
 replaces along with that script's own state directory.
 
-Unlike every other command, it runs in the client rather than in the daemon. It
-drives `op`, and 1Password's unlock is the desktop app's to grant, in the session
-that asked for it: a launchd agent has no such session, so `op` run by the daemon
-exits non-zero instead of waiting for an approval nobody there can give, and the
-command fails with `OnePasswordUnavailable`.
+The bar says which state the mode is in: a `server` item beside the date, grey
+when the mode is off, green when it is on, and an hourglass while a change is in
+flight. Clicking it toggles the mode — `server-mode toggle` — and the click's
+output is kept in `…/kxdesk/server-mode/last-click.log`, since a click has no
+terminal for it.
+
+Leaving the mode from the bar works; entering it from the bar cannot. The click
+is a child of the bar, and 1Password's app integration is not granted to one: `op`
+run there answers `No accounts configured for use with 1Password CLI`, because
+the group container it asks the app through answers `Operation not permitted`.
+Neither is it granted to the daemon's children, nor to a launchd job's binary —
+only a shell's own `op` is answered, which is why the command is run from a shell
+and why **`enter` belongs to one**. The item is still the way to see the state,
+and a click still takes the mode off.
+
+Unlike every other command, `server-mode` runs in the client rather than in the
+daemon: it is the only one that drives `op`, and 1Password's app integration is
+granted to contexts the daemon's own children are not. `op` started by the daemon
+exits non-zero rather than asking for an approval that nobody there can give,
+which is why the bar's click goes through launchd and why the command is meant to
+be run from a shell.
 
 - **enter** materializes every SSH key of the personal 1Password account
   (`my.1password.com`; the business account is never read) under
@@ -143,6 +159,8 @@ command fails with `OnePasswordUnavailable`.
 - **exit** puts every one of those back from the snapshot enter took — the ssh
   config, the three git settings, the keep-awake service — stops the agent and
   wipes the keys.
+- **toggle** enters the mode if it is off and leaves it if it is on: what the
+  bar item's click asks for.
 - **status** says whether the mode is on, how many identities the agent holds
   and which key git signs with.
 - **refresh** is exit then enter, for a key or a remote that was added in
