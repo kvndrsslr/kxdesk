@@ -33,10 +33,11 @@ const kept = [_][]const u8{
     "battery.ring",
     "pomodoro",
     // Popup rows: drawn inside a popup, and only while it is open. Named by
-    // prefix, so a row added to `items_usage.rows` is covered without a second
+    // prefix, so a row added to a provider's `rows` is covered without a second
     // edit here.
     "github.template",
     "neuralwatt.",
+    "opencode-go.",
     // The helper item that carries yabai's events. It draws nothing.
     "system.yabai",
 };

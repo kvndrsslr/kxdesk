@@ -112,13 +112,22 @@ for SketchyBar item events (the value items carry as `mach_helper`) and
 can hold them, so stop the agent (`brew services stop kxdesk`) before running a
 checkout's `daemon`.
 
-Two provider tokens are read from the state database rather than the
+Three provider tokens are read from the state database rather than the
 environment, since the daemon runs under launchd:
 
 ```sh
 kxdesk state set neuralwatt.token 'sk-…'
 kxdesk state set openrouter.token 'sk-or-v1-…'
+kxdesk state set opencode-go.token '…'
 ```
+
+Each gets an item on the bar: `:neuralwatt:` and `:openrouter:` with what is left
+of the balance, and `:opencode-go:` with the share of the tightest of the Go
+plan's three windows — five rolling hours, the week, the month — since that is
+the one that would stop the next request. Hovering shows the windows the provider
+reports, down to when each resets; clicking opens its usage page. OpenRouter
+reports no windows to a normal key, so its hover is empty and it is subscribed to
+clicks alone.
 
 ## Server mode: this Mac as a remote coding server
 

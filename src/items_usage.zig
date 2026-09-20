@@ -1,16 +1,19 @@
-//! Provider usage: what is left on NeuralWatt and on OpenRouter.
+//! Provider usage: what is left on NeuralWatt and on OpenRouter, and how much of
+//! the OpenCode Go subscription is spent.
 //!
-//! Both numbers change only when you spend, so they refresh on the brew item's
-//! slow cadence and never on the event path. One background task fetches both,
-//! through the system's `curl`: a TLS stack is not worth carrying for two URLs
-//! every five minutes.
+//! These numbers change only when you spend, so they refresh on the brew item's
+//! slow cadence and never on the event path. One background task fetches all
+//! three, through the system's `curl`: a TLS stack is not worth carrying for six
+//! URLs every five minutes.
 //!
-//! The bar shows what is left on each. What was spent in the last day, the last
-//! week and the last thirty days is on hover, from NeuralWatt's own usage
-//! summary, which takes a window as ISO 8601 and returns the charged cost for
-//! it. OpenRouter has no such window to offer a normal key - the account's daily
-//! activity is behind a management key, and its per-key daily and weekly fields
-//! describe a key that has never been used - so its item shows the balance alone.
+//! The bar shows what is left on each balance, and the share of the tightest of
+//! the Go plan's windows. What was spent in the last day, the last week and the
+//! last thirty days is on hover, from NeuralWatt's own usage summary, which takes
+//! a window as ISO 8601 and returns the charged cost for it; the same hover on the
+//! Go item shows its three windows, each against its own limit. OpenRouter has no
+//! such window to offer a normal key - the account's daily activity is behind a
+//! management key, and its per-key daily and weekly fields describe a key that has
+//! never been used - so its item shows the balance alone.
 
 const std = @import("std");
 
@@ -24,20 +27,32 @@ const theme = @import("theme.zig");
 /// names.
 pub const neuralwatt_item = "neuralwatt";
 pub const openrouter_item = "openrouter";
+pub const opencode_item = "opencode-go";
 
 /// Where a click goes: each provider's own usage page.
 pub const neuralwatt_url = "https://portal.neuralwatt.com/dashboard/usage";
 pub const openrouter_url = "https://openrouter.ai/activity";
+/// The console rather than the plan's own page: the console is where the three
+/// windows are drawn, and the plan page is only what they are bought against.
+pub const opencode_url = "https://opencode.ai/auth";
 
 /// Where the tokens are read from, so replacing one takes effect at the next
 /// refresh rather than at the next restart. The daemon runs under launchd and
 /// never had an environment worth reading.
 const neuralwatt_token_key = "neuralwatt.token";
 const openrouter_token_key = "openrouter.token";
+/// The key the Go subscription hands out, which is not the Zen one: only this
+/// key is answered by the usage endpoint below.
+const opencode_token_key = "opencode-go.token";
 
 const neuralwatt_quota_url = "https://api.neuralwatt.com/v1/quota";
 const neuralwatt_summary_url = "https://api.neuralwatt.com/v1/usage/summary";
 const openrouter_credits_url = "https://openrouter.ai/api/v1/credits";
+/// The endpoint the OpenCode console itself reads its Go meters from, so the
+/// number here is the console's own accounting rather than a client-side
+/// estimate. It answers `{usage: {rolling, weekly, monthly}}`, each window a
+/// share of its own limit and the instant it resets.
+const opencode_usage_url = "https://opencode.ai/zen/go/v1/usage";
 
 /// How long one request may take. Both APIs answer in a fraction of a second; a
 /// timeout is there so a connection that hangs cannot hold the task open.
@@ -47,8 +62,8 @@ const day_seconds: i64 = 24 * 60 * 60;
 const week_seconds: i64 = 7 * day_seconds;
 const month_seconds: i64 = 30 * day_seconds;
 
-/// How often both providers are refreshed. What is left only changes when you
-/// spend, and each cycle is five HTTPS requests.
+/// How often the providers are refreshed. What is left only changes when you
+/// spend, and each cycle is six HTTPS requests.
 pub const cadence_seconds: i64 = 300;
 
 /// The shortest gap between two refreshes, so that the receive loop asking
@@ -82,30 +97,74 @@ pub fn waitMs(io: std.Io) u32 {
     return @intCast(@min(remaining * 1000, 60_000));
 }
 
-/// A window the popup reports: the suffix its item name carries, the label it is
-/// drawn under, and how far back it reaches.
+/// A window a popup reports: the suffix its item name carries, the label it is
+/// drawn under, and - for a provider asked by date range - how far back it
+/// reaches.
 pub const Row = struct {
     suffix: []const u8,
     label: []const u8,
-    seconds: i64,
+    /// The window's own length, for a provider that has to name the range in its
+    /// request. Left at zero for one whose endpoint reports its own windows, where
+    /// the suffix is that field's name instead.
+    seconds: i64 = 0,
 };
 
-/// Every window the popup reports, shortest first. The bar declares one item per
-/// row from this list and the refresh fills each one, so the items that exist and
-/// the readings that feed them cannot drift apart. Thirty days is the summary
+/// NeuralWatt's windows, shortest first. The bar declares one item per row from
+/// this list and the refresh fills each one, so the items that exist and the
+/// readings that feed them cannot drift apart. Thirty days is the summary
 /// endpoint's own fallback default, which is why it is the longest window worth
 /// asking for.
-pub const rows = [_]Row{
+pub const neuralwatt_rows = [_]Row{
     .{ .suffix = "day", .label = "24h", .seconds = day_seconds },
     .{ .suffix = "week", .label = "7d", .seconds = week_seconds },
     .{ .suffix = "month", .label = "30d", .seconds = month_seconds },
 };
 
-/// The colours the two items carry, so they are told apart at a glance.
+/// OpenCode Go's windows, in the order the endpoint reports them: five rolling
+/// hours, the week and the billing month, each a share of that window's own
+/// limit. The suffix is the field's name in the response and the label is the
+/// console's word for it, so a row and the number it shows are one word apart.
+pub const opencode_rows = [_]Row{
+    .{ .suffix = "rolling", .label = "5h" },
+    .{ .suffix = "weekly", .label = "week" },
+    .{ .suffix = "monthly", .label = "month" },
+};
+
+/// One provider's bar item: its name, where a click goes, the colour its icon and
+/// its popup rows carry, and the windows its popup shows.
+pub const Provider = struct {
+    item: []const u8,
+    url: []const u8,
+    color: theme.Color,
+    /// Empty for a provider with no windows to report - which is also the item a
+    /// hover has nothing to show for.
+    rows: []const Row,
+};
+
+/// Every provider item, in the order the bar draws them and the refresh fills
+/// them. One entry per item, so a click, a hover and the rows under it are all
+/// read off this table rather than matched by name in three files.
+pub const providers = [_]Provider{
+    .{ .item = neuralwatt_item, .url = neuralwatt_url, .color = neuralwatt_color, .rows = &neuralwatt_rows },
+    .{ .item = openrouter_item, .url = openrouter_url, .color = openrouter_color, .rows = &.{} },
+    .{ .item = opencode_item, .url = opencode_url, .color = opencode_color, .rows = &opencode_rows },
+};
+
+/// The provider a bar item stands for, or null for any other item: what a click
+/// opens, and whether a hover has a popup to show.
+pub fn providerFor(item: []const u8) ?*const Provider {
+    for (&providers) |*provider| {
+        if (std.mem.eql(u8, provider.item, item)) return provider;
+    }
+    return null;
+}
+
+/// The colours the three items carry, so they are told apart at a glance.
 const neuralwatt_color = theme.green;
 const openrouter_color = theme.aqua;
+const opencode_color = theme.orange;
 
-/// Refresh both balances, and both sets of windows.
+/// Refresh every provider: both balances, and the Go plan's windows.
 pub fn refresh(io: std.Io, gpa: std.mem.Allocator, store: *state.Store) anyerror!void {
     const started_at = now(io);
     if (last_refresh != 0 and started_at - last_refresh < floor_seconds) return;
@@ -124,6 +183,10 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator, store: *state.Store) anyerror
     updateOpenrouter(io, gpa, store, &client) catch |err| {
         std.debug.print("kxdesk: openrouter usage: {s}\n", .{@errorName(err)});
         stale(&client, openrouter_item) catch {};
+    };
+    updateOpencode(io, gpa, store, &client) catch |err| {
+        std.debug.print("kxdesk: opencode-go usage: {s}\n", .{@errorName(err)});
+        stale(&client, opencode_item) catch {};
     };
 }
 
@@ -152,12 +215,22 @@ fn updateNeuralwatt(
         .ignore_unknown_fields = true,
     }) catch return error.UnreadableResponse;
 
-    var spent: [rows.len]f64 = undefined;
-    for (&spent, rows) |*reading, row| {
-        reading.* = try summaryWindow(io, arena, token, row.seconds, when);
+    var text_buffers: [neuralwatt_rows.len][48]u8 = undefined;
+    var texts: [neuralwatt_rows.len][]const u8 = undefined;
+    for (neuralwatt_rows, &text_buffers, &texts) |row, *buffer, *text| {
+        const spent = try summaryWindow(io, arena, token, row.seconds, when);
+        text.* = try windowLabel(buffer, row, spent);
     }
 
-    try publish(client, neuralwatt_item, neuralwatt_color, quota.balance.credits_remaining_usd, &spent);
+    var money_buffer: [32]u8 = undefined;
+    try publish(
+        client,
+        neuralwatt_item,
+        neuralwatt_color,
+        try money(&money_buffer, quota.balance.credits_remaining_usd),
+        &neuralwatt_rows,
+        &texts,
+    );
 }
 
 /// OpenRouter: the credit balance from its totals, and nothing to hover: it has
@@ -186,7 +259,181 @@ fn updateOpenrouter(
     }) catch return error.UnreadableResponse;
 
     const remaining = credits.data.total_credits - credits.data.total_usage;
-    try publish(client, openrouter_item, openrouter_color, remaining, null);
+    var money_buffer: [32]u8 = undefined;
+    try publish(client, openrouter_item, openrouter_color, try money(&money_buffer, remaining), &.{}, null);
+}
+
+/// OpenCode Go: three shares of three limits, and no balance - the plan is a cap,
+/// and what its endpoint reports is how much of it is gone.
+///
+/// The bar carries the highest of the three, since that is the window that would
+/// stop the next request; the hover names each one.
+fn updateOpencode(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    store: *state.Store,
+    client: *sb.Client,
+) !void {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const token = try readToken(io, arena, store, opencode_token_key);
+    const when = now(io);
+
+    const Usage = struct {
+        usage: struct {
+            rolling: Window = .{},
+            weekly: Window = .{},
+            monthly: Window = .{},
+        } = .{},
+    };
+    const body = try fetch(io, arena, opencode_usage_url, token);
+    const parsed = std.json.parseFromSliceLeaky(Usage, arena, body, .{
+        .ignore_unknown_fields = true,
+    }) catch return error.UnreadableResponse;
+
+    // In `opencode_rows` order, and read in step with it below: a window reported
+    // without a number is a response that cannot be shown - zero spent and nothing
+    // said are not the same answer - and the row for it is left as it was.
+    const windows = [_]Window{ parsed.usage.rolling, parsed.usage.weekly, parsed.usage.monthly };
+
+    var text_buffers: [opencode_rows.len][64]u8 = undefined;
+    var texts: [opencode_rows.len][]const u8 = undefined;
+    var tightest: f64 = 0;
+    for (windows, opencode_rows, &text_buffers, &texts) |window, row, *buffer, *text| {
+        const spent = window.percent orelse return error.UnreadableResponse;
+        tightest = @max(tightest, spent);
+        text.* = try opencodeRow(buffer, row, spent, window.resetsAt, when);
+    }
+
+    var percent_buffer: [32]u8 = undefined;
+    try publish(
+        client,
+        opencode_item,
+        opencode_color,
+        try percentText(&percent_buffer, tightest),
+        &opencode_rows,
+        &texts,
+    );
+}
+
+/// One window of the Go plan's usage: the share of it that is spent, and when it
+/// resets. `percent` is null rather than zero when the endpoint names a window
+/// without a number: a window it says nothing about is not an unspent one.
+const Window = struct {
+    percent: ?f64 = null,
+    resetsAt: ?[]const u8 = null,
+};
+
+/// What one Go popup row says: the window, the share of it that is spent, and -
+/// when the endpoint's instant can be read - how long is left of it.
+pub fn opencodeRow(
+    buffer: []u8,
+    row: Row,
+    percent: f64,
+    resets_at: ?[]const u8,
+    when: i64,
+) ![]const u8 {
+    var percent_buffer: [32]u8 = undefined;
+    const spent = try percentText(&percent_buffer, percent);
+
+    const reset = if (resets_at) |stamp| parseInstant(stamp) else null;
+    const instant = reset orelse return std.fmt.bufPrint(buffer, "{s} {s}", .{ row.label, spent });
+
+    var countdown_buffer: [24]u8 = undefined;
+    const left = try countdown(&countdown_buffer, instant - when);
+    return std.fmt.bufPrint(buffer, "{s} {s} · resets in {s}", .{ row.label, spent, left });
+}
+
+/// A share of a limit, as the endpoint reports it: whole percents, with a decimal
+/// only if it ever sends one.
+fn percentText(buffer: []u8, percent: f64) ![]const u8 {
+    return std.fmt.bufPrint(buffer, "{d}%", .{percent});
+}
+
+/// How long is left of a window, in the two coarsest units that describe it: days
+/// and hours, hours and minutes, or minutes alone. Rounded up, so a window that
+/// closes in seconds reads as a minute rather than as nothing, and never
+/// negative, since an instant in the past is a window that has already reset.
+fn countdown(buffer: []u8, seconds: i64) ![]const u8 {
+    const minutes = @divTrunc(@max(0, seconds) + 59, 60);
+    if (minutes < 60) return std.fmt.bufPrint(buffer, "{d}m", .{minutes});
+
+    const hours = @divTrunc(minutes, 60);
+    if (hours < 24) return std.fmt.bufPrint(buffer, "{d}h {d}m", .{ hours, minutes % 60 });
+
+    return std.fmt.bufPrint(buffer, "{d}d {d}h", .{ @divTrunc(hours, 24), hours % 24 });
+}
+
+/// The instant an endpoint spells in ISO 8601, as seconds since the epoch.
+///
+/// This reads the shape the Go endpoint sends - `YYYY-MM-DDTHH:MM:SS`, optional
+/// fractional seconds, and a `Z` or a `±HH:MM` offset - and nothing else. An
+/// instant without a zone is not read as UTC: a countdown that is hours out is
+/// worse than no countdown, and the row says its share without one instead.
+fn parseInstant(stamp: []const u8) ?i64 {
+    if (stamp.len < 19) return null;
+    if (stamp[4] != '-' or stamp[7] != '-' or stamp[10] != 'T' or
+        stamp[13] != ':' or stamp[16] != ':') return null;
+
+    const year = digits(stamp[0..4]) orelse return null;
+    const month = digits(stamp[5..7]) orelse return null;
+    const day = digits(stamp[8..10]) orelse return null;
+    const hour = digits(stamp[11..13]) orelse return null;
+    const minute = digits(stamp[14..16]) orelse return null;
+    const second = digits(stamp[17..19]) orelse return null;
+    if (month < 1 or month > 12 or day < 1 or day > 31) return null;
+    if (hour > 23 or minute > 59 or second > 60) return null;
+
+    var rest = stamp[19..];
+    if (rest.len > 0 and rest[0] == '.') {
+        const fraction = std.mem.indexOfNone(u8, rest[1..], "0123456789") orelse return null;
+        rest = rest[1 + fraction ..];
+    }
+
+    var offset: i64 = 0;
+    if (std.mem.eql(u8, rest, "Z")) {
+        // UTC: the offset this already starts from.
+    } else if (rest.len == 6 and (rest[0] == '+' or rest[0] == '-') and rest[3] == ':') {
+        const offset_hour = digits(rest[1..3]) orelse return null;
+        const offset_minute = digits(rest[4..6]) orelse return null;
+        if (offset_hour > 23 or offset_minute > 59) return null;
+        offset = offset_hour * std.time.s_per_hour + offset_minute * std.time.s_per_min;
+        if (rest[0] == '-') offset = -offset;
+    } else {
+        return null;
+    }
+
+    const days = daysFromCivil(year, month, day);
+    return days * std.time.s_per_day + hour * std.time.s_per_hour +
+        minute * std.time.s_per_min + second - offset;
+}
+
+/// How many ASCII digits spell, as a number - or null if they spell anything
+/// else, which is how a malformed stamp is rejected rather than read as zero.
+fn digits(text: []const u8) ?i64 {
+    var value: i64 = 0;
+    for (text) |character| {
+        if (character < '0' or character > '9') return null;
+        value = value * 10 + (character - '0');
+    }
+    return value;
+}
+
+/// Days between 1970-01-01 and one civil date, by Howard Hinnant's
+/// `days_from_civil`. Leap years fall out of the era arithmetic, so there is no
+/// month table - and no February - to get wrong.
+fn daysFromCivil(year: i64, month: i64, day: i64) i64 {
+    const shifted_year = year - @as(i64, @intFromBool(month <= 2));
+    const era = @divFloor(shifted_year, 400);
+    const year_of_era = shifted_year - era * 400;
+    const month_from_march = month + if (month > 2) @as(i64, -3) else @as(i64, 9);
+    const day_of_year = @divTrunc(153 * month_from_march + 2, 5) + day - 1;
+    const day_of_era = year_of_era * 365 + @divTrunc(year_of_era, 4) -
+        @divTrunc(year_of_era, 100) + day_of_year;
+
+    return era * 146097 + day_of_era - 719468;
 }
 
 /// What one window of NeuralWatt's own usage summary cost.
@@ -227,38 +474,38 @@ fn summaryWindow(
     return summary.totals.total_cost_usd;
 }
 
-/// Show what is left on the bar, and the windows in the popup.
+/// Show one provider's reading on the bar, and its windows in the popup.
 ///
-/// `readings` is one cost per entry in `rows`, or null for a provider that has
-/// no windows to report.
+/// `texts` is one text per entry in `rows_list` - what that row says once the
+/// item's placeholder is replaced - or null for a provider that has no windows to
+/// report and so no rows to write.
 fn publish(
     client: *sb.Client,
     item: []const u8,
     color: theme.Color,
-    remaining: f64,
-    readings: ?[]const f64,
+    label: []const u8,
+    rows_list: []const Row,
+    texts: ?[]const []const u8,
 ) !void {
-    var money_buffer: [32]u8 = undefined;
     var props: Props = .{};
-    try props.fmt("label={s}", .{try money(&money_buffer, remaining)});
+    try props.fmt("label={s}", .{label});
     try props.color("icon.color", color);
     try client.set(item, props.slice());
 
     // A provider without windows has no rows to write: OpenRouter's popup is
     // empty by nature, so it has none.
-    const spent = readings orelse {
+    const readings = texts orelse {
         try client.commit();
         return;
     };
-    std.debug.assert(spent.len == rows.len);
+    std.debug.assert(readings.len == rows_list.len);
 
-    for (spent, rows) |amount, row| {
+    for (readings, rows_list) |text, row| {
         var name_buffer: [48]u8 = undefined;
-        var label_buffer: [48]u8 = undefined;
         const name = try std.fmt.bufPrint(&name_buffer, "{s}.{s}", .{ item, row.suffix });
 
         var row_props: Props = .{};
-        try row_props.fmt("label={s}", .{try windowLabel(&label_buffer, row, amount)});
+        try row_props.fmt("label={s}", .{text});
         try client.set(name, row_props.slice());
     }
 

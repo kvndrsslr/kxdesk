@@ -861,11 +861,12 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try c.arg("github.template");
     try c.arg("mouse.clicked");
 
-    // Provider balances: what is left on NeuralWatt and on OpenRouter. One
-    // background task fetches both, on the daemon's own clock rather than on an
-    // item's `update_freq` - a refresh that pushed to an item which was
-    // subscribed to updates came straight back as another event. Hovering either
-    // shows the last day, week and thirty days; clicking opens its usage page.
+    // Provider usage: what is left on NeuralWatt and on OpenRouter, and how much
+    // of the OpenCode Go plan is spent. One background task fetches all three, on
+    // the daemon's own clock rather than on an item's `update_freq` - a refresh
+    // that pushed to an item which was subscribed to updates came straight back as
+    // another event. Hovering shows each provider's windows; clicking opens its
+    // usage page.
     try c.arg("--add");
     try c.arg("item");
     try c.arg(items_usage.neuralwatt_item);
@@ -931,19 +932,57 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try c.arg(items_usage.openrouter_item);
     try c.arg("mouse.clicked");
 
-    // One popup row per window, per provider. The rows come from
-    // `items_usage.rows` rather than being listed here, because the refresh
-    // fills exactly those items - naming them twice is how the day and the week
-    // would drift apart from what is written on hover.
-    inline for ([_]struct { parent: []const u8, color: theme.Color }{
-        .{ .parent = items_usage.neuralwatt_item, .color = theme.green },
-    }) |provider| {
-        inline for (items_usage.rows) |row| {
+    try c.arg("--add");
+    try c.arg("item");
+    try c.arg(items_usage.opencode_item);
+    try c.arg("right");
+    const opencode = config.node(.{
+        .drawing = true,
+        .associated_display = 1,
+        .padding_left = item_padding,
+        .padding_right = item_padding,
+        .width = "dynamic",
+        .icon = .{
+            // The app font carries this one as `:opencode_go:`, with the
+            // underscore, and it has no hyphenated spelling: `:opencode-go:`
+            // shapes to nothing at all. The item's own name is still the hyphen
+            // the CLI spells the provider with, since that is what events and
+            // state keys carry.
+            .value = ":opencode_go:",
+            // 16 points is the app font's own size and what the glyph beside it
+            // uses; unlike `:neuralwatt:` and `:openrouter:`, this one has not
+            // been measured, so it may want to follow whichever of them it is
+            // shaped like once it is in an installed font.
+            .font = theme.app_font ++ ":Regular:16.0",
+            .padding_right = 2,
+            .color = config.color(theme.dark_grey),
+        },
+        .label = .{ .value = "?" },
+        .script = null,
+        .click_script = null,
+    });
+    try applyHelper(c, items_usage.opencode_item, opencode, config_input.helper);
+    // Its label is a share of a limit rather than a balance, so the hover is what
+    // says which of the three windows it belongs to. Like the other two, the
+    // number is the daemon's and the click opens the page it came from.
+    try c.arg("--subscribe");
+    try c.arg(items_usage.opencode_item);
+    try c.arg("mouse.entered");
+    try c.arg("mouse.exited");
+    try c.arg("mouse.exited.global");
+    try c.arg("mouse.clicked");
+
+    // One popup row per window, per provider. The rows come from the provider
+    // table rather than being listed here, because the refresh fills exactly those
+    // items - naming them twice is how the day and the week would drift apart from
+    // what is written on hover.
+    inline for (items_usage.providers) |provider| {
+        inline for (provider.rows) |row| {
             var name_buffer: [48]u8 = undefined;
-            const name = try std.fmt.bufPrint(&name_buffer, "{s}.{s}", .{ provider.parent, row.suffix });
+            const name = try std.fmt.bufPrint(&name_buffer, "{s}.{s}", .{ provider.item, row.suffix });
 
             var position_buffer: [48]u8 = undefined;
-            const position = try std.fmt.bufPrint(&position_buffer, "popup.{s}", .{provider.parent});
+            const position = try std.fmt.bufPrint(&position_buffer, "popup.{s}", .{provider.item});
 
             try c.arg("--add");
             try c.arg("item");

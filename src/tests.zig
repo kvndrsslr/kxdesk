@@ -8,6 +8,7 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const config = @import("config.zig");
 const items_system = @import("items_system.zig");
+const items_usage = @import("items_usage.zig");
 const store = @import("store.zig");
 const theme = @import("theme.zig");
 const zen = @import("zen.zig");
@@ -172,6 +173,56 @@ test "formatRate keeps a reading inside three digits and a unit" {
     }
 }
 
+test "an unreadable reset instant costs a Go row its countdown, not its number" {
+    var buffer: [64]u8 = undefined;
+    const rolling = items_usage.opencode_rows[0];
+
+    // The endpoint's own shape: UTC, and the countdown is what is left between the
+    // row's instant and now. `20716` is 2026-09-20, checked against the epoch.
+    const noon = 20716 * std.time.s_per_day + 12 * std.time.s_per_hour;
+    try std.testing.expectEqualStrings(
+        "5h 14% · resets in 2h 30m",
+        try items_usage.opencodeRow(&buffer, rolling, 14, "2026-09-20T12:00:00Z", noon - 2 * std.time.s_per_hour - 30 * std.time.s_per_min),
+    );
+
+    // Fractional seconds are dropped rather than refused, and an offset is
+    // subtracted, so `+02:00` means an instant two hours earlier than the clock
+    // says - the one mistake a countdown must not make. Half an hour before it is
+    // half an hour left; read as UTC it would have been two and a half.
+    try std.testing.expectEqualStrings(
+        "5h 14% · resets in 30m",
+        try items_usage.opencodeRow(&buffer, rolling, 14, "2026-09-20T14:00:00.500+02:00", noon - 30 * std.time.s_per_min),
+    );
+
+    // Longer than a day reads in days and hours, and a window whose instant has
+    // already passed reads as none left rather than as one in the past.
+    try std.testing.expectEqualStrings(
+        "month 3% · resets in 1d 1h",
+        try items_usage.opencodeRow(&buffer, items_usage.opencode_rows[2], 3, "2026-09-21T13:00:00Z", noon),
+    );
+    try std.testing.expectEqualStrings(
+        "5h 0% · resets in 0m",
+        try items_usage.opencodeRow(&buffer, rolling, 0, "2026-09-20T11:00:00Z", noon),
+    );
+
+    // A stamp this cannot read is not counted from: an instant without a zone, a
+    // month that does not exist, and a word that is not a stamp at all all cost
+    // the row its countdown and leave the share alone.
+    for ([_][]const u8{
+        "2026-09-20T12:00:00",
+        "2026-13-20T12:00:00Z",
+        "2026-09-20 12:00:00Z",
+        "2026-09-20T12:00:00+0200",
+        "soon",
+        "",
+    }) |stamp| {
+        try std.testing.expectEqualStrings(
+            "5h 14%",
+            try items_usage.opencodeRow(&buffer, rolling, 14, stamp, noon),
+        );
+    }
+}
+
 test "zen keeps the collapsed bar's furniture and hides the rest" {
     // Spaces keep whole, the clock keeps, and everything the bar carries news in
     // is hidden - which is what makes zen opt-out: an item is hidden unless it is
@@ -187,4 +238,9 @@ test "zen keeps the collapsed bar's furniture and hides the rest" {
     try std.testing.expect(!zen.isKept("net.link"));
     try std.testing.expect(!zen.isKept("brew"));
     try std.testing.expect(!zen.isKept("front_app.2"));
+
+    // A provider's popup rows stay, its item does not: the rows are drawn inside
+    // the popup and only while it is open, while the item is content zen hides.
+    try std.testing.expect(zen.isKept("opencode-go.monthly"));
+    try std.testing.expect(!zen.isKept("opencode-go"));
 }
