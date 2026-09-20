@@ -170,6 +170,15 @@ int32_t kx_tcp_connect(const char* host, uint16_t port);
 /// nothing here to time out on.
 int64_t kx_tcp_read(int32_t fd, char* out, size_t cap);
 
+/// Write all of `buffer` to a descriptor `kx_tcp_connect` returned.
+///
+/// Returns true when every byte went out, false when the peer went away first.
+/// A short write is a failure rather than a partial success: kanata reads
+/// newline-delimited JSON, and half a line is not a message. Blocks like the
+/// read above, and for the same reason - a loopback peer that accepts the
+/// connection accepts the message.
+bool kx_tcp_write(int32_t fd, const void* buffer, size_t len);
+
 /// Close a descriptor from `kx_tcp_connect`.
 void kx_tcp_close(int32_t fd);
 

@@ -11,7 +11,12 @@
 //!
 //! Three kinds of message are acted on, out of the several kanata sends:
 //!
-//! * `{"MessagePush":{"message":"yabai:window-swap:west"}}` - a binding.
+//! * `{"MessagePush":{"message":["yabai:window-swap:west"]}}` - a binding. The
+//!   name sits in a one-element array: kanata converts the action's arguments
+//!   with `simple_sexpr_to_json_array`, so every push is an array whatever the
+//!   config wrote, and the bare string the protocol documents is not what it
+//!   sends. Both are read - a name is a name, and which wrapper carried it is
+//!   kanata's to change.
 //! * `{"LayerChange":{"new":"op"}}` - kanata switched layer, which is what
 //!   colours the bar's space icons. This replaces the `set_mode_indicator` call
 //!   the skhd config made on every mode entry: the layer is the state, and the
@@ -114,7 +119,26 @@ pub const App = enum { code, kitty, arc_debug };
 /// Why a message was refused. Every one of these is a line in the log and
 /// nothing else: a binding that cannot be carried out must not be able to stop
 /// the channel, and the log is where a mistyped name becomes visible.
-pub const ParseError = error{ UnknownAction, MissingArgument, BadArgument };
+pub const ParseError = error{ InvalidMessage, UnknownAction, MissingArgument, BadArgument };
+
+/// The name a pushed message carried, out of the shape kanata wrapped it in.
+///
+/// kanata does not send the string the config wrote: `simple_sexpr_to_json_array`
+/// turns the arguments of the action into a JSON array, so what arrives for
+/// `(push-msg "debug:dump-path")` is `["debug:dump-path"]` — and the bare string
+/// its protocol documents, which is read as well, is not what a config produces.
+/// A list of several names, a nested list, a number, or a name that is not a
+/// string at all is refused rather than guessed at: those are messages this
+/// cannot carry out, and the only names allowed to reach `perform` are the ones
+/// the vocabulary below spells.
+pub fn pushedName(message: std.json.Value) ParseError![]const u8 {
+    if (message == .string) return message.string;
+    if (message == .array) {
+        const items = message.array.items;
+        if (items.len == 1 and items[0] == .string) return items[0].string;
+    }
+    return error.InvalidMessage;
+}
 
 /// Read a name as `namespace:verb[:argument]`.
 ///
@@ -463,7 +487,9 @@ pub const Handled = union(enum) {
 const Incoming = struct {
     LayerChange: ?struct { new: []const u8 } = null,
     ConfigFileReload: ?struct { new: []const u8 } = null,
-    MessagePush: ?struct { message: []const u8 } = null,
+    /// A `serde_json::Value`, not a string, because that is what the field is on
+    /// the wire: `pushedName` reads the wrapper kanata put around the name.
+    MessagePush: ?struct { message: std.json.Value } = null,
 };
 
 /// Act on one line of JSON, as kanata sent it.
@@ -474,7 +500,7 @@ pub fn handleLine(context: *Context, line: []const u8) !Handled {
     }) catch return error.InvalidMessage;
 
     if (message.MessagePush) |push| {
-        const action = try parseAction(push.message);
+        const action = try parseAction(try pushedName(push.message));
         try perform(context, action);
         return .{ .action = action };
     }
@@ -599,8 +625,8 @@ pub const Listener = struct {
         self.* = .{
             .gpa = gpa,
             .deps = deps,
-            .host = try resolveHost(gpa, deps),
-            .port = resolvePort(deps),
+            .host = try resolveHost(gpa, deps.io, deps.store),
+            .port = resolvePort(deps.io, deps.store),
         };
         active.store(self, .monotonic);
 
@@ -700,18 +726,19 @@ pub const Listener = struct {
 };
 
 /// Where kanata's server is: the store's value when one has been set, and the
-/// address the launchd job passes kanata otherwise.
-fn resolveHost(gpa: std.mem.Allocator, deps: Deps) ![:0]const u8 {
+/// address the launchd job passes kanata otherwise. Read per connection - the
+/// reading thread's and a tap's alike - so the two cannot disagree.
+fn resolveHost(gpa: std.mem.Allocator, io: std.Io, store: *state.Store) ![:0]const u8 {
     var buffer: [128]u8 = undefined;
-    if (deps.store.getText(deps.io, host_key, &buffer) catch null) |text| {
+    if (store.getText(io, host_key, &buffer) catch null) |text| {
         if (text.len > 0) return gpa.dupeZ(u8, text);
     }
     return gpa.dupeZ(u8, default_host);
 }
 
-fn resolvePort(deps: Deps) u16 {
+fn resolvePort(io: std.Io, store: *state.Store) u16 {
     var buffer: [16]u8 = undefined;
-    const text = deps.store.getText(deps.io, port_key, &buffer) catch return default_port;
+    const text = store.getText(io, port_key, &buffer) catch return default_port;
     if (text) |value| {
         const port = std.fmt.parseInt(u16, std.mem.trim(u8, value, " \n"), 10) catch
             return default_port;
@@ -733,20 +760,48 @@ pub fn status(arena: std.mem.Allocator) ![]const u8 {
     });
 }
 
+/// Press one of the fake keys the config defines, over a connection of its own.
+///
+/// The fallback for a space yabai will not focus is a Mission Control arrow key,
+/// and the protocol's only way to output a key is a fake key: `kanata.kbd` names
+/// the two chords and this asks for one, as the user, in the session - what
+/// `skhd -k` did for the shell, out of the daemon that replaced it.
+///
+/// A connection made and dropped per tap. The reading thread owns its socket and
+/// never writes, so a tap cannot disturb the messages coming back, and an action
+/// on a fake key is not acknowledged: a name kanata does not define is a line in
+/// kanata's log and nothing on this side, which is why the names live next to
+/// the `defvirtualkeys` that define them.
+pub fn tapFakeKey(context: *Context, name: []const u8) !void {
+    const host = try resolveHost(context.arena, context.io, context.store);
+    const port = resolvePort(context.io, context.store);
+
+    const fd = platform.kx_tcp_connect(host.ptr, port);
+    if (fd < 0) return error.KanataUnreachable;
+    defer platform.kx_tcp_close(fd);
+
+    const request = try std.fmt.allocPrint(
+        context.arena,
+        "{{\"ActOnFakeKey\":{{\"name\":\"{s}\",\"action\":\"Tap\"}}}}\n",
+        .{name},
+    );
+    if (!platform.kx_tcp_write(fd, request.ptr, request.len)) return error.KanataUnreachable;
+}
+
 /// Act on a message as if kanata had pushed it, for `kxdesk kanata inject`.
 ///
 /// This is how a binding is exercised without pressing its keys, and how the
 /// channel is tested when kanata is not running at all: the parsing and the
 /// action are the same code the socket path runs. An action name is what a
-/// binding pushes, so it is taken as one; anything starting with `{` is read as
-/// the line kanata would have sent.
+/// binding pushes, so it is taken as one and wrapped the way kanata wraps it;
+/// anything starting with `{` is read as the line kanata would have sent.
 pub fn inject(context: *Context, message: []const u8) ![]const u8 {
     const line = if (std.mem.startsWith(u8, message, "{"))
         message
     else
         try std.fmt.allocPrint(
             context.arena,
-            "{{\"MessagePush\":{{\"message\":\"{s}\"}}}}",
+            "{{\"MessagePush\":{{\"message\":[\"{s}\"]}}}}",
             .{message},
         );
 

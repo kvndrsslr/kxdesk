@@ -456,6 +456,35 @@ test "kanata refuses a name it cannot carry out" {
     try std.testing.expectError(error.BadArgument, kanata.parseAction("yabai:display-focus:0"));
 }
 
+test "a pushed message is read in the shape kanata sends, and in the documented one" {
+    // `push-msg` arrives as a JSON array - kanata converts the action's
+    // arguments with `simple_sexpr_to_json_array`, so a config cannot produce
+    // the bare string its protocol documents - and a name that is not one name
+    // is refused, since what is pushed is a name and not a command.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const cases = [_]struct { payload: []const u8, name: ?[]const u8 }{
+        .{ .payload = "[\"debug:dump-path\"]", .name = "debug:dump-path" },
+        .{ .payload = "\"debug:dump-path\"", .name = "debug:dump-path" },
+        .{ .payload = "[\"yabai:window-swap:west\"]", .name = "yabai:window-swap:west" },
+        .{ .payload = "[\"a\",\"b\"]", .name = null },
+        .{ .payload = "[[\"a\"]]", .name = null },
+        .{ .payload = "[]", .name = null },
+        .{ .payload = "7", .name = null },
+    };
+
+    for (cases) |case| {
+        const message = try std.json.parseFromSliceLeaky(std.json.Value, arena, case.payload, .{});
+        if (case.name) |name| {
+            try std.testing.expectEqualStrings(name, try kanata.pushedName(message));
+        } else {
+            try std.testing.expectError(error.InvalidMessage, kanata.pushedName(message));
+        }
+    }
+}
+
 test "kanata framing keeps messages apart across read boundaries" {
     var framer = kanata.Framer{};
 
@@ -463,10 +492,10 @@ test "kanata framing keeps messages apart across read boundaries" {
     // reads, and two lines in one. This is both, in order.
     framer.feed("{\"MessagePush\":{\"mess");
     try std.testing.expect(framer.next() == null);
-    framer.feed("age\":\"debug:dump-path\"}}\n{\"LayerChange\":{\"new\":\"op\"}}\n");
+    framer.feed("age\":[\"debug:dump-path\"]}}\n{\"LayerChange\":{\"new\":\"op\"}}\n");
 
     try std.testing.expectEqualStrings(
-        "{\"MessagePush\":{\"message\":\"debug:dump-path\"}}",
+        "{\"MessagePush\":{\"message\":[\"debug:dump-path\"]}}",
         framer.next().?,
     );
     try std.testing.expectEqualStrings("{\"LayerChange\":{\"new\":\"op\"}}", framer.next().?);

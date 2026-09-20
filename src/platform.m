@@ -530,6 +530,22 @@ int64_t kx_tcp_read(int32_t fd, char* out, size_t cap) {
   }
 }
 
+bool kx_tcp_write(int32_t fd, const void* buffer, size_t len) {
+  if (fd < 0 || !buffer) return false;
+
+  const char* cursor = buffer;
+  size_t total = 0;
+  while (total < len) {
+    ssize_t n = send(fd, cursor + total, len - total, 0);
+    if (n < 0 && errno == EINTR) continue;
+    /* A peer that went away is the caller's answer, not a failure to retry:
+     * the descriptor is one the caller opened for this message. */
+    if (n <= 0) return false;
+    total += (size_t)n;
+  }
+  return true;
+}
+
 void kx_tcp_close(int32_t fd) {
   if (fd >= 0) close(fd);
 }

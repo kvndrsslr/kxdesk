@@ -84,6 +84,10 @@ pub extern "c" fn kx_tcp_connect(host: [*:0]const u8, port: u16) i32;
 /// connection, or -1 on a read error.
 pub extern "c" fn kx_tcp_read(fd: i32, out: [*]u8, cap: usize) i64;
 
+/// Send `buffer` whole: true when every byte went out, false when the peer
+/// went away first, which for a message to kanata is a tap that did not happen.
+pub extern "c" fn kx_tcp_write(fd: i32, buffer: [*]const u8, len: usize) bool;
+
 pub extern "c" fn kx_tcp_close(fd: i32) void;
 
 /// Replace the general pasteboard's contents with `text`.

@@ -102,10 +102,13 @@ path runs.
 
 Three kinds of message are acted on, out of the several kanata sends:
 
-- **`MessagePush`** — a binding. The name is parsed as
-  `namespace:verb[:argument]` and refused with the reason when it is not one of
-  the verbs in `src/kanata.zig`, so a typo in the config is a line in the log
-  rather than a key that does nothing.
+- **`MessagePush`** — a binding. kanata sends the name inside a one-element JSON
+  array (`{"message":["yabai:window-swap:west"]}`), because it converts the
+  action's arguments with `simple_sexpr_to_json_array`; a bare string is read
+  too, since the field is a `serde_json::Value` on kanata's side. The name is
+  parsed as `namespace:verb[:argument]` and refused with the reason when it is
+  not one of the verbs in `src/kanata.zig`, so a typo in the config is a line in
+  the log rather than a key that does nothing.
 - **`LayerChange`** — kanata switched layer, which is what colours the bar's
   space icons. `op`, `wmode` and `smode` are the indices the skhd config used to
   pass to `set_mode_indicator` on entering each mode, and `default` clears them.

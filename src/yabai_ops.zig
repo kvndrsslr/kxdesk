@@ -10,7 +10,7 @@
 const std = @import("std");
 
 const Context = @import("context.zig").Context;
-const exec = @import("exec.zig");
+const kanata = @import("kanata.zig");
 const platform = @import("platform.zig");
 const yabai = @import("yabai.zig");
 
@@ -307,7 +307,8 @@ pub fn cycleSpaceWindows(context: *Context, args: []const []const u8) anyerror![
 }
 
 /// Move focus to the neighbouring space on the current display, falling back
-/// to skhd's key emulation for the native-fullscreen spaces yabai cannot focus.
+/// to Mission Control's arrow keys - pressed through kanata - for the
+/// native-fullscreen spaces yabai cannot focus.
 pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
     const reverse = hasFlag(args, "--reverse");
@@ -343,9 +344,10 @@ pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror!
     context.yabai.command(arena, &.{ "-m", "space", "--focus", index_argument }) catch |err| switch (err) {
         // Native-fullscreen spaces refuse to be focused by yabai (and so does
         // re-focusing the current one); the shell fell through to emulating
-        // Mission Control's shortcut, and its status was the fallback's.
+        // Mission Control's shortcut, and its status was the fallback's. It is
+        // the same fallback still, pressed by kanata where skhd pressed it.
         error.YabaiFailed => {
-            try skhdArrow(context, if (reverse) "left" else "right");
+            try kanata.tapFakeKey(context, if (reverse) "ctrl-left" else "ctrl-right");
             return "";
         },
         else => return err,
@@ -488,15 +490,6 @@ fn parseLabels(input: []const u8, arena: std.mem.Allocator) []const []const u8 {
         if (stripped.len > 0) labels.append(arena, stripped) catch return &.{};
     }
     return labels.items;
-}
-
-/// Emulate a Mission Control arrow key through skhd: the fallback the shell
-/// reached for whenever yabai refused a neighbouring-space focus.
-fn skhdArrow(context: *Context, direction: []const u8) !void {
-    const skhd = try exec.path(context.arena, "skhd");
-    const key = try std.fmt.allocPrintSentinel(context.arena, "ctrl - {s}", .{direction}, 0);
-    const vector = [_:null]?[*:0]const u8{ skhd.ptr, "-k", key.ptr, null };
-    if (platform.kx_exec_status(&vector) != 0) return error.YabaiFailed;
 }
 
 // -- the actions kanata's messages name -------------------------------------
