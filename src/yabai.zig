@@ -26,8 +26,10 @@ pub const Space = struct {
     @"has-focus": bool = false,
 };
 
-/// A managed window. Only the fields the bar renders are modelled.
+/// A window yabai knows about. Only the fields the bar renders and the focus
+/// cycle steers by are modelled; `id` is what that cycle focuses.
 pub const Window = struct {
+    id: u32 = 0,
     app: []const u8 = "",
     title: []const u8 = "",
     @"role": []const u8 = "",
@@ -87,6 +89,13 @@ pub const Client = struct {
 
     pub fn windows(self: *Client, scratch: std.mem.Allocator) ![]Window {
         return self.query([]Window, scratch, &.{ "-m", "query", "--windows" });
+    }
+
+    /// The windows of the space in focus, floating ones included - the list
+    /// cycling has to be built from, since every `--focus` selector of yabai's
+    /// own walks the BSP tree and so never reaches a floating window.
+    pub fn spaceWindows(self: *Client, scratch: std.mem.Allocator) ![]Window {
+        return self.query([]Window, scratch, &.{ "-m", "query", "--windows", "--space" });
     }
 
     /// Query a single window, used by the cheap `ONLY=title` path where the

@@ -255,30 +255,53 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
     return "";
 }
 
-/// Cycle focus through the windows of the current space: stack first, then
-/// plain order. First success wins; the shell ended the chain with `exit 0`,
-/// so even a cycle with nothing to focus succeeds.
+/// Cycle focus through every window of the current space, floating ones
+/// included.
+///
+/// yabai's own selectors cannot do this: `--focus next`/`first` and their
+/// `stack.*` cousins resolve through `view_find_window_node`, the BSP tree, so a
+/// floating window is never their target - and a floating window *holding*
+/// focus has no node at all, so all four attempts of the shell's chain fail and
+/// the key does nothing. The tree was good for one thing, an order to cycle in;
+/// focusing by id needs no tree, so the order here is the space's window list
+/// sorted by window id, which is creation order and does not shift as focus
+/// moves. Minimized windows are left out, as yabai leaves them out of the tree
+/// by untiling them. The focused window is the last candidate, so a space with
+/// one window re-raises it; a space with nothing focusable does nothing and
+/// still succeeds, as the shell's trailing `exit 0` did.
 pub fn cycleSpaceWindows(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
+    const reverse = hasFlag(args, "--reverse");
 
-    const attempts: []const []const []const u8 = if (hasFlag(args, "--reverse"))
-        &.{
-            &.{ "-m", "window", "--focus", "stack.prev" },
-            &.{ "-m", "window", "--focus", "stack.last" },
-            &.{ "-m", "window", "--focus", "prev" },
-            &.{ "-m", "window", "--focus", "last" },
-        }
-    else
-        &.{
-            &.{ "-m", "window", "--focus", "stack.next" },
-            &.{ "-m", "window", "--focus", "stack.first" },
-            &.{ "-m", "window", "--focus", "next" },
-            &.{ "-m", "window", "--focus", "first" },
-        };
+    // A query yabai refuses is the shell's every-attempt-failed: nothing to do,
+    // and not an error a keybinding should report.
+    const windows = context.yabai.spaceWindows(arena) catch return "";
+    if (windows.len == 0) return "";
 
-    for (attempts) |argv| {
-        context.yabai.command(arena, argv) catch continue;
-        return "";
+    std.mem.sort(yabai.Window, windows, {}, lessThanId);
+
+    const focused_position: ?usize = for (windows, 0..) |window, position| {
+        if (window.@"has-focus" and !window.@"is-minimized") break position;
+    } else null;
+
+    // One lap of the list, starting after the window that holds focus and
+    // wrapping: the offset that lands back on it is the last one tried, which is
+    // what re-raises a lone window.
+    var offset: usize = 1;
+    while (offset <= windows.len) : (offset += 1) {
+        const position = if (focused_position) |focused|
+            if (reverse)
+                (focused + windows.len - offset) % windows.len
+            else
+                (focused + offset) % windows.len
+        else if (reverse)
+            (windows.len - offset) % windows.len
+        else
+            offset - 1;
+
+        const window = windows[position];
+        if (window.@"is-minimized") continue;
+        if (focusWindow(arena, context.yabai, window.id)) return "";
     }
     return "";
 }
@@ -404,6 +427,24 @@ fn sort(spaces: []yabai.Space) void {
 
 fn lessThanIndex(_: void, a: yabai.Space, b: yabai.Space) bool {
     return a.index < b.index;
+}
+
+/// Ascending window id: the order yabai reports a space's windows in, which is
+/// the order they were created in, and what the focus cycle walks.
+fn lessThanId(_: void, a: yabai.Window, b: yabai.Window) bool {
+    return a.id < b.id;
+}
+
+/// Focus one window by id, reporting whether yabai took it.
+///
+/// yabai refuses an id it cannot focus, and that refusal is what lets the cycle
+/// step over an entry of the space's window list that is not focusable - a
+/// non-AX window that holds no accessibility element to raise.
+fn focusWindow(arena: std.mem.Allocator, client: *yabai.Client, id: u32) bool {
+    var buffer: [16]u8 = undefined;
+    const argument = std.fmt.bufPrint(&buffer, "{d}", .{id}) catch unreachable;
+    client.command(arena, &.{ "-m", "window", argument, "--focus" }) catch return false;
+    return true;
 }
 
 /// `yabai -m <domain> --remove <label>`, for one entry of a `--list`.
