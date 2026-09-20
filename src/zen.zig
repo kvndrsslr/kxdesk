@@ -12,6 +12,7 @@
 
 const std = @import("std");
 
+const items_usage = @import("items_usage.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const state = @import("store.zig");
@@ -59,7 +60,7 @@ pub const state_key = "zen";
 /// Apply zen mode and remember it, so a bar that is restarted comes back the way
 /// the last one was left.
 pub fn set(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode, store: *state.Store, io: std.Io) !void {
-    const collapsed = try apply(bar, arena, mode);
+    const collapsed = try apply(bar, arena, mode, store, io);
     store.setInt(io, state_key, @intFromBool(collapsed)) catch {};
 }
 
@@ -67,12 +68,12 @@ pub fn set(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode, store: *state.
 pub fn restore(bar: *sb.Client, arena: std.mem.Allocator, store: *state.Store, io: std.Io) !void {
     const collapsed = (store.getInt(io, state_key) catch null) orelse return;
     if (collapsed == 0) return;
-    _ = try apply(bar, arena, .on);
+    _ = try apply(bar, arena, .on, store, io);
 }
 
 /// Returns the state the bar is in afterwards - `.toggle` reads it from the bar
 /// first, so the caller can remember the answer.
-pub fn apply(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode) !bool {
+pub fn apply(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode, store: *state.Store, io: std.Io) !bool {
     const zen = switch (mode) {
         .on => true,
         .off => false,
@@ -88,6 +89,10 @@ pub fn apply(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode) !bool {
     // drawn when the bar is not collapsed is exactly the set zen hides.
     for (try items(bar, arena)) |item| {
         if (isKept(item)) continue;
+        // A provider with no token in the store is off the bar in every mode, so
+        // expanding the bar must not put it back: it would come back holding the
+        // placeholder its item was declared with.
+        if (!items_usage.configured(io, store, item)) continue;
 
         var props: Props = .{};
         try props.fmt("drawing={s}", .{drawing});

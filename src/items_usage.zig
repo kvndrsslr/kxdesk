@@ -6,6 +6,11 @@
 //! three, through the system's `curl`: a TLS stack is not worth carrying for six
 //! URLs every five minutes.
 //!
+//! A provider whose token is not in the store is not drawn at all: there is
+//! nothing to fetch and nothing to say, so its item is taken off the bar rather
+//! than left holding a placeholder - and setting the token puts it back at the next
+//! refresh.
+//!
 //! The bar shows what is left on each balance, and the share of the tightest of
 //! the Go plan's windows. What was spent in the last day, the last week and the
 //! last thirty days is on hover, from NeuralWatt's own usage summary, which takes
@@ -135,6 +140,9 @@ pub const opencode_rows = [_]Row{
 pub const Provider = struct {
     item: []const u8,
     url: []const u8,
+    /// The store key the token is read from. An item whose key holds nothing is
+    /// not drawn: there is nothing to fetch and nothing to say.
+    token_key: []const u8,
     color: theme.Color,
     /// Empty for a provider with no windows to report - which is also the item a
     /// hover has nothing to show for.
@@ -149,11 +157,24 @@ pub const Provider = struct {
 /// them. One entry per item, so a click, a hover and the rows under it are all
 /// read off this table rather than matched by name in three files.
 pub const providers = [_]Provider{
-    .{ .item = neuralwatt_item, .url = neuralwatt_url, .color = neuralwatt_color, .rows = &neuralwatt_rows },
-    .{ .item = openrouter_item, .url = openrouter_url, .color = openrouter_color, .rows = &.{} },
+    .{
+        .item = neuralwatt_item,
+        .url = neuralwatt_url,
+        .token_key = neuralwatt_token_key,
+        .color = neuralwatt_color,
+        .rows = &neuralwatt_rows,
+    },
+    .{
+        .item = openrouter_item,
+        .url = openrouter_url,
+        .token_key = openrouter_token_key,
+        .color = openrouter_color,
+        .rows = &.{},
+    },
     .{
         .item = opencode_item,
         .url = opencode_url,
+        .token_key = opencode_token_key,
         .color = opencode_color,
         .rows = &opencode_rows,
         .ringed = true,
@@ -212,7 +233,9 @@ fn updateNeuralwatt(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const token = try readToken(io, arena, store, neuralwatt_token_key);
+    var token_buffer: [token_bytes]u8 = undefined;
+    const token = readToken(io, &token_buffer, store, neuralwatt_token_key) orelse
+        return hide(client, neuralwatt_item);
     const when = now(io);
 
     const Quota = struct {
@@ -251,7 +274,9 @@ fn updateOpenrouter(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const token = try readToken(io, arena, store, openrouter_token_key);
+    var token_buffer: [token_bytes]u8 = undefined;
+    const token = readToken(io, &token_buffer, store, openrouter_token_key) orelse
+        return hide(client, openrouter_item);
 
     const Credits = struct {
         data: struct {
@@ -290,7 +315,9 @@ fn updateOpencode(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const token = try readToken(io, arena, store, opencode_token_key);
+    var token_buffer: [token_bytes]u8 = undefined;
+    const token = readToken(io, &token_buffer, store, opencode_token_key) orelse
+        return hide(client, opencode_item);
     const when = now(io);
 
     const Usage = struct {
@@ -568,6 +595,9 @@ fn markKey(item: []const u8) []const u8 {
 /// mark, the colour of that mark, and - for a mark that is ringed - the ring's
 /// share, its colour, and whether the label is drawn at all.
 pub fn lineProps(props: *Props, item: []const u8, reading: Reading) !void {
+    // A reading puts the item back: a provider whose token went away was taken off
+    // the bar, and one whose token has just been set belongs on it.
+    props.raw("drawing=on");
     try props.fmt("label={s}", .{reading.label});
     try props.color(markKey(item), reading.mark_color);
     if (reading.ring) |ring| {
@@ -615,11 +645,29 @@ fn publish(
     try client.commit();
 }
 
+/// Take a provider's item off the bar: its token is not in the store, so there is
+/// no reading to show and no request worth making. Nothing else is touched - the
+/// label keeps whatever it had, so a token that is set later shows a number the
+/// moment the fetch answers instead of a placeholder.
+fn hide(client: *sb.Client, item: []const u8) !void {
+    var props: Props = .{};
+    props.raw("drawing=off");
+    try client.set(item, props.slice());
+    try client.commit();
+}
+
+/// How long a token may be. API keys are a fraction of this; the store copies what
+/// fits its caller's buffer, so the only thing a longer one costs is its tail.
+const token_bytes = 1024;
+
 /// A refresh that failed leaves the last number where it was - it is still the
 /// last thing the provider said - and dims the mark, so a reading that has
 /// stopped being refreshed cannot pass for a fresh one.
 fn stale(client: *sb.Client, item: []const u8) !void {
     var props: Props = .{};
+    // The token is there, so the item belongs on the bar: a provider that is
+    // configured but not answering says so by being dim rather than by vanishing.
+    props.raw("drawing=on");
     try props.color(markKey(item), theme.dark_grey);
     try client.set(item, props.slice());
     try client.commit();
@@ -642,11 +690,24 @@ fn money(buffer: []u8, amount: f64) ![]const u8 {
 ///
 /// An unset token is a key that has not been given yet, which the item says out
 /// loud rather than showing a zero it did not earn.
-fn readToken(io: std.Io, arena: std.mem.Allocator, store: *state.Store, key: []const u8) ![]const u8 {
-    const value = (store.getTextAlloc(io, arena, key) catch null) orelse return error.NoToken;
+fn readToken(io: std.Io, buffer: []u8, store: *state.Store, key: []const u8) ?[]const u8 {
+    const value = (store.getText(io, key, buffer) catch null) orelse return null;
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
-    if (trimmed.len == 0) return error.NoToken;
+    if (trimmed.len == 0) return null;
     return trimmed;
+}
+
+/// Whether a provider's token is in the store, which is what says whether its item
+/// belongs on the bar at all: an item with no token has nothing to show, so it is
+/// not drawn - and anything that decides what the bar draws, `zen` included, has to
+/// ask this rather than assume.
+///
+/// Every other item answers true: this is only about the providers.
+pub fn configured(io: std.Io, store: *state.Store, item: []const u8) bool {
+    const provider = providerFor(item) orelse return true;
+
+    var buffer: [token_bytes]u8 = undefined;
+    return readToken(io, &buffer, store, provider.token_key) != null;
 }
 
 /// One HTTPS GET, through the system's `curl`.

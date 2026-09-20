@@ -298,6 +298,7 @@ test "a spent Go reading drops the label and reddens the ringed mark" {
     });
 
     const expected = [_][]const u8{
+        "drawing=on",
         "label=100%",
         // The mark is the glyph the ring draws, so its colour is the marker's and
         // not the item's own icon - which is why an icon on this item is cleared.
@@ -313,9 +314,40 @@ test "a spent Go reading drops the label and reddens the ringed mark" {
     // touches either property: its mark is its icon.
     var plain: Props = .{};
     try items_usage.lineProps(&plain, "neuralwatt", .{ .label = "$12.00", .mark_color = theme.green });
-    const plain_expected = [_][]const u8{ "label=$12.00", "icon.color=0xffb8bb27" };
+    const plain_expected = [_][]const u8{ "drawing=on", "label=$12.00", "icon.color=0xffb8bb27" };
     try std.testing.expectEqual(plain_expected.len, plain.slice().len);
     for (plain_expected, plain.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+test "a provider item is drawn only while its token is in the store" {
+    const io = std.testing.io;
+    const path = "/tmp/kxdesk-tests-usage.db";
+    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    defer {
+        std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+        std.Io.Dir.deleteFileAbsolute(io, path ++ "-wal") catch {};
+        std.Io.Dir.deleteFileAbsolute(io, path ++ "-shm") catch {};
+    }
+
+    var db = store.Store.open(io, path);
+    defer db.close();
+
+    // No token: every provider is off the bar, and every other item - which this
+    // is not about - is not.
+    try std.testing.expect(!items_usage.configured(io, &db, "neuralwatt"));
+    try std.testing.expect(!items_usage.configured(io, &db, "openrouter"));
+    try std.testing.expect(!items_usage.configured(io, &db, "opencode-go"));
+    try std.testing.expect(items_usage.configured(io, &db, "brew"));
+    try std.testing.expect(items_usage.configured(io, &db, "opencode-go.rolling"));
+
+    // A token, and only that provider's item is drawn. Whitespace is not a token:
+    // an empty `state set` is a key that was cleared, not one that was given.
+    try db.setText(io, "opencode-go.token", "sk-test");
+    try std.testing.expect(items_usage.configured(io, &db, "opencode-go"));
+    try std.testing.expect(!items_usage.configured(io, &db, "neuralwatt"));
+
+    try db.setText(io, "neuralwatt.token", "  \t ");
+    try std.testing.expect(!items_usage.configured(io, &db, "neuralwatt"));
 }
 
 test "zen keeps the collapsed bar's furniture and hides the rest" {

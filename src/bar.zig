@@ -879,7 +879,10 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try c.arg(items_usage.neuralwatt_item);
     try c.arg("right");
     const neuralwatt = config.node(.{
-        .drawing = true,
+        // Drawn by the refresh, and only if a token for it is in the store: a
+        // provider that has not been configured has nothing to say, and an item
+        // that started drawn would hold a placeholder until someone set one.
+        .drawing = false,
         .associated_display = 1,
         .padding_left = item_padding,
         .padding_right = item_padding,
@@ -917,7 +920,7 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try c.arg(items_usage.openrouter_item);
     try c.arg("right");
     const openrouter = config.node(.{
-        .drawing = true,
+        .drawing = false,
         .associated_display = 1,
         .padding_left = item_padding,
         .padding_right = item_padding,
@@ -951,7 +954,7 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     comptime std.debug.assert(items_usage.providerFor(items_usage.opencode_item).?.ringed);
 
     const opencode = config.node(.{
-        .drawing = true,
+        .drawing = false,
         .associated_display = 1,
         .padding_left = item_padding,
         .padding_right = item_padding,
