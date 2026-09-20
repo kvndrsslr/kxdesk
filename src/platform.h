@@ -122,6 +122,27 @@ bool sb_which(const char* name, char* out, size_t cap);
 /// is unset, empty, or longer than `cap`.
 bool sb_env(const char* name, char* out, size_t cap);
 
+/* -- unix sockets --------------------------------------------------------- */
+
+/// Send one message to a unix stream socket and read its reply.
+///
+/// `request_size` bytes of `request` are written in full, then the write side is
+/// shut down; the reply is read until the peer closes, into `out`, which is
+/// always NUL-terminated.
+///
+/// Returns the number of reply bytes, which is 0 for a peer that answers
+/// nothing, or -1 when the socket could not be opened, connected, written to or
+/// read. Exactly `cap` bytes means the reply did not fit, and is the caller's
+/// signal to grow the buffer and ask again - the same convention the captured
+/// output of a spawned process follows.
+int64_t sb_socket_message(
+    const char* path,
+    const void* request,
+    size_t request_size,
+    char* out,
+    size_t cap
+);
+
 /// Filesystem path of the installed sketchybar-app-font, resolved through
 /// CoreText so it is the same file the bar renders with. Returns false when the
 /// font is not installed.

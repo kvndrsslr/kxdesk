@@ -36,6 +36,18 @@ pub extern "c" fn sb_exec_capture(
 
 pub extern "c" fn sb_exec_status(argv: [*]const ?[*:0]const u8) i32;
 
+/// One message to a unix stream socket, and its reply. Returns the reply length
+/// (0 for a peer that answers nothing), exactly `cap` when the reply did not
+/// fit, or -1 when the socket could not be used at all. `out` is always
+/// NUL-terminated.
+pub extern "c" fn sb_socket_message(
+    path: [*:0]const u8,
+    request: [*]const u8,
+    request_size: usize,
+    out: [*]u8,
+    cap: usize,
+) i64;
+
 pub extern "c" fn sb_spawn_detached(argv: [*]const ?[*:0]const u8) i32;
 
 pub extern "c" fn sb_which(name: [*:0]const u8, out: [*]u8, cap: usize) bool;

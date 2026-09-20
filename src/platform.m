@@ -23,6 +23,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -416,6 +417,68 @@ bool sb_env(const char* name, char* out, size_t cap) {
   if (!value || !*value || strlen(value) >= cap) return false;
   strcpy(out, value);
   return true;
+}
+
+/* -- unix sockets --------------------------------------------------------- */
+
+int64_t sb_socket_message(const char* path, const void* request, size_t request_size, char* out, size_t cap) {
+  if (!path || !request || !out || cap == 0) return -1;
+
+  struct sockaddr_un address;
+  memset(&address, 0, sizeof(address));
+  address.sun_family = AF_UNIX;
+  if (strlen(path) >= sizeof(address.sun_path)) return -1;
+  strcpy(address.sun_path, path);
+
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd == -1) return -1;
+
+  /* A peer that has gone away must fail the write, not kill the daemon: on
+   * macOS the per-socket option is how that is asked for (`MSG_NOSIGNAL` is
+   * not available here, and the global `SIGPIPE` disposition is not this
+   * function's to change). */
+  int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+
+  if (connect(fd, (const struct sockaddr*)&address, sizeof(address)) != 0) {
+    close(fd);
+    return -1;
+  }
+
+  size_t sent = 0;
+  while (sent < request_size) {
+    ssize_t n = send(fd, (const char*)request + sent, request_size - sent, 0);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      close(fd);
+      return -1;
+    }
+    sent += (size_t)n;
+  }
+
+  /* The peer reads the length it was given and stops there, so this is only for
+   * one that reads on: the write side ends, exactly as yabai's own client ends
+   * it. */
+  shutdown(fd, SHUT_WR);
+
+  int64_t total = 0;
+  for (;;) {
+    if ((size_t)total >= cap) break;
+
+    ssize_t n = recv(fd, out + total, cap - (size_t)total, 0);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      close(fd);
+      return -1;
+    }
+    if (n == 0) break;
+
+    total += n;
+  }
+  close(fd);
+
+  out[(size_t)total < cap ? (size_t)total : cap - 1] = '\0';
+  return total;
 }
 
 /* -- fonts ---------------------------------------------------------------- */
