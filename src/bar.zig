@@ -48,6 +48,12 @@ const retired_items = [_][]const u8{
     // bar beside the ring otherwise. The pattern is anchored, so `battery.ring` -
     // the item that took its place - is not matched.
     "/^battery$/",
+    // The `opencode-go` item as a plain one, before its ring: an item's type is
+    // fixed when it is created, and `--add` refuses a name it already knows, so
+    // the only way to a ring is to remove the item and let this configuration
+    // create it again. It is one batch, so the removal and the re-creation are one
+    // redraw, and the rows that hang under it are removed and rebuilt with it.
+    "/^opencode-go$/",
     // Aliases to other applications' status items drew nothing on the two macOS
     // versions before this one either, so the mechanism is out of the
     // configuration rather than merely disabled in it.
@@ -66,9 +72,10 @@ const item_padding = 4;
 /// of their windows hold the same number of samples and the same stretch of time.
 const graph_width = 60;
 
-/// The battery ring's diameter, in points. A ring takes exactly this much of the
-/// bar, and the bar is 24 points tall.
-const battery_ring_diameter = 20;
+/// Every ring's diameter, in points. A ring takes exactly this much of the bar,
+/// which is 24 points tall, and the two rings on it are the same size so that
+/// they read as the same instrument.
+const ring_diameter = 20;
 
 /// Spaces 1..16 exist as items; yabai decides which ones are real.
 pub const max_spaces = 16;
@@ -538,7 +545,7 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try c.arg("ring");
     try c.arg(items_system.ring_item);
     try c.arg("right");
-    try c.arg(std.fmt.comptimePrint("{d}", .{battery_ring_diameter}));
+    try c.arg(std.fmt.comptimePrint("{d}", .{ring_diameter}));
     const ring = config.node(.{
         // Drawn from the start: the charge is this item's to show, and on a bar
         // that is already up the drawing a previous configuration left behind is
@@ -560,7 +567,7 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
             // only lands when the item is created, and an item that outlives the
             // configuration keeps whatever a later `--set` gave it - which is the
             // same trap `script` and `click_script` fall into.
-            .width = battery_ring_diameter,
+            .width = ring_diameter,
             .line_width = 2,
             .marker = .{
                 .position = "center",
@@ -933,31 +940,67 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try c.arg("mouse.clicked");
 
     try c.arg("--add");
-    try c.arg("item");
+    try c.arg("ring");
     try c.arg(items_usage.opencode_item);
     try c.arg("right");
+    try c.arg(std.fmt.comptimePrint("{d}", .{ring_diameter}));
+    // The daemon colours this item's mark on the ring's marker rather than on an
+    // icon, which only works while the item is a ring: the table says it is one,
+    // and a configuration that stopped creating the ring would leave the colour
+    // landing nowhere.
+    comptime std.debug.assert(items_usage.providerFor(items_usage.opencode_item).?.ringed);
+
     const opencode = config.node(.{
         .drawing = true,
         .associated_display = 1,
         .padding_left = item_padding,
         .padding_right = item_padding,
         .width = "dynamic",
-        .icon = .{
-            // The app font carries this one as `:opencode_go:`, with the
-            // underscore, and it has no hyphenated spelling: `:opencode-go:`
-            // shapes to nothing at all. The item's own name is still the hyphen
-            // the CLI spells the provider with, since that is what events and
-            // state keys carry.
-            .value = ":opencode_go:",
-            // 16 points is the app font's own size and what the glyph beside it
-            // uses; unlike `:neuralwatt:` and `:openrouter:`, this one has not
-            // been measured, so it may want to follow whichever of them it is
-            // shaped like once it is in an installed font.
-            .font = theme.app_font ++ ":Regular:16.0",
-            .padding_right = 2,
-            .color = config.color(theme.dark_grey),
+        // The mark is the ring's own marker, because an item draws its icon
+        // *before* its ring: an icon here would stand beside the ring rather than
+        // inside it. The empty assignment is what keeps an icon an earlier
+        // configuration left on this item out of the way.
+        .icon = .{ .value = "", .padding_left = 0, .padding_right = 0 },
+        .ring = .{
+            // Only the start: the colour, the share and the marker's colour are
+            // the daemon's, from the month's own usage.
+            .color = config.color(theme.green),
+            .track_color = config.color(theme.dark_grey),
+            // The diameter is given to `--add` and also set here, for the reason
+            // the battery's ring states it: the argument only lands when the item
+            // is created, and an item that outlives the configuration keeps
+            // whatever a later `--set` gave it.
+            .width = ring_diameter,
+            .line_width = 2,
+            .marker = .{
+                // The app font carries this one as `:opencode_go:`, with the
+                // underscore, and it has no hyphenated spelling: `:opencode-go:`
+                // shapes to nothing at all. The item's own name is still the hyphen
+                // the CLI spells the provider with, since that is what events and
+                // state keys carry.
+                .value = ":opencode_go:",
+                // Centre, so the glyph sits in the ring rather than at the start of
+                // its arc.
+                .position = "center",
+                // The battery's own proportion - twelve points in a twenty-point
+                // ring - because the app font's glyphs ink a full square, and one
+                // wide enough to fill the ring would run into its stroke.
+                .font = theme.app_font ++ ":Regular:12.0",
+                // Centring a glyph in a ring is done from its ink box and its
+                // font's ascent and descent, and this font fits neither: at twelve
+                // points the advance is 16.9 where the glyph's ink is 11.5 wide,
+                // and the ink hangs off a baseline the font reports no descent
+                // below, so the ring's own centring leaves it 3.5 points left of
+                // the ring's centre and 2 above it. Whole points, because the
+                // offsets the fork takes are integers, which leaves half a point
+                // of a nudge either way: measured off the bar against the
+                // installed font, and worth re-measuring if the ring or the
+                // marker's size changes.
+                .x_offset = 3,
+                .y_offset = 0,
+            },
         },
-        .label = .{ .value = "?" },
+        .label = .{ .value = "?", .padding_left = 2 },
         .script = null,
         .click_script = null,
     });

@@ -124,7 +124,10 @@ kxdesk state set opencode-go.token '…'
 Each gets an item on the bar: `:neuralwatt:` and `:openrouter:` with what is left
 of the balance, and `:opencode-go:` with the share of the tightest of the Go
 plan's three windows — five rolling hours, the week, the month — since that is
-the one that would stop the next request. Hovering shows the windows the provider
+the one that would stop the next request. The Go mark is ringed: the ring carries
+the month's own share, green while half the month is left, yellow to four fifths
+and orange past that, and the moment any window is at its limit the ring and the
+mark go red and the number goes away. Hovering shows the windows the provider
 reports, down to when each resets; clicking opens its usage page. OpenRouter
 reports no windows to a normal key, so its hover is empty and it is subscribed to
 clicks alone.

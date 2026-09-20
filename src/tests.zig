@@ -9,6 +9,7 @@ const cli = @import("cli.zig");
 const config = @import("config.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
+const Props = @import("props.zig").Props;
 const store = @import("store.zig");
 const theme = @import("theme.zig");
 const zen = @import("zen.zig");
@@ -221,6 +222,100 @@ test "an unreadable reset instant costs a Go row its countdown, not its number" 
             try items_usage.opencodeRow(&buffer, rolling, 14, stamp, noon),
         );
     }
+}
+
+test "the Go item's face is the tightest window, the month's ring, and spent" {
+    // The three windows in `opencode_rows` order: rolling, weekly, monthly.
+    const reading = items_usage.face(.{
+        .{ .percent = 12 },
+        .{ .percent = 64 },
+        .{ .percent = 30 },
+    }) orelse return error.TestUnexpectedResult;
+
+    // The label carries what would stop the next request, the ring the month.
+    try std.testing.expectEqual(@as(f64, 64), reading.label);
+    try std.testing.expectEqual(@as(f64, 30), reading.ring);
+    try std.testing.expect(!reading.spent);
+
+    // Any window at its limit is spent, not the month alone: the rolling window is
+    // the one that cuts the next request off, and the label goes with it.
+    const spent = items_usage.face(.{
+        .{ .percent = 100 },
+        .{ .percent = 5 },
+        .{ .percent = 9 },
+    }) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(spent.spent);
+    try std.testing.expectEqual(@as(f64, 9), spent.ring);
+
+    // The month at its limit is spent too, and it is that flag - not the ring's own
+    // bracket, which stops at ninety-nine - that reddens the ring.
+    const monthly_spent = items_usage.face(.{
+        .{ .percent = 0 },
+        .{ .percent = 0 },
+        .{ .percent = 100 },
+    }) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(monthly_spent.spent);
+    try std.testing.expectEqual(theme.red, items_usage.ringColor(monthly_spent.spent, monthly_spent.ring));
+
+    // A window the endpoint reports without a number is not an unspent one: there
+    // is nothing to draw, so nothing is drawn.
+    try std.testing.expect(items_usage.face(.{
+        .{ .percent = 1 },
+        .{},
+        .{ .percent = 2 },
+    }) == null);
+}
+
+test "the Go ring's colour: the month's brackets, and red once anything is spent" {
+    const cases = [_]struct { monthly: f64, color: theme.Color }{
+        .{ .monthly = 0, .color = theme.green },
+        .{ .monthly = 49, .color = theme.green },
+        .{ .monthly = 50, .color = theme.yellow },
+        .{ .monthly = 79, .color = theme.yellow },
+        .{ .monthly = 80, .color = theme.orange },
+        .{ .monthly = 99, .color = theme.orange },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.color, items_usage.ringColor(false, case.monthly));
+    }
+
+    // Red is the spent state rather than a bracket, and it is spent that says so -
+    // any window at its limit, whatever the month reads, since the window that is
+    // spent is the one the next request is up against.
+    try std.testing.expectEqual(theme.red, items_usage.ringColor(true, 0));
+    try std.testing.expectEqual(theme.red, items_usage.ringColor(true, 30));
+    try std.testing.expectEqual(theme.red, items_usage.ringColor(true, 99));
+}
+
+test "a spent Go reading drops the label and reddens the ringed mark" {
+    var props: Props = .{};
+    try items_usage.lineProps(&props, "opencode-go", .{
+        .label = "100%",
+        .mark_color = theme.red,
+        .label_drawn = false,
+        .ring = .{ .share = 1, .color = theme.red },
+    });
+
+    const expected = [_][]const u8{
+        "label=100%",
+        // The mark is the glyph the ring draws, so its colour is the marker's and
+        // not the item's own icon - which is why an icon on this item is cleared.
+        "ring.marker.color=0xfffa4934",
+        "label.drawing=off",
+        "ring.value=1.0000",
+        "ring.color=0xfffa4934",
+    };
+    try std.testing.expectEqual(expected.len, props.slice().len);
+    for (expected, props.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+
+    // A provider with room keeps its label, and a provider with no ring never
+    // touches either property: its mark is its icon.
+    var plain: Props = .{};
+    try items_usage.lineProps(&plain, "neuralwatt", .{ .label = "$12.00", .mark_color = theme.green });
+    const plain_expected = [_][]const u8{ "label=$12.00", "icon.color=0xffb8bb27" };
+    try std.testing.expectEqual(plain_expected.len, plain.slice().len);
+    for (plain_expected, plain.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
 }
 
 test "zen keeps the collapsed bar's furniture and hides the rest" {

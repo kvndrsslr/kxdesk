@@ -139,6 +139,10 @@ pub const Provider = struct {
     /// Empty for a provider with no windows to report - which is also the item a
     /// hover has nothing to show for.
     rows: []const Row,
+    /// Whether the item carries a ring. Its mark is then ringed - the glyph the
+    /// ring draws inside it rather than the item's own icon - so the mark's colour
+    /// belongs to the ring's marker, and there is an icon to keep clear.
+    ringed: bool = false,
 };
 
 /// Every provider item, in the order the bar draws them and the refresh fills
@@ -147,7 +151,13 @@ pub const Provider = struct {
 pub const providers = [_]Provider{
     .{ .item = neuralwatt_item, .url = neuralwatt_url, .color = neuralwatt_color, .rows = &neuralwatt_rows },
     .{ .item = openrouter_item, .url = openrouter_url, .color = openrouter_color, .rows = &.{} },
-    .{ .item = opencode_item, .url = opencode_url, .color = opencode_color, .rows = &opencode_rows },
+    .{
+        .item = opencode_item,
+        .url = opencode_url,
+        .color = opencode_color,
+        .rows = &opencode_rows,
+        .ringed = true,
+    },
 };
 
 /// The provider a bar item stands for, or null for any other item: what a click
@@ -223,14 +233,10 @@ fn updateNeuralwatt(
     }
 
     var money_buffer: [32]u8 = undefined;
-    try publish(
-        client,
-        neuralwatt_item,
-        neuralwatt_color,
-        try money(&money_buffer, quota.balance.credits_remaining_usd),
-        &neuralwatt_rows,
-        &texts,
-    );
+    try publish(client, neuralwatt_item, .{
+        .label = try money(&money_buffer, quota.balance.credits_remaining_usd),
+        .mark_color = neuralwatt_color,
+    }, &neuralwatt_rows, &texts);
 }
 
 /// OpenRouter: the credit balance from its totals, and nothing to hover: it has
@@ -260,14 +266,20 @@ fn updateOpenrouter(
 
     const remaining = credits.data.total_credits - credits.data.total_usage;
     var money_buffer: [32]u8 = undefined;
-    try publish(client, openrouter_item, openrouter_color, try money(&money_buffer, remaining), &.{}, null);
+    try publish(client, openrouter_item, .{
+        .label = try money(&money_buffer, remaining),
+        .mark_color = openrouter_color,
+    }, &.{}, null);
 }
 
 /// OpenCode Go: three shares of three limits, and no balance - the plan is a cap,
 /// and what its endpoint reports is how much of it is gone.
 ///
-/// The bar carries the highest of the three, since that is the window that would
-/// stop the next request; the hover names each one.
+/// The label carries the highest of the three, since that is the window that would
+/// stop the next request, and the ring around the mark carries the month's own
+/// share, which is what says how much of the plan is left. The hover names each
+/// window, and the moment any of them is spent the ring and the mark go red and the
+/// label goes away - there is no number left to give.
 fn updateOpencode(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -293,35 +305,84 @@ fn updateOpencode(
         .ignore_unknown_fields = true,
     }) catch return error.UnreadableResponse;
 
-    // In `opencode_rows` order, and read in step with it below: a window reported
-    // without a number is a response that cannot be shown - zero spent and nothing
-    // said are not the same answer - and the row for it is left as it was.
+    // In `opencode_rows` order, which is the order the endpoint reports them in.
     const windows = [_]Window{ parsed.usage.rolling, parsed.usage.weekly, parsed.usage.monthly };
+    const reading = face(windows) orelse return error.UnreadableResponse;
 
     var text_buffers: [opencode_rows.len][64]u8 = undefined;
     var texts: [opencode_rows.len][]const u8 = undefined;
-    var tightest: f64 = 0;
     for (windows, opencode_rows, &text_buffers, &texts) |window, row, *buffer, *text| {
-        const spent = window.percent orelse return error.UnreadableResponse;
-        tightest = @max(tightest, spent);
-        text.* = try opencodeRow(buffer, row, spent, window.resetsAt, when);
+        const share = window.percent orelse return error.UnreadableResponse;
+        text.* = try opencodeRow(buffer, row, share, window.resetsAt, when);
     }
 
     var percent_buffer: [32]u8 = undefined;
-    try publish(
-        client,
-        opencode_item,
-        opencode_color,
-        try percentText(&percent_buffer, tightest),
-        &opencode_rows,
-        &texts,
-    );
+    try publish(client, opencode_item, .{
+        .label = try percentText(&percent_buffer, reading.label),
+        // A window at its limit is what the mark and its ring say, since it is the
+        // state the next request runs into; the identity colour is for a plan with
+        // room.
+        .mark_color = if (reading.spent) theme.red else opencode_color,
+        .label_drawn = !reading.spent,
+        .ring = .{
+            .share = reading.ring / 100,
+            .color = ringColor(reading.spent, reading.ring),
+        },
+    }, &opencode_rows, &texts);
 }
+
+/// What the Go item says on its own line, read off its three windows.
+pub const Face = struct {
+    /// The tightest window's share, which is the number under the icon.
+    label: f64,
+    /// The month's share, which is what the ring is filled to.
+    ring: f64,
+    /// Whether any window is at its limit. That drops the label - the ring is
+    /// still worth reading, and the number would only repeat it - and reddens the
+    /// icon, since what has run out is what stops the next request.
+    spent: bool,
+};
+
+/// Read the three windows - in `opencode_rows` order - into the item's own line.
+///
+/// Null for a window the endpoint reported without a number: that is a response
+/// that cannot be shown, because zero spent and nothing said are not the same
+/// answer.
+pub fn face(windows: [opencode_rows.len]Window) ?Face {
+    var tightest: f64 = 0;
+    var monthly: f64 = 0;
+    var spent = false;
+
+    for (windows, 0..) |window, index| {
+        const share = window.percent orelse return null;
+        tightest = @max(tightest, share);
+        spent = spent or share >= full_percent;
+        // The month is the last of the three, and the window the ring carries.
+        if (index == windows.len - 1) monthly = share;
+    }
+
+    return .{ .label = tightest, .ring = monthly, .spent = spent };
+}
+
+/// The ring's colour: the red of a plan that is spent, and otherwise the month's
+/// own bracket - green while half the month is left, yellow to four fifths,
+/// orange past that. The month at its limit is spent too, so the top bracket is
+/// the eighty-to-ninety-nine range the red does not cover.
+pub fn ringColor(spent: bool, monthly: f64) theme.Color {
+    if (spent) return theme.red;
+    if (monthly < 50) return theme.green;
+    if (monthly < 80) return theme.yellow;
+    return theme.orange;
+}
+
+/// A share at its limit: the point a window is spent, and the point the month is
+/// at the top of the ring's brackets.
+const full_percent: f64 = 100;
 
 /// One window of the Go plan's usage: the share of it that is spent, and when it
 /// resets. `percent` is null rather than zero when the endpoint names a window
 /// without a number: a window it says nothing about is not an unspent one.
-const Window = struct {
+pub const Window = struct {
     percent: ?f64 = null,
     resetsAt: ?[]const u8 = null,
 };
@@ -474,6 +535,50 @@ fn summaryWindow(
     return summary.totals.total_cost_usd;
 }
 
+/// What one provider's item says on its own line: the label under its mark, the
+/// colour of that mark, and - for the one provider whose item carries one - the
+/// ring around it.
+const Reading = struct {
+    label: []const u8,
+    /// The colour of the provider's mark: its icon glyph, or the glyph inside a
+    /// ringed mark's ring. Red once nothing is left, dimmed by a failed refresh.
+    mark_color: theme.Color,
+    /// Whether the label is drawn at all. Only a ringed item ever hides it, so
+    /// only that one states it: the other two have nothing else to say what is
+    /// left.
+    label_drawn: bool = true,
+    /// Absent for a provider with no ring.
+    ring: ?Ring = null,
+};
+
+/// The ring around a mark: the share of it that is filled, and its colour.
+const Ring = struct {
+    share: f64,
+    color: theme.Color,
+};
+
+/// Where a provider item's mark is drawn: on the item's own icon, or, for the item
+/// whose mark is ringed, on the glyph the ring draws inside it.
+fn markKey(item: []const u8) []const u8 {
+    const ringed = if (providerFor(item)) |provider| provider.ringed else false;
+    return if (ringed) "ring.marker.color" else "icon.color";
+}
+
+/// Fill in what one provider's item says on its own line: the label under its
+/// mark, the colour of that mark, and - for a mark that is ringed - the ring's
+/// share, its colour, and whether the label is drawn at all.
+pub fn lineProps(props: *Props, item: []const u8, reading: Reading) !void {
+    try props.fmt("label={s}", .{reading.label});
+    try props.color(markKey(item), reading.mark_color);
+    if (reading.ring) |ring| {
+        props.raw(if (reading.label_drawn) "label.drawing=on" else "label.drawing=off");
+        // Four decimals, since a share the endpoint sends with a decimal is worth
+        // a tenth of a percent on the ring rather than a whole one.
+        try props.fmt("ring.value={d:.4}", .{ring.share});
+        try props.color("ring.color", ring.color);
+    }
+}
+
 /// Show one provider's reading on the bar, and its windows in the popup.
 ///
 /// `texts` is one text per entry in `rows_list` - what that row says once the
@@ -482,14 +587,12 @@ fn summaryWindow(
 fn publish(
     client: *sb.Client,
     item: []const u8,
-    color: theme.Color,
-    label: []const u8,
+    reading: Reading,
     rows_list: []const Row,
     texts: ?[]const []const u8,
 ) !void {
     var props: Props = .{};
-    try props.fmt("label={s}", .{label});
-    try props.color("icon.color", color);
+    try lineProps(&props, item, reading);
     try client.set(item, props.slice());
 
     // A provider without windows has no rows to write: OpenRouter's popup is
@@ -513,11 +616,11 @@ fn publish(
 }
 
 /// A refresh that failed leaves the last number where it was - it is still the
-/// last thing the provider said - and dims the icon, so a reading that has
+/// last thing the provider said - and dims the mark, so a reading that has
 /// stopped being refreshed cannot pass for a fresh one.
 fn stale(client: *sb.Client, item: []const u8) !void {
     var props: Props = .{};
-    try props.color("icon.color", theme.dark_grey);
+    try props.color(markKey(item), theme.dark_grey);
     try client.set(item, props.slice());
     try client.commit();
 }
