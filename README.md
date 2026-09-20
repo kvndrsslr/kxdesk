@@ -122,7 +122,9 @@ lines in the log, the first failure of a run once and not once per retry.
 
 To move the two ends apart, `kxdesk state set kanata.port <port>` (and
 `kanata.host`) changes this side without a rebuild; the other side is the `-p`
-argument in `~/Library/Application Support/kanata/local.kanata.plist`.
+argument in the launcher the `kxkanata` formula installs, which is what
+`brew services` starts (`/opt/homebrew/bin/kxkanata`, `brew services info
+kxkanata`).
 
 ## Installing: currently from HEAD, temporarily
 
