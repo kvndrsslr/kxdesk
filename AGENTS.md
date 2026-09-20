@@ -20,7 +20,7 @@ Single binary, single long-lived process (`src/main.zig:Daemon`).
 
 ## Key Directories
 
-- `src/`: all logic (~28 `.zig` + `platform.m`/`.h`). No `src/` subdirs; `items_*.zig` per bar-item family.
+- `src/`: all logic (~30 `.zig` + `platform.m`/`.h`). No `src/` subdirs; `items_*.zig` per bar-item family.
 - `vendor/`: `sketchybar.h` (upstream mach wire format, do not hand-edit), `sqlite.h` (1-line translate-C shim).
 - `zig-out/`, `.zig-cache/`: build output (gitignored). Nothing else generated.
 - No `tests/`, `scripts/`, `docs/`, `.github/`.
@@ -30,6 +30,7 @@ Single binary, single long-lived process (`src/main.zig:Daemon`).
 ```sh
 zig build                  # ReleaseFast default → zig-out/bin/kxdesk
 zig build -Doptimize=Debug # debugging
+zig build test             # the unit tests in src/tests.zig
 ./zig-out/bin/kxdesk daemon
 brew services stop kxdesk  # REQUIRED before checkout daemon (bootstrap names exclusive)
 kxdesk --help              # all commands (works with no daemon)
@@ -60,7 +61,7 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 - CLI surface: `src/commands.zig` (registry + every `run`), `src/cli.zig` (help/completions/validation).
 - Transport: `src/control.zig` (CMD/OK/ERR), `src/platform.zig`/`.m`/`.h`, `src/sb.zig` (bar client).
 - Config/render: `src/bar.zig`, `src/theme.zig`, `src/props.zig`, `src/items_yabai.zig`, `src/items_system.zig`, `src/items_usage.zig`, `src/items_github.zig`, `src/items_brew.zig`.
-- Subsystems: `src/store.zig` (SQLite), `src/yabai.zig` + `src/yabai_ops.zig`, `src/pomodoro.zig`, `src/zen.zig`, `src/mode_indicator.zig`, `src/skhdrc.zig`, `src/server_mode.zig`, `src/background.zig`, `src/exec.zig`, `src/app_icons.zig`.
+- Subsystems: `src/store.zig` (SQLite), `src/yabai.zig` + `src/yabai_ops.zig`, `src/pomodoro.zig`, `src/zen.zig`, `src/mode_indicator.zig`, `src/server_mode.zig`, `src/background.zig`, `src/exec.zig`, `src/app_icons.zig`.
 - Build/version/docs: `build.zig`, `build.zig.zon` (version `0.1.24`), `README.md` (only doc), `.gitignore` (only `zig-out/`, `.zig-cache/`).
 
 ## Runtime/Tooling Preferences
@@ -72,8 +73,8 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 
 ## Testing & QA
 
-No test infrastructure: zero `test` blocks, no `b.addTest`/`zig build test` step, no CI, no coverage, no fixtures. Do not assume tests exist.
+Tests live in `src/tests.zig` and run with `zig build test`: the `test` step in `build.zig` compiles that file alone, so a module's tests are reached only once it is imported there. There is still no CI, no coverage and no fixtures.
 
 - Verify by building + exercising the live binary: `zig build`, then `kxdesk --help`, `kxdesk <command> --help`, `kxdesk state …`, or a checkout `daemon` (after stopping the service).
-- `KXDESK_STATE` (`src/store.zig:64`) is the intended sandbox seam for probes/tests — currently unused.
+- `KXDESK_STATE` (`src/store.zig:64`) is the intended sandbox seam for probes/tests, and the suite sets it to keep off the real store.
 - New tests only for genuinely uncertain edges, per repo note that platform-free modules are designed testable (`src/platform.zig:1-5`); Fish completions intentionally unsupported (ships untested otherwise).

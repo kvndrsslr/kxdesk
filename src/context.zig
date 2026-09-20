@@ -1,7 +1,7 @@
 //! What a command gets to work with.
 //!
 //! Extracted from `commands.zig` so the command implementations
-//! (`yabai_ops`, `mode_indicator`, `skhdrc`) can name this type without
+//! (`yabai_ops`, `mode_indicator`) can name this type without
 //! importing the registry that points at them.
 
 const std = @import("std");

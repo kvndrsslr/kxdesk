@@ -179,11 +179,12 @@ fn clearSignalsInner(context: *Context, tolerate_removal_failure: bool) !void {
 /// Focus a set of spaces named by label, leaving a member of the group on the
 /// currently focused display for last, so that is where focus lands.
 ///
-/// `args[0]` is a comma-separated list of labels, which the skhd binding passes
-/// with embedded double quotes (`"stonks","pkms","gtd"`); strip those, and
-/// tolerate labels that arrive unquoted. A label matching no space is simply
-/// absent, and nothing to focus at all is not an error - the shell piped an
-/// empty list through `xargs -I {}` and exited 0. Degenerate case it did not
+/// `args[0]` is a comma-separated list of labels, quoted or not: whoever typed
+/// the command may write `"stonks","pkms","gtd"` and a completion passes the
+/// bare labels, so the embedded double quotes are stripped when a caller
+/// supplies them and tolerated when it does not. A label matching no space is
+/// simply absent, and nothing to focus at all is not an error - the shell piped
+/// an empty list through `xargs -I {}` and exited 0. Degenerate case it did not
 /// handle and neither does this: no match on the focused display.
 pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
@@ -480,8 +481,8 @@ fn isSelected(wanted: []const []const u8, label: []const u8) bool {
     return false;
 }
 
-/// Split the comma-separated label list, stripping the double quotes the skhd
-/// binding embeds. Empty labels are dropped, so a trailing comma is harmless.
+/// Split the comma-separated label list, stripping the double quotes a quoted
+/// caller embeds. Empty labels are dropped, so a trailing comma is harmless.
 fn parseLabels(input: []const u8, arena: std.mem.Allocator) []const []const u8 {
     var labels = std.ArrayList([]const u8).empty;
     var iterator = std.mem.splitScalar(u8, input, ',');

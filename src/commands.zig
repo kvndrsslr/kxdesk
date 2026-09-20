@@ -14,7 +14,6 @@ const kanata = @import("kanata.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
 const server_mode = @import("server_mode.zig");
-const skhdrc = @import("skhdrc.zig");
 const yabai_ops = @import("yabai_ops.zig");
 const zen = @import("zen.zig");
 
@@ -141,7 +140,7 @@ pub const all = [_]Command{
         .run = zenMode,
     },
 
-    // Navigation, reached from the bindings in `~/.skhdrc`.
+    // Navigation, reached from the bindings in `kanata.kbd`.
     .{
         .name = "cycle_space_windows",
         .summary = "focus the next window of the current space",
@@ -205,11 +204,6 @@ pub const all = [_]Command{
         .name = "clear_signals",
         .summary = "drop every configured yabai signal",
         .run = yabai_ops.clearSignals,
-    },
-    .{
-        .name = "generate_skhdrc",
-        .summary = "regenerate ~/.skhdrc from ~/.skhdrc.template",
-        .run = skhdrc.generate,
     },
 
     // Appearance.
