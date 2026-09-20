@@ -32,10 +32,11 @@ const kept = [_][]const u8{
     "calendar",
     "battery.ring",
     "pomodoro",
-    // Popup rows: drawn inside a popup, and only while it is open.
+    // Popup rows: drawn inside a popup, and only while it is open. Named by
+    // prefix, so a row added to `items_usage.rows` is covered without a second
+    // edit here.
     "github.template",
-    "neuralwatt.day",
-    "neuralwatt.week",
+    "neuralwatt.",
     // The helper item that carries yabai's events. It draws nothing.
     "system.yabai",
 };

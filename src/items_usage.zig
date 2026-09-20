@@ -5,12 +5,12 @@
 //! through the system's `curl`: a TLS stack is not worth carrying for two URLs
 //! every five minutes.
 //!
-//! The bar shows what is left on each. What was spent in the last day and the
-//! last week is on hover, from NeuralWatt's own usage summary, which takes a
-//! window as ISO 8601 and returns the charged cost for it. OpenRouter has no such
-//! window to offer a normal key - the account's daily activity is behind a
-//! management key, and its per-key daily and weekly fields describe a key that
-//! has never been used - so its item shows the balance alone.
+//! The bar shows what is left on each. What was spent in the last day, the last
+//! week and the last thirty days is on hover, from NeuralWatt's own usage
+//! summary, which takes a window as ISO 8601 and returns the charged cost for
+//! it. OpenRouter has no such window to offer a normal key - the account's daily
+//! activity is behind a management key, and its per-key daily and weekly fields
+//! describe a key that has never been used - so its item shows the balance alone.
 
 const std = @import("std");
 
@@ -45,9 +45,10 @@ const request_timeout_seconds = "20";
 
 const day_seconds: i64 = 24 * 60 * 60;
 const week_seconds: i64 = 7 * day_seconds;
+const month_seconds: i64 = 30 * day_seconds;
 
 /// How often both providers are refreshed. What is left only changes when you
-/// spend, and each cycle is four HTTPS requests.
+/// spend, and each cycle is five HTTPS requests.
 pub const cadence_seconds: i64 = 300;
 
 /// The shortest gap between two refreshes, so that the receive loop asking
@@ -81,11 +82,23 @@ pub fn waitMs(io: std.Io) u32 {
     return @intCast(@min(remaining * 1000, 60_000));
 }
 
-/// A window the popup reports, and how far the readings behind it actually
-/// reach.
-pub const Window = struct {
-    spent_usd: f64,
-    span_seconds: i64,
+/// A window the popup reports: the suffix its item name carries, the label it is
+/// drawn under, and how far back it reaches.
+pub const Row = struct {
+    suffix: []const u8,
+    label: []const u8,
+    seconds: i64,
+};
+
+/// Every window the popup reports, shortest first. The bar declares one item per
+/// row from this list and the refresh fills each one, so the items that exist and
+/// the readings that feed them cannot drift apart. Thirty days is the summary
+/// endpoint's own fallback default, which is why it is the longest window worth
+/// asking for.
+pub const rows = [_]Row{
+    .{ .suffix = "day", .label = "24h", .seconds = day_seconds },
+    .{ .suffix = "week", .label = "7d", .seconds = week_seconds },
+    .{ .suffix = "month", .label = "30d", .seconds = month_seconds },
 };
 
 /// The colours the two items carry, so they are told apart at a glance.
@@ -115,7 +128,7 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator, store: *state.Store) anyerror
 }
 
 /// NeuralWatt: the credit balance from the call that reports balance and usage
-/// together, and the two windows from its own usage summary.
+/// together, and the windows from its own usage summary.
 fn updateNeuralwatt(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -139,14 +152,16 @@ fn updateNeuralwatt(
         .ignore_unknown_fields = true,
     }) catch return error.UnreadableResponse;
 
-    const day = try summaryWindow(io, arena, token, day_seconds, when);
-    const week = try summaryWindow(io, arena, token, week_seconds, when);
+    var spent: [rows.len]f64 = undefined;
+    for (&spent, rows) |*reading, row| {
+        reading.* = try summaryWindow(io, arena, token, row.seconds, when);
+    }
 
-    try publish(client, neuralwatt_item, neuralwatt_color, quota.balance.credits_remaining_usd, day, week);
+    try publish(client, neuralwatt_item, neuralwatt_color, quota.balance.credits_remaining_usd, &spent);
 }
 
-/// OpenRouter: the credit balance from its totals, and the two windows from the
-/// readings this daemon has taken. See the note at the top of the file.
+/// OpenRouter: the credit balance from its totals, and nothing to hover: it has
+/// no window endpoint to offer a normal key. See the note at the top of the file.
 fn updateOpenrouter(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -171,17 +186,17 @@ fn updateOpenrouter(
     }) catch return error.UnreadableResponse;
 
     const remaining = credits.data.total_credits - credits.data.total_usage;
-    try publish(client, openrouter_item, openrouter_color, remaining, null, null);
+    try publish(client, openrouter_item, openrouter_color, remaining, null);
 }
 
-/// A window from NeuralWatt's own usage summary.
+/// What one window of NeuralWatt's own usage summary cost.
 fn summaryWindow(
     io: std.Io,
     arena: std.mem.Allocator,
     token: []const u8,
     seconds: i64,
     when: i64,
-) !Window {
+) !f64 {
     var start_buffer: [32]u8 = undefined;
     var end_buffer: [32]u8 = undefined;
     var url_buffer: [512]u8 = undefined;
@@ -209,17 +224,19 @@ fn summaryWindow(
     // for is therefore a wrong answer rather than a missing one.
     if (!std.mem.startsWith(u8, summary.period.start, start[0..19])) return error.WindowNotHonoured;
 
-    return .{ .spent_usd = summary.totals.total_cost_usd, .span_seconds = seconds };
+    return summary.totals.total_cost_usd;
 }
 
-/// Show what is left on the bar, and the two windows in the popup.
+/// Show what is left on the bar, and the windows in the popup.
+///
+/// `readings` is one cost per entry in `rows`, or null for a provider that has
+/// no windows to report.
 fn publish(
     client: *sb.Client,
     item: []const u8,
     color: theme.Color,
     remaining: f64,
-    day: ?Window,
-    week: ?Window,
+    readings: ?[]const f64,
 ) !void {
     var money_buffer: [32]u8 = undefined;
     var props: Props = .{};
@@ -229,22 +246,19 @@ fn publish(
 
     // A provider without windows has no rows to write: OpenRouter's popup is
     // empty by nature, so it has none.
-    if (day == null and week == null) {
+    const spent = readings orelse {
         try client.commit();
         return;
-    }
-
-    const rows = [_]struct { suffix: []const u8, window: ?Window, nominal: i64 }{
-        .{ .suffix = "day", .window = day, .nominal = day_seconds },
-        .{ .suffix = "week", .window = week, .nominal = week_seconds },
     };
-    for (rows) |row| {
+    std.debug.assert(spent.len == rows.len);
+
+    for (spent, rows) |amount, row| {
         var name_buffer: [48]u8 = undefined;
         var label_buffer: [48]u8 = undefined;
         const name = try std.fmt.bufPrint(&name_buffer, "{s}.{s}", .{ item, row.suffix });
 
         var row_props: Props = .{};
-        try row_props.fmt("label={s}", .{try windowLabel(&label_buffer, row.window, row.nominal)});
+        try row_props.fmt("label={s}", .{try windowLabel(&label_buffer, row, amount)});
         try client.set(name, row_props.slice());
     }
 
@@ -261,36 +275,10 @@ fn stale(client: *sb.Client, item: []const u8) !void {
     try client.commit();
 }
 
-/// What a popup row says: the span the readings actually cover, and what was
-/// spent across it.
-///
-/// The window asked for is named when the readings really do cover it, and the
-/// span they do cover when they do not - a machine that slept through most of
-/// the day should not have its week reported as a day.
-fn windowLabel(buffer: []u8, window: ?Window, nominal: i64) ![]const u8 {
-    const reading = window orelse return std.fmt.bufPrint(buffer, "{s} —", .{nominalLabel(nominal)});
-
+/// What a popup row says: the window it covers, and what was spent across it.
+fn windowLabel(buffer: []u8, row: Row, spent_usd: f64) ![]const u8 {
     var money_buffer: [32]u8 = undefined;
-    const slack = @as(f64, @floatFromInt(nominal)) * 0.1;
-    const off = @as(f64, @floatFromInt(@abs(reading.span_seconds - nominal))) > slack;
-
-    var span_buffer: [16]u8 = undefined;
-    const span = if (!off)
-        nominalLabel(nominal)
-    else if (reading.span_seconds >= 2 * day_seconds)
-        try std.fmt.bufPrint(&span_buffer, "{d}d", .{
-            @divTrunc(reading.span_seconds + day_seconds / 2, day_seconds),
-        })
-    else
-        try std.fmt.bufPrint(&span_buffer, "{d}h", .{
-            @divTrunc(reading.span_seconds + 1800, 3600),
-        });
-
-    return std.fmt.bufPrint(buffer, "{s} {s}", .{ span, try money(&money_buffer, reading.spent_usd) });
-}
-
-fn nominalLabel(nominal: i64) []const u8 {
-    return if (nominal <= day_seconds) "24h" else "7d";
+    return std.fmt.bufPrint(buffer, "{s} {s}", .{ row.label, try money(&money_buffer, spent_usd) });
 }
 
 /// Cents for a balance, and a third decimal for the sums a single day of
@@ -320,18 +308,20 @@ fn fetch(io: std.Io, arena: std.mem.Allocator, url: []const u8, token: []const u
     var header_buffer: [512]u8 = undefined;
     const authorization = try std.fmt.bufPrint(&header_buffer, "Authorization: Bearer {s}", .{token});
 
-    const result = std.process.run(arena, io, .{ .argv = &.{
-        curl,
-        // A 4xx is an answer rather than a silence, and its body says which.
-        "--silent",
-        "--show-error",
-        "--fail-with-body",
-        "--max-time",
-        request_timeout_seconds,
-        "--header",
-        authorization,
-        url,
-    } }) catch return error.RequestFailed;
+    const result = std.process.run(arena, io, .{
+        .argv = &.{
+            curl,
+            // A 4xx is an answer rather than a silence, and its body says which.
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "--max-time",
+            request_timeout_seconds,
+            "--header",
+            authorization,
+            url,
+        },
+    }) catch return error.RequestFailed;
 
     const succeeded = switch (result.term) {
         .exited => |status| status == 0,

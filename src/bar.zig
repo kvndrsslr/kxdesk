@@ -865,7 +865,7 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     // background task fetches both, on the daemon's own clock rather than on an
     // item's `update_freq` - a refresh that pushed to an item which was
     // subscribed to updates came straight back as another event. Hovering either
-    // shows the last day and the last week; clicking opens its usage page.
+    // shows the last day, week and thirty days; clicking opens its usage page.
     try c.arg("--add");
     try c.arg("item");
     try c.arg(items_usage.neuralwatt_item);
@@ -931,15 +931,14 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try c.arg(items_usage.openrouter_item);
     try c.arg("mouse.clicked");
 
-    // One popup row per window, per provider. They are declared rather than
-    // cloned, because the number of rows does not vary.
+    // One popup row per window, per provider. The rows come from
+    // `items_usage.rows` rather than being listed here, because the refresh
+    // fills exactly those items - naming them twice is how the day and the week
+    // would drift apart from what is written on hover.
     inline for ([_]struct { parent: []const u8, color: theme.Color }{
         .{ .parent = items_usage.neuralwatt_item, .color = theme.green },
     }) |provider| {
-        inline for ([_]struct { suffix: []const u8, nominal: []const u8 }{
-            .{ .suffix = "day", .nominal = "24h" },
-            .{ .suffix = "week", .nominal = "7d" },
-        }) |row| {
+        inline for (items_usage.rows) |row| {
             var name_buffer: [48]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_buffer, "{s}.{s}", .{ provider.parent, row.suffix });
 
@@ -961,7 +960,7 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
                     .drawing = false,
                 },
                 .label = .{
-                    .value = row.nominal ++ " -",
+                    .value = row.label ++ " -",
                     .padding_left = 7,
                     .padding_right = 7,
                     .color = config.color(provider.color),
