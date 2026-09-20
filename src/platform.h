@@ -143,6 +143,36 @@ int64_t sb_socket_message(
     size_t cap
 );
 
+/* -- tcp sockets ---------------------------------------------------------- */
+
+/// Connect to `host`:`port` over TCP and keep the descriptor, for a channel
+/// that stays open. `sb_socket_message` above is one message and gone, which is
+/// what yabai wants and the opposite of what kanata's server is: it broadcasts
+/// its events to whoever is connected, whenever they happen.
+///
+/// `host` is an IPv4 literal or a name the resolver answers without a round
+/// trip; the channel is a loopback one in practice.
+///
+/// The descriptor has `SO_NOSIGPIPE` set, like the unix socket above and for
+/// the same reason: a peer that goes away must fail the read rather than kill
+/// the daemon.
+///
+/// Returns the descriptor, or -1 when it could not be opened or connected -
+/// the ordinary answer while the peer is not running yet, and the caller's cue
+/// to try again.
+int32_t sb_tcp_connect(const char* host, uint16_t port);
+
+/// Read up to `cap` bytes from a descriptor `sb_tcp_connect` returned.
+///
+/// Returns the number of bytes read, 0 when the peer closed the connection, or
+/// -1 on a read error. Blocks until one of those three happens: the caller is a
+/// thread of its own, and a peer that goes away closes the socket, so there is
+/// nothing here to time out on.
+int64_t sb_tcp_read(int32_t fd, char* out, size_t cap);
+
+/// Close a descriptor from `sb_tcp_connect`.
+void sb_tcp_close(int32_t fd);
+
 /// Filesystem path of the installed sketchybar-app-font, resolved through
 /// CoreText so it is the same file the bar renders with. Returns false when the
 /// font is not installed.
@@ -197,3 +227,9 @@ bool sb_dark_mode(void);
 
 /// Open a URL with the user's default handler.
 bool sb_open_url(const char* url);
+
+/// Put `text` on the general pasteboard, replacing what was on it. Returns
+/// false when the pasteboard could not be written - which is a pasteboard
+/// problem, not a text one: the caller's text is already UTF-8 and NUL
+/// terminated.
+bool sb_clipboard_set(const char* text);

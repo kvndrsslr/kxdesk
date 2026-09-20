@@ -17,6 +17,7 @@
 #include <net/if.h>
 #include <net/if_media.h>
 #include <net/route.h>
+#include <netdb.h>
 #include <spawn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -481,6 +482,58 @@ int64_t sb_socket_message(const char* path, const void* request, size_t request_
   return total;
 }
 
+/* -- tcp sockets ---------------------------------------------------------- */
+
+int32_t sb_tcp_connect(const char* host, uint16_t port) {
+  if (!host || !*host) return -1;
+
+  char service[8];
+  snprintf(service, sizeof(service), "%u", (unsigned)port);
+
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+
+  struct addrinfo* resolved = NULL;
+  if (getaddrinfo(host, service, &hints, &resolved) != 0) return -1;
+
+  /* The first address that connects wins: a name may resolve to several, and a
+   * loopback literal has exactly one. */
+  int fd = -1;
+  for (struct addrinfo* candidate = resolved; candidate; candidate = candidate->ai_next) {
+    int attempt = socket(candidate->ai_family, candidate->ai_socktype, candidate->ai_protocol);
+    if (attempt == -1) continue;
+
+    int one = 1;
+    setsockopt(attempt, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+
+    if (connect(attempt, candidate->ai_addr, candidate->ai_addrlen) == 0) {
+      fd = attempt;
+      break;
+    }
+    close(attempt);
+  }
+
+  freeaddrinfo(resolved);
+  return fd;
+}
+
+int64_t sb_tcp_read(int32_t fd, char* out, size_t cap) {
+  if (fd < 0 || !out || cap == 0) return -1;
+
+  for (;;) {
+    ssize_t n = recv(fd, out, cap, 0);
+    if (n < 0 && errno == EINTR) continue;
+    return (int64_t)n;
+  }
+}
+
+void sb_tcp_close(int32_t fd) {
+  if (fd >= 0) close(fd);
+}
+
 /* -- fonts ---------------------------------------------------------------- */
 
 bool sb_app_font_path(char* out, size_t cap) {
@@ -763,4 +816,22 @@ bool sb_open_url(const char* url) {
   if (!target) return false;
 
   return [[NSWorkspace sharedWorkspace] openURL:target];
+}
+
+bool sb_clipboard_set(const char* text) {
+  if (!text) return false;
+
+  /* The caller is a thread of its own that outlives this call many times over,
+   * so the objects created here are released into a pool of their own rather
+   * than into the thread's, which would only drain when the thread ends. */
+  @autoreleasepool {
+    NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
+    if (!pasteboard) return false;
+
+    NSString* string = [NSString stringWithUTF8String:text];
+    if (!string) return false;
+
+    [pasteboard clearContents];
+    return [pasteboard setString:string forType:NSPasteboardTypeString];
+  }
 }

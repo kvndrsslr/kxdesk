@@ -36,6 +36,7 @@ const control = @import("control.zig");
 const dispatch = @import("dispatch.zig");
 const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
+const kanata = @import("kanata.zig");
 const platform = @import("platform.zig");
 const pomodoro = @import("pomodoro.zig");
 const server_mode = @import("server_mode.zig");
@@ -463,6 +464,22 @@ fn runDaemon(init: std.process.Init) !void {
             commands.restoreState(&command_context);
         }
     } else |_| {}
+
+    // kanata's channel, started last because it is a client of everything above
+    // it: from its own thread it reaches the bar, yabai and the store. Losing it
+    // costs the key bindings and nothing else, so a failure is said once and the
+    // daemon carries on - the bar is what this process is for.
+    kanata.Listener.start(gpa, .{
+        .io = init.io,
+        .store = &store,
+        .yabai_client = &yabai_client,
+        .pomodoro = &timer,
+        .bar_present = &daemon.present,
+        .event_service = event_service,
+        .started = daemon.started,
+    }) catch |err| {
+        std.debug.print("kxdesk: kanata channel not started: {s}\n", .{@errorName(err)});
+    };
 
     // Never returns: the process ends when launchd or a signal ends it, not when
     // SketchyBar does.

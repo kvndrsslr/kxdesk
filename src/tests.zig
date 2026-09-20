@@ -9,6 +9,7 @@ const cli = @import("cli.zig");
 const config = @import("config.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
+const kanata = @import("kanata.zig");
 const Props = @import("props.zig").Props;
 const store = @import("store.zig");
 const theme = @import("theme.zig");
@@ -370,4 +371,149 @@ test "zen keeps the collapsed bar's furniture and hides the rest" {
     // the popup and only while it is open, while the item is content zen hides.
     try std.testing.expect(zen.isKept("opencode-go.monthly"));
     try std.testing.expect(!zen.isKept("opencode-go"));
+}
+
+test "kanata names parse into the actions they spell" {
+    // One case per shape the vocabulary uses: a direction, a number, one of a
+    // few words, a flag that is only there when it is spelled, and a verb with
+    // nothing after it.
+    try std.testing.expectEqual(
+        kanata.Action{ .window_swap = .west },
+        try kanata.parseAction("yabai:window-swap:west"),
+    );
+    try std.testing.expectEqual(
+        kanata.Action{ .window_to_display = 3 },
+        try kanata.parseAction("yabai:window-to-display:3"),
+    );
+    try std.testing.expectEqual(
+        kanata.Action{ .space_layout = .float },
+        try kanata.parseAction("yabai:space-layout:float"),
+    );
+    try std.testing.expectEqual(
+        kanata.Action{ .window_focus = .same_app },
+        try kanata.parseAction("yabai:window-focus:same-app"),
+    );
+    try std.testing.expectEqual(
+        kanata.Action{ .window_toggle = .float_sticky_topmost },
+        try kanata.parseAction("yabai:window-toggle:float-sticky-topmost"),
+    );
+    try std.testing.expectEqual(
+        kanata.Action{ .cycle_displays = .reverse },
+        try kanata.parseAction("kxdesk:cycle-displays:reverse"),
+    );
+    // The bindings that run forwards spell nothing, which is the whole reason
+    // `reverse` is the word that is written and not the other one.
+    try std.testing.expectEqual(
+        kanata.Action{ .cycle_displays = .forward },
+        try kanata.parseAction("kxdesk:cycle-displays"),
+    );
+    try std.testing.expectEqual(
+        kanata.Action{ .open_app = .arc_debug },
+        try kanata.parseAction("app:open:arc-debug"),
+    );
+    try std.testing.expectEqual(
+        kanata.Action.dump_path,
+        try kanata.parseAction("debug:dump-path"),
+    );
+}
+
+test "kanata refuses a name it cannot carry out" {
+    // A mistyped binding is a key that does nothing, so the channel refuses the
+    // name and says why rather than passing it to yabai to refuse in its own
+    // words. Each case names the error that reason is.
+    const refused = [_]struct { name: []const u8, expected: kanata.ParseError }{
+        // The argument the verb needs, missing or not one it knows.
+        .{ .name = "yabai:window-swap", .expected = error.MissingArgument },
+        .{ .name = "yabai:window-swap:sideways", .expected = error.BadArgument },
+        .{ .name = "yabai:window-swap:west:now", .expected = error.UnknownAction },
+        .{ .name = "yabai:window-to-display:two", .expected = error.BadArgument },
+        .{ .name = "yabai:space-rotate:sideways", .expected = error.BadArgument },
+        .{ .name = "yabai:space-toggle:show-dock", .expected = error.BadArgument },
+        .{ .name = "kxdesk:cycle-displays:backwards", .expected = error.BadArgument },
+        .{ .name = "app:open", .expected = error.MissingArgument },
+        // A verb that takes nothing, given something.
+        .{ .name = "screen:capture:now", .expected = error.BadArgument },
+        .{ .name = "debug:dump-path:now", .expected = error.BadArgument },
+        // Names that are not verbs at all: a flat name from before the
+        // vocabulary was structured, an unknown namespace, and the empty string.
+        .{ .name = "yabai:window-swap-west", .expected = error.UnknownAction },
+        .{ .name = "yabai:window-insert-stack-space:west", .expected = error.BadArgument },
+        .{ .name = "windows:swap:west", .expected = error.UnknownAction },
+        .{ .name = "yabai", .expected = error.UnknownAction },
+        .{ .name = "", .expected = error.UnknownAction },
+    };
+    for (refused) |case| {
+        try std.testing.expectError(case.expected, kanata.parseAction(case.name));
+    }
+
+    // The display bound is the one argument with a range, because the bindings
+    // spell 1 to 4 and a fifth would be a config that meant something else.
+    try std.testing.expectEqual(
+        kanata.Action{ .display_focus = 4 },
+        try kanata.parseAction("yabai:display-focus:4"),
+    );
+    try std.testing.expectError(error.BadArgument, kanata.parseAction("yabai:display-focus:5"));
+    try std.testing.expectError(error.BadArgument, kanata.parseAction("yabai:display-focus:0"));
+}
+
+test "kanata framing keeps messages apart across read boundaries" {
+    var framer = kanata.Framer{};
+
+    // A socket has no idea where a message ends: one line can arrive in two
+    // reads, and two lines in one. This is both, in order.
+    framer.feed("{\"MessagePush\":{\"mess");
+    try std.testing.expect(framer.next() == null);
+    framer.feed("age\":\"debug:dump-path\"}}\n{\"LayerChange\":{\"new\":\"op\"}}\n");
+
+    try std.testing.expectEqualStrings(
+        "{\"MessagePush\":{\"message\":\"debug:dump-path\"}}",
+        framer.next().?,
+    );
+    try std.testing.expectEqualStrings("{\"LayerChange\":{\"new\":\"op\"}}", framer.next().?);
+    try std.testing.expect(framer.next() == null);
+
+    // A read that ends exactly on the newline is the same as one that carries
+    // the start of the next message.
+    framer.feed("{\"a\":1}\n");
+    try std.testing.expectEqualStrings("{\"a\":1}", framer.next().?);
+    try std.testing.expect(framer.next() == null);
+}
+
+test "kanata framing drops a line that outgrows its buffer" {
+    // Half a message is not a message. The overlong line is dropped whole - and
+    // so is the fragment of it that was already buffered, or everything after it
+    // would be glued onto that fragment and lost with it.
+    var framer = kanata.Framer{};
+    var long: [5000]u8 = undefined;
+    @memset(long[0..4999], 'x');
+    long[4999] = '\n';
+
+    framer.feed(&long);
+    framer.feed("{\"LayerChange\":{\"new\":\"op\"}}\n");
+    try std.testing.expectEqualStrings("{\"LayerChange\":{\"new\":\"op\"}}", framer.next().?);
+    try std.testing.expect(framer.next() == null);
+
+    // The same when the newline that ends the long line arrives in a later read
+    // than the line itself.
+    var framer_again = kanata.Framer{};
+    var head: [4500]u8 = undefined;
+    @memset(&head, 'y');
+    framer_again.feed(&head);
+    try std.testing.expect(framer_again.next() == null);
+    framer_again.feed("tail\n{\"a\":1}\n");
+    try std.testing.expectEqualStrings("{\"a\":1}", framer_again.next().?);
+    try std.testing.expect(framer_again.next() == null);
+}
+
+test "the mode indicator follows the layer kanata reports" {
+    // The indices are the ones the skhd config passed to `set_mode_indicator` on
+    // entering each mode; the layer names are the ones kanata.kbd defines.
+    try std.testing.expectEqualStrings("1", kanata.indicatorFor("op").?);
+    try std.testing.expectEqualStrings("2", kanata.indicatorFor("wmode").?);
+    try std.testing.expectEqualStrings("3", kanata.indicatorFor("smode").?);
+    try std.testing.expectEqualStrings("-", kanata.indicatorFor("default").?);
+
+    // A layer nobody colours is not an error: the config may define layers of
+    // its own, and the highlight simply stays as it was.
+    try std.testing.expect(kanata.indicatorFor("nav") == null);
 }

@@ -22,13 +22,25 @@ const platform = @import("platform.zig");
 pub const Display = struct {
     id: u32 = 0,
     index: u32 = 0,
+    /// Where the display is and how big it is, in points. Only the window-fill
+    /// action reads it: everything else goes by `index`.
+    frame: Frame = .{},
+};
+
+/// A rectangle yabai reports, as the floating point numbers it writes - they
+/// are whole points in practice, and rounding them is the caller's business.
+pub const Frame = struct {
+    x: f64 = 0,
+    y: f64 = 0,
+    w: f64 = 0,
+    h: f64 = 0,
 };
 
 /// A yabai space.
 pub const Space = struct {
     index: u32 = 0,
-    @"type": []const u8 = "",
-    @"label": []const u8 = "",
+    type: []const u8 = "",
+    label: []const u8 = "",
     display: u32 = 0,
     @"is-visible": bool = false,
     @"has-focus": bool = false,
@@ -40,7 +52,7 @@ pub const Window = struct {
     id: u32 = 0,
     app: []const u8 = "",
     title: []const u8 = "",
-    @"role": []const u8 = "",
+    role: []const u8 = "",
     display: u32 = 0,
     space: u32 = 0,
     @"stack-index": u32 = 0,
@@ -67,7 +79,7 @@ pub const Error = error{
 /// label is modelled, because a rule or signal is removed by label and added by
 /// naming it - nothing reads the rest back.
 pub const Labeled = struct {
-    @"label": []const u8 = "",
+    label: []const u8 = "",
 };
 
 /// Largest query response we are willing to buffer. `--windows` on a busy
@@ -156,6 +168,17 @@ pub const Client = struct {
         for (args) |argument| try vector.append(scratch, try scratch.dupeZ(u8, argument));
         try vector.append(scratch, null);
         return vector;
+    }
+
+    /// The raw JSON of `yabai -m <args>`, unparsed - for a caller that hands
+    /// yabai's own answer on instead of reading it, the way the window-list
+    /// copy does.
+    pub fn rawQuery(
+        self: *Client,
+        scratch: std.mem.Allocator,
+        args: []const []const u8,
+    ) ![]const u8 {
+        return self.send(scratch, args, true);
     }
 
     /// Parse the JSON of `yabai -m <args>` into `T`.

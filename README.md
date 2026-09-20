@@ -3,8 +3,8 @@
 A personal desktop daemon for macOS. It serves SketchyBar's item events and a
 command channel over one mach port, so the bar's items are configured in Zig
 instead of shell, clicks arrive as events instead of forked processes, and the
-commands that `~/.skhdrc`, `~/.yabairc`, yabai signals and the bar's config
-script run are answered by one long-lived process.
+commands that kanata's key bindings, `~/.yabairc`, yabai signals and the bar's
+config script name are answered by one long-lived process.
 
 It also owns the state those things share: one SQLite database at
 `~/Library/Application Support/kxdesk/state.db`, reachable from outside with
@@ -65,6 +65,64 @@ eval "$(kxdesk completions zsh)"      # or bash
 
 Fish is not supported: it is not installed here, so its script would ship
 untested.
+
+## The key bindings: kanata's channel
+
+The bindings themselves live in kanata, in
+`~/Library/Application Support/kanata/kanata.kbd`. What they *run* does not: each
+binding pushes a message naming an action — `yabai:window-swap:west`,
+`kxdesk:cycle-displays:reverse`, `app:open:kitty` — and this daemon receives it
+and runs it.
+
+That split is both forced and deliberate. kanata's own `cmd` action is compiled
+out of the Homebrew bottle, and on macOS kanata has to run as root to seize the
+keyboard through the Karabiner driver — so a config file, which is the user's to
+write, would be able to run anything as root. Upstream ships `cmd` in a separate
+binary for exactly that reason. A pushed name cannot execute anything: the
+vocabulary is a closed list of verbs, every argument is checked before anything
+runs, and the action is carried out here, as the user, in the user's session.
+
+It is cheaper too. kanata's documentation puts `cmd` at around 100 ms per
+keypress against sub-millisecond for a pushed message: one forks a process, the
+other is a line on a socket.
+
+The channel is kanata's TCP server on `127.0.0.1:4038`. The port is not a knob to
+guess at — the launchd job passes it to kanata with `-p` and this daemon reads the
+same default:
+
+```sh
+kxdesk kanata status                          # is the channel up, and what has it carried
+kxdesk kanata inject yabai:window-swap:west   # run an action as if a key had pushed it
+```
+
+`inject` takes an action name or a raw JSON line, which is what makes a binding
+testable without pressing its keys — and the channel testable with kanata not
+running at all, since the parsing and the action are the same code the socket
+path runs.
+
+Three kinds of message are acted on, out of the several kanata sends:
+
+- **`MessagePush`** — a binding. The name is parsed as
+  `namespace:verb[:argument]` and refused with the reason when it is not one of
+  the verbs in `src/kanata.zig`, so a typo in the config is a line in the log
+  rather than a key that does nothing.
+- **`LayerChange`** — kanata switched layer, which is what colours the bar's
+  space icons. `op`, `wmode` and `smode` are the indices the skhd config used to
+  pass to `set_mode_indicator` on entering each mode, and `default` clears them.
+  The layer is the state and the event says it changed, so no binding has to
+  remember to set the indicator.
+- **`ConfigFileReload`** — the config was reloaded, which returns to the default
+  layer, so the highlight goes with it.
+
+The reader is a thread of its own, because the serve loop only ever waits on its
+mach port and because kanata restarts: the connection is made, lost and made
+again for as long as this daemon lives. Neither a kanata that is down nor a
+binding that fails is a reason for the daemon to stop serving the bar — both are
+lines in the log, the first failure of a run once and not once per retry.
+
+To move the two ends apart, `kxdesk state set kanata.port <port>` (and
+`kanata.host`) changes this side without a rebuild; the other side is the `-p`
+argument in `~/Library/Application Support/kanata/local.kanata.plist`.
 
 ## Installing: currently from HEAD, temporarily
 

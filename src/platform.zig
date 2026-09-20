@@ -73,3 +73,18 @@ pub const Link = enum(u8) { disconnected = 0, wifi = 1, wired = 2 };
 pub extern "c" fn sb_net_link() u8;
 pub extern "c" fn sb_dark_mode() bool;
 pub extern "c" fn sb_open_url(url: [*:0]const u8) bool;
+
+/// Connect to a TCP peer and keep the descriptor, for a channel that stays open
+/// - the opposite of `sb_socket_message`, which is one message and gone.
+/// Returns -1 while the peer is not listening, which is the ordinary answer and
+/// the caller's cue to try again.
+pub extern "c" fn sb_tcp_connect(host: [*:0]const u8, port: u16) i32;
+
+/// Read up to `cap` bytes: the number read, 0 when the peer closed the
+/// connection, or -1 on a read error.
+pub extern "c" fn sb_tcp_read(fd: i32, out: [*]u8, cap: usize) i64;
+
+pub extern "c" fn sb_tcp_close(fd: i32) void;
+
+/// Replace the general pasteboard's contents with `text`.
+pub extern "c" fn sb_clipboard_set(text: [*:0]const u8) bool;

@@ -498,3 +498,199 @@ fn skhdArrow(context: *Context, direction: []const u8) !void {
     const vector = [_:null]?[*:0]const u8{ skhd.ptr, "-k", key.ptr, null };
     if (platform.sb_exec_status(&vector) != 0) return error.YabaiFailed;
 }
+
+// -- the actions kanata's messages name -------------------------------------
+//
+// The key bindings in `~/.skhdrc.template` used to run these as shell
+// commands, one `yabai -m` per binding. They are ports of those commands, in
+// the same argv tokens: what the shell wrote as `--swap west` is `--swap` and
+// `west` here, and a `&&` between two commands is two `try`s, so the second
+// only runs when the first was taken.
+
+/// The four directions yabai's window and space commands take.
+pub const Direction = enum {
+    west,
+    south,
+    north,
+    east,
+
+    /// The word yabai spells this direction with.
+    pub fn name(self: Direction) []const u8 {
+        return @tagName(self);
+    }
+};
+
+/// The layouts `yabai -m space --layout` takes.
+pub const Layout = enum { bsp, stack, float };
+
+/// Swap the focused window with its neighbour in `direction`.
+pub fn windowSwap(context: *Context, direction: Direction) !void {
+    try context.yabai.command(context.arena, &.{ "-m", "window", "--swap", direction.name() });
+}
+
+/// Send the focused window past its neighbour in `direction`, carrying the rest
+/// of the tree along instead of changing places with it.
+pub fn windowWarp(context: *Context, direction: Direction) !void {
+    try context.yabai.command(context.arena, &.{ "-m", "window", "--warp", direction.name() });
+}
+
+/// Insert the focused window into the tree beside the window under the mouse,
+/// on the side `direction` names.
+pub fn windowInsert(context: *Context, direction: Direction) !void {
+    try context.yabai.command(context.arena, &.{
+        "-m", "window", "mouse", "--insert", direction.name(),
+    });
+}
+
+/// The same insert, then follow the window onto the space the mouse is on.
+pub fn windowInsertIntoSpace(context: *Context, direction: Direction) !void {
+    const arena = context.arena;
+    try context.yabai.command(arena, &.{ "-m", "window", "mouse", "--insert", direction.name() });
+    try context.yabai.command(arena, &.{ "-m", "window", "--space", "mouse" });
+}
+
+/// Insert the focused window into the stack under the mouse, and follow it.
+pub fn windowInsertIntoStack(context: *Context) !void {
+    const arena = context.arena;
+    try context.yabai.command(arena, &.{ "-m", "window", "mouse", "--insert", "stack" });
+    try context.yabai.command(arena, &.{ "-m", "window", "--space", "mouse" });
+}
+
+/// Move the focused window to display `index`.
+pub fn windowToDisplay(context: *Context, index: u8) !void {
+    const arena = context.arena;
+    var buffer: [4]u8 = undefined;
+    const argument = std.fmt.bufPrint(&buffer, "{d}", .{index}) catch unreachable;
+    try context.yabai.command(arena, &.{ "-m", "window", "--display", argument });
+}
+
+/// Focus display `index`.
+pub fn displayFocus(context: *Context, index: u8) !void {
+    const arena = context.arena;
+    var buffer: [4]u8 = undefined;
+    const argument = std.fmt.bufPrint(&buffer, "{d}", .{index}) catch unreachable;
+    try context.yabai.command(arena, &.{ "-m", "display", "--focus", argument });
+}
+
+/// Move the focused space to the display `direction` names.
+pub fn spaceToDisplay(context: *Context, direction: Direction) !void {
+    try context.yabai.command(context.arena, &.{
+        "-m", "space", "--display", direction.name(),
+    });
+}
+
+/// Set the focused space's layout.
+pub fn spaceLayout(context: *Context, layout: Layout) !void {
+    try context.yabai.command(context.arena, &.{ "-m", "space", "--layout", @tagName(layout) });
+}
+
+/// Rotate the focused space's tree by `degrees`.
+pub fn spaceRotate(context: *Context, degrees: u16) !void {
+    const arena = context.arena;
+    var buffer: [8]u8 = undefined;
+    const argument = std.fmt.bufPrint(&buffer, "{d}", .{degrees}) catch unreachable;
+    try context.yabai.command(arena, &.{ "-m", "space", "--rotate", argument });
+}
+
+/// Even out the focused space's tree.
+pub fn spaceBalance(context: *Context) !void {
+    try context.yabai.command(context.arena, &.{ "-m", "space", "--balance" });
+}
+
+/// Hide every window of the focused space, leaving the space itself up.
+pub fn spaceToggleShowDesktop(context: *Context) !void {
+    try context.yabai.command(context.arena, &.{ "-m", "space", "--toggle", "show-desktop" });
+}
+
+/// Focus the window that had focus before this one.
+pub fn windowFocusRecent(context: *Context) !void {
+    try context.yabai.command(context.arena, &.{ "-m", "window", "--focus", "recent" });
+}
+
+/// Focus the next window of the focused window's application.
+///
+/// The shell built this by hand: the focused window is the first entry of
+/// yabai's window list, and the one wanted is the next entry carrying the same
+/// application. An application with one window has no next entry - the shell
+/// passed yabai a literal `null` there and yabai refused it - so this reports
+/// the same failure the refusal did, which the caller logs and drops.
+pub fn windowFocusSameApp(context: *Context) !void {
+    const arena = context.arena;
+    const windows = try context.yabai.windows(arena);
+    if (windows.len == 0) return error.YabaiFailed;
+
+    const current = windows[0].app;
+    for (windows[1..]) |window| {
+        if (!std.mem.eql(u8, window.app, current)) continue;
+        if (!focusWindow(arena, context.yabai, window.id)) return error.YabaiFailed;
+        return;
+    }
+    return error.YabaiFailed;
+}
+
+/// One of the window states the bindings toggle.
+pub const WindowToggle = enum {
+    /// Grow the window to its display, staying in the space's layout.
+    zoom_fullscreen,
+    /// macOS's own fullscreen.
+    native_fullscreen,
+    /// Mission Control's window overview.
+    expose,
+    /// Float, stick and raise at once - three toggles, in this order.
+    float_sticky_topmost,
+};
+
+pub fn windowToggle(context: *Context, toggle: WindowToggle) !void {
+    const arena = context.arena;
+
+    // The one that is not a single toggle is three, and the shell chained them
+    // with `&&`: the sticky state of a window that refused to float is not worth
+    // reaching for.
+    if (toggle == .float_sticky_topmost) {
+        try context.yabai.command(arena, &.{ "-m", "window", "--toggle", "float" });
+        try context.yabai.command(arena, &.{ "-m", "window", "--toggle", "sticky" });
+        try context.yabai.command(arena, &.{ "-m", "window", "--toggle", "topmost" });
+        return;
+    }
+
+    const state: []const u8 = switch (toggle) {
+        .zoom_fullscreen => "zoom-fullscreen",
+        .native_fullscreen => "native-fullscreen",
+        .expose => "expose",
+        .float_sticky_topmost => unreachable,
+    };
+    try context.yabai.command(arena, &.{ "-m", "window", "--toggle", state });
+}
+
+/// Move the focused window onto its display's frame and size it to fill it.
+///
+/// The shell asked yabai for the display holding the focused window and cut its
+/// coordinates down to whole points before using them; the casts are that cut.
+pub fn windowFillDisplay(context: *Context) !void {
+    const arena = context.arena;
+    const display = try context.yabai.query(yabai.Display, arena, &.{
+        "-m", "query", "--displays", "--window",
+    });
+
+    var move: [48]u8 = undefined;
+    const position = std.fmt.bufPrint(&move, "abs:{d}:{d}", .{
+        @as(i64, @intFromFloat(display.frame.x)),
+        @as(i64, @intFromFloat(display.frame.y)),
+    }) catch unreachable;
+    try context.yabai.command(arena, &.{ "-m", "window", "--move", position });
+
+    var size: [48]u8 = undefined;
+    const dimensions = std.fmt.bufPrint(&size, "abs:{d}:{d}", .{
+        @as(i64, @intFromFloat(display.frame.w)),
+        @as(i64, @intFromFloat(display.frame.h)),
+    }) catch unreachable;
+    try context.yabai.command(arena, &.{ "-m", "window", "--resize", dimensions });
+}
+
+/// Put yabai's own window list on the clipboard, as `pbcopy` did.
+pub fn copyWindows(context: *Context) !void {
+    const arena = context.arena;
+    const list = try context.yabai.rawQuery(arena, &.{ "-m", "query", "--windows" });
+    const text = try arena.dupeZ(u8, list);
+    if (!platform.sb_clipboard_set(text.ptr)) return error.ClipboardUnavailable;
+}

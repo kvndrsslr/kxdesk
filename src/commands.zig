@@ -10,6 +10,7 @@ const std = @import("std");
 const bar_config = @import("bar.zig");
 const Context = @import("context.zig").Context;
 const items_usage = @import("items_usage.zig");
+const kanata = @import("kanata.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
 const server_mode = @import("server_mode.zig");
@@ -106,6 +107,28 @@ pub const all = [_]Command{
         .name = "status",
         .summary = "report what the daemon is doing",
         .run = status,
+    },
+
+    // The channel kanata's key bindings speak through. A binding pushes a
+    // message naming an action and the daemon runs it, so this is the one
+    // command that both reports on that channel and can stand in for it.
+    .{
+        .name = "kanata",
+        .summary = "report on the kanata channel, or act on a message from it",
+        .subcommands = &.{
+            .{ .name = "status", .summary = "say whether the channel is up", .default = true },
+            .{
+                .name = "inject",
+                .summary = "act on a message as if kanata had pushed it",
+                .args = &.{
+                    .{
+                        .name = "<message>",
+                        .summary = "an action name like yabai:window-swap:west, or a raw JSON line",
+                    },
+                },
+            },
+        },
+        .run = kanataCommand,
     },
     .{
         .name = "zen",
@@ -456,6 +479,24 @@ fn status(context: *Context, _: []const []const u8) ![]const u8 {
         items,
         if (context.store.enabled()) "on" else "off",
     });
+}
+
+/// Report on the kanata channel, or act on a message as if kanata had pushed it.
+///
+/// The injection is what makes a binding testable without pressing its keys -
+/// `kxdesk kanata inject yabai:window-swap:west` - and what makes the channel
+/// testable with kanata not running at all: the parsing and the action are the
+/// same code the socket path runs.
+fn kanataCommand(context: *Context, args: []const []const u8) ![]const u8 {
+    const verb = if (args.len > 0) args[0] else return kanata.status(context.arena);
+    const values = if (args.len > 0) args[1..] else args;
+
+    if (std.mem.eql(u8, verb, "status")) return kanata.status(context.arena);
+    if (std.mem.eql(u8, verb, "inject")) {
+        if (values.len == 0) return error.MissingArgument;
+        return kanata.inject(context, values[0]);
+    }
+    return error.UnknownArgument;
 }
 
 /// Collapse the bar down to the essentials, or restore it. The calendar's click
