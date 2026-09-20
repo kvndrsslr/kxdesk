@@ -366,7 +366,7 @@ fn openApp(context: *Context, application: App) !void {
             // it.
             const kitty = try exec.path(arena, "kitty");
             var home_buffer: [std.fs.max_path_bytes]u8 = undefined;
-            if (platform.sb_env("HOME", &home_buffer, home_buffer.len)) {
+            if (platform.kx_env("HOME", &home_buffer, home_buffer.len)) {
                 const home = try arena.dupeZ(u8, std.mem.sliceTo(&home_buffer, 0));
                 try spawn(arena, &.{
                     kitty, "-d", home, "--single-instance", "--listen-on", "unix:/tmp/mykitty",
@@ -389,7 +389,7 @@ fn spawn(arena: std.mem.Allocator, argv: []const []const u8) !void {
     const vector = try arena.alloc(?[*:0]const u8, argv.len + 1);
     for (argv, 0..) |argument, index| vector[index] = try arena.dupeZ(u8, argument);
     vector[argv.len] = null;
-    if (platform.sb_spawn_detached(vector.ptr) < 0) return error.LaunchFailed;
+    if (platform.kx_spawn_detached(vector.ptr) < 0) return error.LaunchFailed;
 }
 
 /// Record the PATH this daemon runs things with, and where the channel stands,
@@ -399,7 +399,7 @@ fn spawn(arena: std.mem.Allocator, argv: []const []const u8) !void {
 /// command here is resolved rather than assumed.
 fn dumpPath(context: *Context) !void {
     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const path = if (platform.sb_env("PATH", &path_buffer, path_buffer.len))
+    const path = if (platform.kx_env("PATH", &path_buffer, path_buffer.len))
         std.mem.sliceTo(&path_buffer, 0)
     else
         "(unset)";
@@ -618,7 +618,7 @@ pub const Listener = struct {
         var reported = false;
 
         while (true) {
-            const fd = platform.sb_tcp_connect(self.host.ptr, self.port);
+            const fd = platform.kx_tcp_connect(self.host.ptr, self.port);
             if (fd < 0) {
                 if (!reported) {
                     std.debug.print("kxdesk: kanata is not listening on {s}:{d}\n", .{
@@ -648,14 +648,14 @@ pub const Listener = struct {
                 // 0 is kanata closing the connection - a restart, or a stop -
                 // and -1 a socket that failed; either way this connection is
                 // over and the next attempt is a fresh one.
-                const read = platform.sb_tcp_read(fd, &chunk, chunk.len);
+                const read = platform.kx_tcp_read(fd, &chunk, chunk.len);
                 if (read <= 0) break;
                 framer.feed(chunk[0..@intCast(read)]);
                 while (framer.next()) |line| self.act(line);
             }
 
             self.connected.store(false, .monotonic);
-            platform.sb_tcp_close(fd);
+            platform.kx_tcp_close(fd);
             // Whatever happens next is a new fact about a new connection, and
             // worth saying once.
             reported = false;

@@ -104,7 +104,7 @@ const Daemon = struct {
         reply_port: u32,
     ) anyerror!void {
         defer {
-            platform.sb_port_release(reply_port);
+            platform.kx_port_release(reply_port);
             arena_state.deinit();
             self.gpa.destroy(arena_state);
         }
@@ -145,7 +145,7 @@ const Daemon = struct {
     /// soon as this returns, and the reply port goes with it - so the task gets
     /// its own copy of both.
     fn startCommand(self: *Daemon, block: [*:0]const u8, reply_port: u32) void {
-        const answer_port = platform.sb_port_copy(reply_port);
+        const answer_port = platform.kx_port_copy(reply_port);
 
         const request = control.parse(block) orelse
             return reject(answer_port, "malformed request");
@@ -182,7 +182,7 @@ const Daemon = struct {
 /// Answer a request that cannot be run.
 fn reject(answer_port: u32, message: []const u8) void {
     control.postReply(answer_port, .{ .err = message });
-    platform.sb_port_release(answer_port);
+    platform.kx_port_release(answer_port);
 }
 
 fn onBlock(block: [*:0]const u8, reply_port: u32) callconv(.c) void {
@@ -371,9 +371,9 @@ fn runDaemon(init: std.process.Init) !void {
 
     // The event service has to exist before any item is told to use it, and the
     // control name before a client comes looking for one.
-    const server_port = platform.sb_server_register(event_service);
+    const server_port = platform.kx_server_register(event_service);
     if (server_port == 0) return error.BootstrapRegistrationFailed;
-    if (!platform.sb_server_publish(server_port, sb.control_service)) {
+    if (!platform.kx_server_publish(server_port, sb.control_service)) {
         return error.BootstrapRegistrationFailed;
     }
 
@@ -409,7 +409,7 @@ fn runDaemon(init: std.process.Init) !void {
     // interval.
     var notifier_path: [std.fs.max_path_bytes]u8 = undefined;
     var timer = pomodoro.Timer{ .store = &store, .notifier = blk: {
-        if (platform.sb_which("terminal-notifier", &notifier_path, notifier_path.len)) {
+        if (platform.kx_which("terminal-notifier", &notifier_path, notifier_path.len)) {
             break :blk std.mem.sliceTo(&notifier_path, 0);
         }
         std.debug.print(
@@ -483,7 +483,7 @@ fn runDaemon(init: std.process.Init) !void {
 
     // Never returns: the process ends when launchd or a signal ends it, not when
     // SketchyBar does.
-    platform.sb_server_serve(server_port, onBlock, onTimer);
+    platform.kx_server_serve(server_port, onBlock, onTimer);
 }
 
 /// Every other mode: ask the daemon to run one of its commands.
@@ -558,7 +558,7 @@ fn fail(io: std.Io, err: anyerror) noreturn {
 /// mapping stays empty and every application falls back to `:default:`.
 fn loadIcons(mapping: *app_icons.Mapping, io: std.Io) void {
     var path: [std.fs.max_path_bytes]u8 = undefined;
-    if (!platform.sb_app_font_path(&path, path.len)) {
+    if (!platform.kx_app_font_path(&path, path.len)) {
         std.debug.print("kxdesk: sketchybar-app-font is not installed; app icons fall back to {s}\n", .{
             app_icons.default_ligature,
         });

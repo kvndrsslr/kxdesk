@@ -229,14 +229,14 @@ pub fn clickScript(io: std.Io, storage: []u8) ![]const u8 {
 /// needs, for callers that have no arena of their own.
 fn stateDirectory(storage: []u8) ![]const u8 {
     var environment: [std.fs.max_path_bytes]u8 = undefined;
-    if (platform.sb_env(state_override, &environment, environment.len)) {
+    if (platform.kx_env(state_override, &environment, environment.len)) {
         // Copied into the caller's storage: the buffer it was read into belongs
         // to this frame and is gone by the time the caller uses the answer.
         return std.fmt.bufPrint(storage, "{s}", .{std.mem.sliceTo(&environment, 0)});
     }
 
     var home_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const home_dir = if (platform.sb_env("HOME", &home_buffer, home_buffer.len))
+    const home_dir = if (platform.kx_env("HOME", &home_buffer, home_buffer.len))
         std.mem.sliceTo(&home_buffer, 0)
     else
         "/tmp";
@@ -616,7 +616,7 @@ fn ensureAgent(
     std.Io.Dir.deleteFileAbsolute(io, paths.sock) catch {};
 
     const vector = try terminated(arena, &.{ ssh_agent, "-D", "-a", paths.sock });
-    const pid = platform.sb_spawn_detached(vector.items.ptr);
+    const pid = platform.kx_spawn_detached(vector.items.ptr);
     if (pid <= 0) return error.AgentNotStarted;
     try writeFile(io, paths.pidfile, try std.fmt.allocPrint(arena, "{d}", .{pid}), file_mode);
 
@@ -909,7 +909,7 @@ fn setCaffeinate(arena: std.mem.Allocator, io: std.Io, on: bool) !void {
         try home(arena),
         caffeinate_label,
     });
-    const domain = try std.fmt.allocPrint(arena, "gui/{d}", .{platform.sb_uid()});
+    const domain = try std.fmt.allocPrint(arena, "gui/{d}", .{platform.kx_uid()});
     const service = try std.fmt.allocPrint(arena, "{s}/{s}", .{ domain, caffeinate_label });
     const launchctl = exec.path(arena, "launchctl") catch return;
 
@@ -974,7 +974,7 @@ fn makeDir(io: std.Io, path: []const u8, mode: std.Io.File.Permissions) !void {
 /// this is for the commands whose whole answer is their status.
 fn succeeded(scratch: std.mem.Allocator, argv: []const []const u8) bool {
     const vector = terminated(scratch, argv) catch return false;
-    return platform.sb_exec_status(vector.items.ptr) == 0;
+    return platform.kx_exec_status(vector.items.ptr) == 0;
 }
 
 /// Run `argv` to completion and return its standard output, or null when it did
@@ -1021,7 +1021,7 @@ fn terminated(scratch: std.mem.Allocator, argv: []const []const u8) !std.ArrayLi
 /// The fallback keeps a probe without one working out of `/tmp`.
 fn home(arena: std.mem.Allocator) ![]const u8 {
     var environment: [std.fs.max_path_bytes]u8 = undefined;
-    if (platform.sb_env("HOME", &environment, environment.len)) {
+    if (platform.kx_env("HOME", &environment, environment.len)) {
         return try arena.dupe(u8, std.mem.sliceTo(&environment, 0));
     }
     return "/tmp";

@@ -221,6 +221,6 @@ fn isWord(c: u8) bool {
 /// What the shell read as `${HOME}` — from the environment, absolute.
 fn home(arena: Allocator) ?[]const u8 {
     var buffer: [home_capacity]u8 = undefined;
-    if (!platform.sb_env("HOME", &buffer, buffer.len)) return null;
+    if (!platform.kx_env("HOME", &buffer, buffer.len)) return null;
     return arena.dupe(u8, std.mem.sliceTo(&buffer, 0)) catch null;
 }

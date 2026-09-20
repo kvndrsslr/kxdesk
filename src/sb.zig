@@ -100,14 +100,14 @@ pub const Client = struct {
         return .{
             .gpa = gpa,
             .service = service,
-            .trace = platform.sb_env("KXDESK_TRACE", &value, value.len) and value[0] != '0',
+            .trace = platform.kx_env("KXDESK_TRACE", &value, value.len) and value[0] != '0',
         };
     }
 
     pub fn deinit(self: *Client) void {
         const gpa = self.gpa;
         const service = self.service;
-        if (self.port != 0) platform.sb_port_release(self.port);
+        if (self.port != 0) platform.kx_port_release(self.port);
         self.args.deinit(gpa);
         self.* = .{ .gpa = gpa, .service = service };
     }
@@ -116,7 +116,7 @@ pub const Client = struct {
     /// `git.felix.sketchybar` before it runs the config script, and the daemon
     /// registers both of its names before it starts serving.
     pub fn connect(self: *Client) !void {
-        if (self.port == 0) self.port = platform.sb_bootstrap_lookup(self.service);
+        if (self.port == 0) self.port = platform.kx_bootstrap_lookup(self.service);
         if (self.port == 0) return Error.SketchyBarUnavailable;
     }
 
@@ -124,7 +124,7 @@ pub const Client = struct {
     /// name again. A restarted SketchyBar registers the same name for a new
     /// instance, and the right held for the old one is dead.
     pub fn reconnect(self: *Client) void {
-        if (self.port != 0) platform.sb_port_release(self.port);
+        if (self.port != 0) platform.kx_port_release(self.port);
         self.port = 0;
     }
 
@@ -219,10 +219,10 @@ pub const Client = struct {
         // again.
         var attempt: u8 = 0;
         while (true) : (attempt += 1) {
-            if (self.port == 0) self.port = platform.sb_bootstrap_lookup(self.service);
+            if (self.port == 0) self.port = platform.kx_bootstrap_lookup(self.service);
             if (self.port == 0) return Error.SketchyBarUnavailable;
 
-            const written = platform.sb_send(
+            const written = platform.kx_send(
                 self.port,
                 payload.ptr,
                 payload.len,
@@ -234,7 +234,7 @@ pub const Client = struct {
 
             // The right is dead, or nothing answered on it. Drop it, so the next
             // pass resolves the name of whichever SketchyBar is running now.
-            platform.sb_port_release(self.port);
+            platform.kx_port_release(self.port);
             self.port = 0;
             if (attempt > 0) return Error.SketchyBarUnavailable;
         }

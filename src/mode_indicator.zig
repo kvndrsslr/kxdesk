@@ -102,5 +102,5 @@ fn writeModeFile(io: std.Io, colour: []const u8) !void {
 /// Event, which needs Automation and Accessibility permission and is asked for
 /// again for every new binary; a preference read needs nothing.
 fn darkMode() bool {
-    return platform.sb_dark_mode();
+    return platform.kx_dark_mode();
 }

@@ -33,7 +33,7 @@ const managed_rules = [_][]const []const u8{
 /// One `signal --add`, complete: the exact argv tokens. `$YABAI_WINDOW_ID` is
 /// substituted by yabai at signal time, so it must reach yabai verbatim; argv
 /// tokens rather than a shell keep it intact.
-/// The `sb_*` family fans every event that changes what the bar renders - a
+/// The `kx_*` family fans every event that changes what the bar renders - a
 /// window arriving on a space, leaving it, closing, hiding - into the one
 /// `yabai_update` trigger the helper serves. The strip and front-app items are
 /// built from yabai queries, and a window moved to another space shows up
@@ -43,17 +43,17 @@ const managed_rules = [_][]const []const u8{
 /// leave the bar showing a window that has already left. The display list is
 /// left to the bar's own `display_change` subscription.
 const managed_signals = [_][]const []const u8{
-    &.{ "-m", "signal", "--add", "event=window_title_changed", "label=sb_atc", "action=sketchybar --trigger yabai_update ONLY=title YABAI_WINDOW_ID=$YABAI_WINDOW_ID", "active=yes" },
-    &.{ "-m", "signal", "--add", "event=window_focused", "label=sb_wf", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_moved", "label=sb_wm", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_resized", "label=sb_wr", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_created", "label=sb_wc", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_destroyed", "label=sb_wd", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_minimized", "label=sb_wmin", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_deminimized", "label=sb_wdemin", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=space_changed", "label=sb_sc", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=space_created", "label=sb_spc", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=space_destroyed", "label=sb_spd", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_title_changed", "label=kx_atc", "action=sketchybar --trigger yabai_update ONLY=title YABAI_WINDOW_ID=$YABAI_WINDOW_ID", "active=yes" },
+    &.{ "-m", "signal", "--add", "event=window_focused", "label=kx_wf", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_moved", "label=kx_wm", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_resized", "label=kx_wr", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_created", "label=kx_wc", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_destroyed", "label=kx_wd", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_minimized", "label=kx_wmin", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_deminimized", "label=kx_wdemin", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=space_changed", "label=kx_sc", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=space_created", "label=kx_spc", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=space_destroyed", "label=kx_spd", "action=sketchybar --trigger yabai_update" },
     &.{ "-m", "signal", "--add", "event=window_created", "app=Telegram", "label=telegram-display-enforcement", "action=zsh -c \"sleep 1.5 && yabai -m window $YABAI_WINDOW_ID --display 1 --focus\"" },
 };
 
@@ -496,7 +496,7 @@ fn skhdArrow(context: *Context, direction: []const u8) !void {
     const skhd = try exec.path(context.arena, "skhd");
     const key = try std.fmt.allocPrintSentinel(context.arena, "ctrl - {s}", .{direction}, 0);
     const vector = [_:null]?[*:0]const u8{ skhd.ptr, "-k", key.ptr, null };
-    if (platform.sb_exec_status(&vector) != 0) return error.YabaiFailed;
+    if (platform.kx_exec_status(&vector) != 0) return error.YabaiFailed;
 }
 
 // -- the actions kanata's messages name -------------------------------------
@@ -692,5 +692,5 @@ pub fn copyWindows(context: *Context) !void {
     const arena = context.arena;
     const list = try context.yabai.rawQuery(arena, &.{ "-m", "query", "--windows" });
     const text = try arena.dupeZ(u8, list);
-    if (!platform.sb_clipboard_set(text.ptr)) return error.ClipboardUnavailable;
+    if (!platform.kx_clipboard_set(text.ptr)) return error.ClipboardUnavailable;
 }

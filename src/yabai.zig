@@ -240,7 +240,7 @@ pub const Client = struct {
         if (want_reply) return self.capture(scratch, args);
 
         const vector = try self.argumentVector(scratch, args);
-        if (platform.sb_exec_status(vector.items.ptr) != 0) return Error.YabaiFailed;
+        if (platform.kx_exec_status(vector.items.ptr) != 0) return Error.YabaiFailed;
         return "";
     }
 
@@ -265,12 +265,12 @@ pub const Client = struct {
         var capacity: usize = 256 * 1024;
         while (true) {
             const buffer = try scratch.alloc(u8, capacity);
-            const written = platform.sb_exec_capture(vector.items.ptr, buffer.ptr, buffer.len);
+            const written = platform.kx_exec_capture(vector.items.ptr, buffer.ptr, buffer.len);
             if (written < 0) return Error.YabaiFailed;
 
             const total: usize = @intCast(written);
             // A query that answers nothing is a refused query, not malformed
-            // JSON: yabai explains itself on stderr (which `sb_exec_capture`
+            // JSON: yabai explains itself on stderr (which `kx_exec_capture`
             // discards) and exits non-zero without writing anything. Every
             // query that answers at all answers with at least `[]`.
             if (total == 0) return Error.YabaiFailed;
@@ -289,7 +289,7 @@ pub const Client = struct {
 /// would refuse to run with is a socket this does not try.
 fn socketPath(buffer: *[std.fs.max_path_bytes]u8) ?[:0]const u8 {
     var environment: [std.fs.max_path_bytes]u8 = undefined;
-    if (!platform.sb_env("USER", &environment, environment.len)) return null;
+    if (!platform.kx_env("USER", &environment, environment.len)) return null;
 
     const user = std.mem.sliceTo(&environment, 0);
     return std.fmt.bufPrintZ(buffer, "/tmp/yabai_{s}.socket", .{user}) catch null;
@@ -328,7 +328,7 @@ fn socketRequest(scratch: std.mem.Allocator, args: []const []const u8) !Answer {
     var capacity: usize = 256 * 1024;
     while (true) {
         const buffer = try scratch.alloc(u8, capacity);
-        const written = platform.sb_socket_message(
+        const written = platform.kx_socket_message(
             path.ptr,
             request.ptr,
             request.len,
@@ -349,6 +349,6 @@ fn socketRequest(scratch: std.mem.Allocator, args: []const []const u8) !Answer {
 /// Resolve an executable name against `PATH` and the Homebrew prefixes.
 fn resolve(gpa: std.mem.Allocator, name: [:0]const u8) ![:0]u8 {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
-    if (!platform.sb_which(name.ptr, &buffer, buffer.len)) return Error.YabaiNotFound;
+    if (!platform.kx_which(name.ptr, &buffer, buffer.len)) return Error.YabaiNotFound;
     return gpa.dupeZ(u8, std.mem.sliceTo(&buffer, 0));
 }

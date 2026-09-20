@@ -40,7 +40,7 @@ extern char** environ;
 
 /* -- mach transport ------------------------------------------------------- */
 
-uint32_t sb_bootstrap_lookup(const char* name) {
+uint32_t kx_bootstrap_lookup(const char* name) {
   mach_port_t bs_port;
   if (task_get_special_port(mach_task_self(), TASK_BOOTSTRAP_PORT, &bs_port) != KERN_SUCCESS) {
     return 0;
@@ -57,11 +57,11 @@ uint32_t sb_bootstrap_lookup(const char* name) {
   return (uint32_t)port;
 }
 
-void sb_port_release(uint32_t port) {
+void kx_port_release(uint32_t port) {
   if (port) mach_port_deallocate(mach_task_self(), (mach_port_t)port);
 }
 
-uint32_t sb_server_register(const char* name) {
+uint32_t kx_server_register(const char* name) {
   mach_port_name_t task = mach_task_self();
 
   mach_port_t port;
@@ -97,7 +97,7 @@ uint32_t sb_server_register(const char* name) {
   return (uint32_t)port;
 }
 
-bool sb_server_publish(uint32_t port, const char* name) {
+bool kx_server_publish(uint32_t port, const char* name) {
   if (!port || !name) return false;
 
   mach_port_t bs_port;
@@ -112,7 +112,7 @@ bool sb_server_publish(uint32_t port, const char* name) {
   return rc == KERN_SUCCESS;
 }
 
-uint32_t sb_uid(void) {
+uint32_t kx_uid(void) {
   return (uint32_t)getuid();
 }
 
@@ -123,7 +123,7 @@ uint32_t sb_uid(void) {
 /// This is the vendored `mach_receive_message` with a timeout the caller picks;
 /// its own timeout path is fixed at a second. The buffer is zeroed first, as
 /// there, so that a failed receive leaves `address` NULL rather than stale.
-static bool sb_server_receive(uint32_t port, struct mach_buffer* buffer,
+static bool kx_server_receive(uint32_t port, struct mach_buffer* buffer,
                               uint32_t timeout_ms) {
   *buffer = (struct mach_buffer) { 0 };
 
@@ -144,7 +144,7 @@ static bool sb_server_receive(uint32_t port, struct mach_buffer* buffer,
   return true;
 }
 
-void sb_server_serve(uint32_t port, sb_handler handler, sb_timer timer) {
+void kx_server_serve(uint32_t port, kx_handler handler, kx_timer timer) {
   // A receive that blocks until a message arrives, or until the timer says it
   // has something to do. With no timer running the wait is infinite, so the idle
   // daemon wakes for nothing at all. SketchyBar's `k` shutdown marker arrives as
@@ -158,7 +158,7 @@ void sb_server_serve(uint32_t port, sb_handler handler, sb_timer timer) {
     // anything it has to show - happens before the loop commits to blocking.
     uint32_t wait_ms = timer ? timer() : 0;
 
-    if (!sb_server_receive(port, &buffer, wait_ms)) continue;
+    if (!kx_server_receive(port, &buffer, wait_ms)) continue;
 
     const char* env = buffer.message.descriptor.address;
     if (!env) continue;
@@ -168,7 +168,7 @@ void sb_server_serve(uint32_t port, sb_handler handler, sb_timer timer) {
   }
 }
 
-int32_t sb_post(uint32_t port, const char* argv, size_t len) {
+int32_t kx_post(uint32_t port, const char* argv, size_t len) {
   if (!port || !argv) return -1;
 
   // The one-way half of the vendored header's send: no response port is named,
@@ -199,7 +199,7 @@ int32_t sb_post(uint32_t port, const char* argv, size_t len) {
   return rc == KERN_SUCCESS ? 0 : -1;
 }
 
-uint32_t sb_port_copy(uint32_t port) {
+uint32_t kx_port_copy(uint32_t port) {
   if (!port) return 0;
 
   // A reference, rather than a second name: the send right is already in this
@@ -213,7 +213,7 @@ uint32_t sb_port_copy(uint32_t port) {
   return port;
 }
 
-int32_t sb_send(uint32_t port, const char* argv, size_t len, char* out, size_t cap,
+int32_t kx_send(uint32_t port, const char* argv, size_t len, char* out, size_t cap,
                 uint32_t timeout_ms) {
   if (!port) return -1;
 
@@ -288,7 +288,7 @@ int32_t sb_send(uint32_t port, const char* argv, size_t len, char* out, size_t c
 
 /* -- process execution ---------------------------------------------------- */
 
-int64_t sb_exec_capture(const char* const argv[], char* out, size_t cap) {
+int64_t kx_exec_capture(const char* const argv[], char* out, size_t cap) {
   if (cap == 0) return -1;
 
   int fds[2];
@@ -338,7 +338,7 @@ int64_t sb_exec_capture(const char* const argv[], char* out, size_t cap) {
   return total;
 }
 
-int32_t sb_exec_status(const char* const argv[]) {
+int32_t kx_exec_status(const char* const argv[]) {
   if (!argv || !argv[0]) return -1;
 
   posix_spawn_file_actions_t actions;
@@ -359,7 +359,7 @@ int32_t sb_exec_status(const char* const argv[]) {
   return -1;
 }
 
-int32_t sb_spawn_detached(const char* const argv[]) {
+int32_t kx_spawn_detached(const char* const argv[]) {
   if (!argv || !argv[0]) return -1;
 
   posix_spawn_file_actions_t actions;
@@ -381,7 +381,7 @@ int32_t sb_spawn_detached(const char* const argv[]) {
   return (int32_t)pid;
 }
 
-bool sb_which(const char* name, char* out, size_t cap) {
+bool kx_which(const char* name, char* out, size_t cap) {
   if (!name || !out || cap == 0) return false;
 
   if (strchr(name, '/') != NULL) {
@@ -413,7 +413,7 @@ bool sb_which(const char* name, char* out, size_t cap) {
   return false;
 }
 
-bool sb_env(const char* name, char* out, size_t cap) {
+bool kx_env(const char* name, char* out, size_t cap) {
   const char* value = getenv(name);
   if (!value || !*value || strlen(value) >= cap) return false;
   strcpy(out, value);
@@ -422,7 +422,7 @@ bool sb_env(const char* name, char* out, size_t cap) {
 
 /* -- unix sockets --------------------------------------------------------- */
 
-int64_t sb_socket_message(const char* path, const void* request, size_t request_size, char* out, size_t cap) {
+int64_t kx_socket_message(const char* path, const void* request, size_t request_size, char* out, size_t cap) {
   if (!path || !request || !out || cap == 0) return -1;
 
   struct sockaddr_un address;
@@ -484,7 +484,7 @@ int64_t sb_socket_message(const char* path, const void* request, size_t request_
 
 /* -- tcp sockets ---------------------------------------------------------- */
 
-int32_t sb_tcp_connect(const char* host, uint16_t port) {
+int32_t kx_tcp_connect(const char* host, uint16_t port) {
   if (!host || !*host) return -1;
 
   char service[8];
@@ -520,7 +520,7 @@ int32_t sb_tcp_connect(const char* host, uint16_t port) {
   return fd;
 }
 
-int64_t sb_tcp_read(int32_t fd, char* out, size_t cap) {
+int64_t kx_tcp_read(int32_t fd, char* out, size_t cap) {
   if (fd < 0 || !out || cap == 0) return -1;
 
   for (;;) {
@@ -530,13 +530,13 @@ int64_t sb_tcp_read(int32_t fd, char* out, size_t cap) {
   }
 }
 
-void sb_tcp_close(int32_t fd) {
+void kx_tcp_close(int32_t fd) {
   if (fd >= 0) close(fd);
 }
 
 /* -- fonts ---------------------------------------------------------------- */
 
-bool sb_app_font_path(char* out, size_t cap) {
+bool kx_app_font_path(char* out, size_t cap) {
   // A descriptor match, rather than CTFontCreateWithName, because the latter
   // silently substitutes a different font when the requested one is missing.
   const void* keys[] = { kCTFontFamilyNameAttribute };
@@ -571,7 +571,7 @@ bool sb_app_font_path(char* out, size_t cap) {
 
 /* -- battery -------------------------------------------------------------- */
 
-bool sb_battery(int32_t* percent, bool* charging) {
+bool kx_battery(int32_t* percent, bool* charging) {
   CFTypeRef blob = IOPSCopyPowerSourcesInfo();
   if (!blob) return false;
 
@@ -605,7 +605,7 @@ bool sb_battery(int32_t* percent, bool* charging) {
 
 /* -- clock ---------------------------------------------------------------- */
 
-void sb_clock(char* icon, size_t icon_cap, char* label, size_t label_cap) {
+void kx_clock(char* icon, size_t icon_cap, char* label, size_t label_cap) {
   static bool locale_ready = false;
   if (!locale_ready) {
     setlocale(LC_TIME, "");
@@ -622,7 +622,7 @@ void sb_clock(char* icon, size_t icon_cap, char* label, size_t label_cap) {
 
 /* -- kernel readings ------------------------------------------------------- */
 
-double sb_cpu_load(void) {
+double kx_cpu_load(void) {
   // Ticks are cumulative, so there is no "current" CPU usage to read: what is
   // asked for is the rate between two readings, which is why this remembers the
   // last one. Mach's own accounting is the source; nothing is forked.
@@ -656,7 +656,7 @@ double sb_cpu_load(void) {
   return (double)busy / (double)total;
 }
 
-double sb_gpu_load(void) {
+double kx_gpu_load(void) {
   // Apple's GPU driver publishes a performance dictionary, and "Device
   // Utilization %" in it is the instantaneous figure the system's own tools
   // show. Unlike the CPU's tick counters there is nothing to difference here:
@@ -702,19 +702,19 @@ double sb_gpu_load(void) {
 /// ports' bytes a second time; and `anpi`, `anri` and `nan` are the interfaces
 /// the system keeps for itself, up on every machine and carrying nothing of the
 /// user's.
-static const char* const sb_virtual_links[] = {
+static const char* const kx_virtual_links[] = {
     "awdl", "llw", "ap", "utun", "gif", "stf", "ipsec", "tun", "tap",
     "bridge", "vmenet", "anpi", "anri", "nan", NULL,
 };
 
-static bool sb_virtual_link(const char* name) {
-  for (size_t i = 0; sb_virtual_links[i]; i++) {
-    if (strncmp(name, sb_virtual_links[i], strlen(sb_virtual_links[i])) == 0) return true;
+static bool kx_virtual_link(const char* name) {
+  for (size_t i = 0; kx_virtual_links[i]; i++) {
+    if (strncmp(name, kx_virtual_links[i], strlen(kx_virtual_links[i])) == 0) return true;
   }
   return false;
 }
 
-bool sb_net_bytes(uint64_t* received, uint64_t* sent) {
+bool kx_net_bytes(uint64_t* received, uint64_t* sent) {
   // The 64-bit form of the interface list: the counters in the 32-bit `if_data`
   // would wrap after 4 GB, which a fast link reaches in seconds.
   int mib[6] = {CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0};
@@ -738,7 +738,7 @@ bool sb_net_bytes(uint64_t* received, uint64_t* sent) {
       struct if_msghdr2* link = (struct if_msghdr2*)(void*)header;
       char name[IFNAMSIZ];
       if ((link->ifm_flags & IFF_UP) != 0 && (link->ifm_flags & IFF_LOOPBACK) == 0 &&
-          if_indextoname(link->ifm_index, name) != NULL && !sb_virtual_link(name)) {
+          if_indextoname(link->ifm_index, name) != NULL && !kx_virtual_link(name)) {
         in += link->ifm_data.ifi_ibytes;
         out += link->ifm_data.ifi_obytes;
       }
@@ -752,24 +752,24 @@ bool sb_net_bytes(uint64_t* received, uint64_t* sent) {
   return true;
 }
 
-uint8_t sb_net_link(void) {
+uint8_t kx_net_link(void) {
   // The system's own answer to "what is the internet on": the primary
   // interface, from the store the network stack keeps its state in - the record
   // `scutil` prints. It is absent when nothing is connected, which is the whole
   // of the disconnected case.
   SCDynamicStoreRef store = SCDynamicStoreCreate(kCFAllocatorDefault, CFSTR("kxdesk"), NULL, NULL);
-  if (!store) return SB_NET_LINK_DISCONNECTED;
+  if (!store) return KX_NET_LINK_DISCONNECTED;
 
   CFDictionaryRef global = SCDynamicStoreCopyValue(store, CFSTR("State:/Network/Global/IPv4"));
   CFRelease(store);
-  if (!global) return SB_NET_LINK_DISCONNECTED;
+  if (!global) return KX_NET_LINK_DISCONNECTED;
 
   char name[IFNAMSIZ] = {0};
   CFStringRef primary = CFDictionaryGetValue(global, CFSTR("PrimaryInterface"));
   const bool named = primary != NULL &&
                      CFStringGetCString(primary, name, sizeof(name), kCFStringEncodingUTF8);
   CFRelease(global);
-  if (!named || name[0] == '\0') return SB_NET_LINK_DISCONNECTED;
+  if (!named || name[0] == '\0') return KX_NET_LINK_DISCONNECTED;
 
   // Wi-Fi from anything else is the media the kernel reports for that
   // interface, and not its name: `en0` is the Wi-Fi on a laptop and the wire on
@@ -781,7 +781,7 @@ uint8_t sb_net_link(void) {
   snprintf(media.ifm_name, sizeof(media.ifm_name), "%s", name);
 
   const int probe = socket(AF_INET, SOCK_DGRAM, 0);
-  if (probe < 0) return SB_NET_LINK_WIRED;
+  if (probe < 0) return KX_NET_LINK_WIRED;
   // `ifm_active` is what the interface is running as right now, where
   // `ifm_current` is what it is configured for - and the network type is the
   // high bits of it, `IFM_TYPE`, not the sub-type `IFM_TMASK` masks off.
@@ -789,10 +789,10 @@ uint8_t sb_net_link(void) {
                         IFM_TYPE(media.ifm_active) == IFM_IEEE80211;
   close(probe);
 
-  return wireless ? SB_NET_LINK_WIFI : SB_NET_LINK_WIRED;
+  return wireless ? KX_NET_LINK_WIFI : KX_NET_LINK_WIRED;
 }
 
-bool sb_dark_mode(void) {
+bool kx_dark_mode(void) {
   // The appearance as the system records it, rather than through `System
   // Events`: an Apple Event to another application needs Automation (and, for
   // System Events, Accessibility) permission, and macOS asks again for every
@@ -808,7 +808,7 @@ bool sb_dark_mode(void) {
   return dark;
 }
 
-bool sb_open_url(const char* url) {
+bool kx_open_url(const char* url) {
   NSString* text = [NSString stringWithUTF8String:url];
   if (!text) return false;
 
@@ -818,7 +818,7 @@ bool sb_open_url(const char* url) {
   return [[NSWorkspace sharedWorkspace] openURL:target];
 }
 
-bool sb_clipboard_set(const char* text) {
+bool kx_clipboard_set(const char* text) {
   if (!text) return false;
 
   /* The caller is a thread of its own that outlives this call many times over,

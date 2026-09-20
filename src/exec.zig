@@ -12,6 +12,6 @@ const platform = @import("platform.zig");
 /// Absolute path of an executable, or an error when it is not installed.
 pub fn path(gpa: std.mem.Allocator, name: [:0]const u8) ![:0]u8 {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
-    if (!platform.sb_which(name.ptr, &buffer, buffer.len)) return error.NotInstalled;
+    if (!platform.kx_which(name.ptr, &buffer, buffer.len)) return error.NotInstalled;
     return gpa.dupeZ(u8, std.mem.sliceTo(&buffer, 0));
 }

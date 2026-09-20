@@ -472,7 +472,7 @@ pub const Timer = struct {
         };
         // A ring that did not happen is worth saying out loud: the timer would
         // otherwise look like it worked, and the notification is the point.
-        const status = platform.sb_exec_status(&vector);
+        const status = platform.kx_exec_status(&vector);
         if (status != 0) {
             std.debug.print("kxdesk: could not post the interval notification (status {d})\n", .{status});
         }

@@ -97,7 +97,7 @@ pub fn postReply(port: u32, reply: Reply) void {
 
     var buffer: [max_reply]u8 = undefined;
     const framed = frame(&buffer, reply);
-    _ = platform.sb_post(port, framed.ptr, framed.len);
+    _ = platform.kx_post(port, framed.ptr, framed.len);
 }
 
 /// `OK\0<payload>\0` / `ERR\0<message>\0`, truncated to fit `buffer`.
@@ -190,14 +190,14 @@ pub fn query(
     args: []const []const u8,
     out: []u8,
 ) ?[]const u8 {
-    const port = platform.sb_bootstrap_lookup(sb.control_service);
+    const port = platform.kx_bootstrap_lookup(sb.control_service);
     if (port == 0) return null;
-    defer platform.sb_port_release(port);
+    defer platform.kx_port_release(port);
 
     const message = frameRequest(gpa, verb, args) catch return null;
     defer gpa.free(message);
 
-    const written = platform.sb_send(
+    const written = platform.kx_send(
         port,
         message.ptr,
         message.len,
@@ -220,9 +220,9 @@ fn exchange(
     out: []u8,
 ) !?[]const u8 {
     const port = try connect(gpa, io);
-    defer platform.sb_port_release(port);
+    defer platform.kx_port_release(port);
 
-    const written = platform.sb_send(
+    const written = platform.kx_send(
         port,
         message.ptr,
         message.len,
@@ -258,7 +258,7 @@ fn frameRequest(gpa: std.mem.Allocator, verb: []const u8, args: []const []const 
 /// Resolve the daemon's control service, asking launchd to start the agent when
 /// nothing is listening.
 fn connect(gpa: std.mem.Allocator, io: std.Io) !u32 {
-    const existing = platform.sb_bootstrap_lookup(sb.control_service);
+    const existing = platform.kx_bootstrap_lookup(sb.control_service);
     if (existing != 0) return existing;
 
     // Nothing is answering. launchd owns the agent, so it is asked to start it -
@@ -269,7 +269,7 @@ fn connect(gpa: std.mem.Allocator, io: std.Io) !u32 {
     var waited: u32 = 0;
     while (waited < timeouts.start_timeout_ms) : (waited += timeouts.start_poll_ms) {
         std.Io.sleep(io, std.Io.Duration.fromMilliseconds(timeouts.start_poll_ms), .awake) catch {};
-        const port = platform.sb_bootstrap_lookup(sb.control_service);
+        const port = platform.kx_bootstrap_lookup(sb.control_service);
         if (port != 0) return port;
     }
 
@@ -284,7 +284,7 @@ fn startAgent(gpa: std.mem.Allocator, io: std.Io) !bool {
     defer gpa.free(launchctl);
 
     for (agent_labels) |label| {
-        const target = try std.fmt.allocPrint(gpa, "gui/{d}/{s}", .{ platform.sb_uid(), label });
+        const target = try std.fmt.allocPrint(gpa, "gui/{d}/{s}", .{ platform.kx_uid(), label });
         defer gpa.free(target);
 
         const result = std.process.run(gpa, io, .{

@@ -136,7 +136,7 @@ pub const Updater = struct {
         var percent: i32 = 0;
         var charging = false;
         // A machine without a battery simply has no reading to publish.
-        if (!platform.sb_battery(&percent, &charging)) return;
+        if (!platform.kx_battery(&percent, &charging)) return;
 
         const icon = if (charging) theme.glyph.battery_charging else switch (percent) {
             90...100 => theme.glyph.battery_full,
@@ -163,7 +163,7 @@ pub const Updater = struct {
     }
 
     pub fn calendar(self: *Updater) !void {
-        platform.sb_clock(
+        platform.kx_clock(
             &self.clock_icon,
             self.clock_icon.len,
             &self.clock_label,
@@ -193,8 +193,8 @@ pub const Updater = struct {
         }
         self.last_sample = sampled;
 
-        const cpu = platform.sb_cpu_load();
-        const gpu = platform.sb_gpu_load();
+        const cpu = platform.kx_cpu_load();
+        const gpu = platform.kx_gpu_load();
         const traffic = self.pollTraffic(sampled);
 
         if (bar) |client| {
@@ -235,7 +235,7 @@ pub const Updater = struct {
     fn pollTraffic(self: *Updater, sampled: i64) ?Traffic {
         var received: u64 = 0;
         var sent: u64 = 0;
-        if (!platform.sb_net_bytes(&received, &sent)) return null;
+        if (!platform.kx_net_bytes(&received, &sent)) return null;
 
         var rates: ?Traffic = null;
         if (self.net_sampled != 0 and sampled > self.net_sampled and
@@ -318,7 +318,7 @@ fn showLink(client: *sb.Client) !void {
 /// which it never should - reads as the disconnected mark rather than as a link
 /// that is not there.
 fn netLink() platform.Link {
-    return std.enums.fromInt(platform.Link, platform.sb_net_link()) orelse .disconnected;
+    return std.enums.fromInt(platform.Link, platform.kx_net_link()) orelse .disconnected;
 }
 
 /// `"00:00".substring(0, 5 - value.length) + value` - left-pad the timer to the

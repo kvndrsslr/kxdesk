@@ -67,7 +67,7 @@ pub const Store = struct {
     /// prefix, which is replaced wholesale.
     pub fn defaultPath(buffer: *[std.fs.max_path_bytes]u8) []const u8 {
         var environment: [std.fs.max_path_bytes]u8 = undefined;
-        if (platform.sb_env("KXDESK_STATE", &environment, environment.len)) {
+        if (platform.kx_env("KXDESK_STATE", &environment, environment.len)) {
             const value = std.mem.sliceTo(&environment, 0);
             if (value.len > 0 and value.len <= buffer.len) {
                 @memcpy(buffer[0..value.len], value);
@@ -75,7 +75,7 @@ pub const Store = struct {
             }
         }
 
-        const home = if (platform.sb_env("HOME", &environment, environment.len))
+        const home = if (platform.kx_env("HOME", &environment, environment.len))
             std.mem.sliceTo(&environment, 0)
         else
             "/tmp";

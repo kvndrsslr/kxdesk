@@ -42,7 +42,7 @@ const Popup = enum { show, hide };
 fn openPage(url: []const u8) !void {
     var target: [std.fs.max_path_bytes]u8 = undefined;
     const terminated = try std.fmt.bufPrintZ(&target, "{s}", .{url});
-    if (!platform.sb_open_url(terminated.ptr)) return error.CouldNotOpenUrl;
+    if (!platform.kx_open_url(terminated.ptr)) return error.CouldNotOpenUrl;
 }
 
 /// Space items are named `space.<index>`, and the index is the space's `SID`.
@@ -279,7 +279,7 @@ pub const Dispatcher = struct {
 
         var target: [std.fs.max_path_bytes]u8 = undefined;
         const terminated = try std.fmt.bufPrintZ(&target, "{s}", .{url});
-        if (!platform.sb_open_url(terminated.ptr)) return error.CouldNotOpenUrl;
+        if (!platform.kx_open_url(terminated.ptr)) return error.CouldNotOpenUrl;
     }
 
     /// The calendar's click: collapse the bar down to the essentials and back.
