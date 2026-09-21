@@ -20,34 +20,13 @@ pub const Props = struct {
     items: [64][]const u8 = undefined,
     len: usize = 0,
 
-    /// Append a pre-built property.
-    ///
-    /// The list is bounded rather than grown: a `Props` is a handful of
-    /// properties assembled on the stack for one `--set`, and the bound is far
-    /// above the largest item in `bar.zig`. Running past it is a mistake in this
-    /// file, so it is caught here rather than by writing over the fields that
-    /// follow.
-    pub fn raw(self: *Props, property: []const u8) void {
+    /// Append a pre-built property. Bounded by design: a `Props` is a handful of
+    /// properties for one `--set`, and `std.debug.assert` catches an overflow
+    /// rather than letting it write over the fields that follow.
+    fn raw(self: *Props, property: []const u8) void {
         std.debug.assert(self.len < self.items.len);
         self.items[self.len] = property;
         self.len += 1;
-    }
-
-    /// Append a formatted property.
-    pub fn fmt(self: *Props, comptime format: []const u8, values: anytype) !void {
-        self.raw(try self.fmtValue(format, values));
-    }
-
-    pub fn text(self: *Props, key: []const u8, value: []const u8) !void {
-        try self.fmt("{s}={s}", .{ key, value });
-    }
-
-    pub fn num(self: *Props, key: []const u8, value: anytype) !void {
-        try self.fmt("{s}={d}", .{ key, value });
-    }
-
-    pub fn color(self: *Props, key: []const u8, value: theme.Color) !void {
-        try self.fmt("{s}=0x{x:0>8}", .{ key, value });
     }
 
     /// `value` as the `0xAARRGGBB` string SketchyBar spells colours with,

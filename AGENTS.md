@@ -44,23 +44,24 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 
 ## Code Conventions & Common Patterns
 
-- Every file opens with `//!` module doc stating purpose + invariants. Keep it; new files need one.
+- Every file opens with a `//!` module doc: one purpose sentence plus the facts that hold module-wide. A `///` states the caller-facing contract; an inline `//` carries only what the code cannot (a measured constant, a fork quirk, a wire format, an ordering requirement). No narration, no history, no restating code or an assert, no section banners.
+- SketchyBar assembly goes through `src/config.zig` (`config.declare`/`add`/`subscribe`/`move`/`remove`, and `config.node` for comptime property literals), `src/props.zig:Props.write` for values only known at runtime, and `src/style.zig` for anything an item draws with. Never hand-spell `key=value` property strings or `--add`/`--subscribe` boilerplate. Inside a node a nested plain struct is a node and a leaf named `value` collapses to its parent's key.
 - Single source of truth, never restated: commands in `src/commands.zig` (help/completions/validation derive via `src/cli.zig`); version in `build.zig.zon` (injected as `build_options` in `build.zig:26-28`).
 - No-alloc hot paths: `src/props.zig:Props` (4 KiB scratch + 64 items, `std.debug.assert` on overflow), fixed `[max_path_bytes]` buffers, `bufPrint` into caller buffers. Do not introduce allocators there.
 - Per-command arena: everything a command allocates comes from `Context.arena`; freed wholesale on return — no individual frees.
 - Concurrency: receive-loop handlers run one at a time and share `Daemon.bar`; background/command tasks build their own `sb.Client`. Shared mutable item state (e.g. github URL registry) under mutex.
-- Error handling: named errors (`error.NotInstalled`, `error.OnePasswordUnavailable`, `error.Unavailable`); background failures log (`kxdesk: background refresh failed: …`) and never take the loop down (`src/background.zig:53-58`).
+- Error handling: named errors (`error.NotInstalled`, `error.OnePasswordUnavailable`, `error.Unavailable`); failures log through `src/log.zig` (`log.warn`; `log.Once` reports a repeating failure once) and never take the loop down.
 - Bounded static sizes: `control.max_arguments = 8`, `Props` 64 items, `path` buffers. Overflow = bug, assert it.
 - External tools resolved to absolute paths via `src/exec.zig:path` — launchd `PATH` lacks Homebrew; never shell out by bare name, never use a shell.
 - Store rules (`src/store.zig`): never take daemon down; corrupt DB renamed to `state.db.corrupt-<timestamp>` and replaced, never repaired in place; `schema_version` bump + `migrate` step together.
-- Bar reload leaks: restate `script=`/`click_script=`/`drawing` clears every apply; retiring an item = removing it + listing in `retired_items` (`src/bar.zig:30-40,62-63`).
+- Bar reload leaks: `Script.apply` clears `script=`/`click_script=` on every item it configures, so only `drawing` is restated by an item's own props; retiring an item = removing it + listing it in `retired_items` (`src/bar.zig:21`).
 
 ## Important Files
 
 - Entry: `src/main.zig` (`Daemon`, receive loop, client dispatch).
 - CLI surface: `src/commands.zig` (registry + every `run`), `src/cli.zig` (help/completions/validation).
 - Transport: `src/control.zig` (CMD/OK/ERR), `src/platform.zig`/`.m`/`.h`, `src/sb.zig` (bar client).
-- Config/render: `src/bar.zig`, `src/theme.zig`, `src/props.zig`, `src/items_yabai.zig`, `src/items_system.zig`, `src/items_usage.zig`, `src/items_github.zig`, `src/items_brew.zig`.
+- Config/render: `src/config.zig` (the SketchyBar command layer), `src/style.zig` (shared fonts, chips, ring/graph look and geometry), `src/props.zig` (runtime property bridge), `src/log.zig`, `src/bar.zig`, `src/theme.zig`, `src/items_yabai.zig`, `src/items_system.zig`, `src/items_usage.zig`, `src/items_github.zig`, `src/items_brew.zig`.
 - Subsystems: `src/store.zig` (SQLite), `src/yabai.zig` + `src/yabai_ops.zig`, `src/pomodoro.zig`, `src/zen.zig`, `src/mode_indicator.zig`, `src/server_mode.zig`, `src/background.zig`, `src/exec.zig`, `src/app_icons.zig`.
 - Build/version/docs: `build.zig`, `build.zig.zon` (version `0.1.24`), `README.md` (only doc), `.gitignore` (only `zig-out/`, `.zig-cache/`).
 
@@ -76,5 +77,5 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 Tests live in `src/tests.zig` and run with `zig build test`: the `test` step in `build.zig` compiles that file alone, so a module's tests are reached only once it is imported there. There is still no CI, no coverage and no fixtures.
 
 - Verify by building + exercising the live binary: `zig build`, then `kxdesk --help`, `kxdesk <command> --help`, `kxdesk state …`, or a checkout `daemon` (after stopping the service).
-- `KXDESK_STATE` (`src/store.zig:64`) is the intended sandbox seam for probes/tests, and the suite sets it to keep off the real store.
+- `KXDESK_STATE` (`src/store.zig:51`) is the intended sandbox seam for probes/tests, and the suite sets it to keep off the real store.
 - New tests only for genuinely uncertain edges, per repo note that platform-free modules are designed testable (`src/platform.zig:1-5`); Fish completions intentionally unsupported (ships untested otherwise).
