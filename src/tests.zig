@@ -1,7 +1,8 @@
-//! First unit tests: store roundtrip, the `KXDESK_STATE` seam, and cli
-//! validation. A dedicated root rather than `main.zig`, which pulls in
-//! `build_options` and the daemon; this only touches the platform-free logic
-//! (`store.zig`, `cli.zig`) plus the platform seam under test.
+//! Unit tests for the platform-free logic: the store and the `KXDESK_STATE`
+//! seam, cli validation, the `config`/`props`/`style` assembly layer, and the
+//! usage/system formatting. A dedicated root rather than `main.zig`, which pulls
+//! in `build_options` and the daemon; the platform seam is linked in, and the
+//! tests stay off it apart from `store`'s file I/O.
 
 const std = @import("std");
 
@@ -762,4 +763,67 @@ test "log.Once reports only a changed message, remembering 160 bytes" {
     try std.testing.expect(once.changed(&first));
     try std.testing.expect(!once.changed(&again));
     try std.testing.expect(!once.changed(&differs_late));
+}
+
+// The readout room a graph pair keeps on its right is sized from the widest
+// reading the pair can print, and the two halves of the pair are told apart by
+// the reading's offset alone.
+test "graphSlot sizes the room from the widest reading of the pair" {
+    const load = style.Graph{ .name = "cpu", .color = theme.green, .readout = true, .top = true, .air = false };
+    const top = style.graphSlot(load, false, true);
+
+    try std.testing.expect(top.drawing);
+    try std.testing.expectEqual(@as(u32, 30), top.padding_right);
+    try std.testing.expectEqual(@as(u32, 28), top.badge.width);
+    try std.testing.expectEqual(@as(i32, 0), top.badge.y_offset);
+    try std.testing.expectEqual(@as(i32, 1), top.badge.x_offset);
+    try std.testing.expectEqual(config.Anchors.bottom_left, top.badge.anchor);
+    try std.testing.expectEqualStrings("right", top.badge.@"align");
+    try std.testing.expect(!top.badge.background.drawing);
+
+    // A reading in the bottom half is moved a reading's height down from the
+    // middle, which is the only thing telling the two apart.
+    try std.testing.expectEqual(@as(i32, -8), style.graphSlot(load, false, false).badge.y_offset);
+
+    // The icon slot is declared, not left out, and switched off: it is what keeps
+    // the bar's default icon padding off the item's left end.
+    const icon = style.graphSlot(load, true, true);
+    try std.testing.expect(!icon.drawing);
+    try std.testing.expectEqual(@as(u32, 0), icon.padding_right);
+
+    // A pair whose readings run longer keeps a character of air, and the room
+    // grows with it.
+    const rate = style.Graph{ .name = "net.down", .color = theme.blue, .readout = true };
+    const air = style.graphSlot(rate, false, true);
+    try std.testing.expectEqual(@as(u32, 35), air.padding_right);
+    try std.testing.expectEqual(@as(u32, 33), air.badge.width);
+    try std.testing.expectEqualStrings(style.mono(.Bold, 9), air.badge.font);
+    try std.testing.expectEqualStrings(config.color(theme.blue), air.badge.color);
+}
+
+// An empty message is nothing to report, and it does not disturb what the guard
+// remembers.
+test "log.Once never reports an empty message" {
+    var once = log.Once{};
+
+    try std.testing.expect(!once.changed(""));
+    try std.testing.expect(once.changed("kanata refused the message"));
+    try std.testing.expect(!once.changed(""));
+    try std.testing.expect(!once.changed("kanata refused the message"));
+}
+
+// A field named `value` collapses to its parent's key, so a two-level key whose
+// last segment is `value` - the ring's share - is written as the field named for
+// the whole key.
+test "props.write spells a two-level key whose last segment is value" {
+    var props: Props = .{};
+    try props.write(.{
+        .drawing = true,
+        .@"ring.value" = @as(f64, 0.85),
+        .ring = .{ .color = try props.argb(theme.red) },
+    });
+
+    const expected = [_][]const u8{ "drawing=on", "ring.value=0.8500", "ring.color=0xfffa4934" };
+    try std.testing.expectEqual(expected.len, props.slice().len);
+    for (expected, props.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
 }

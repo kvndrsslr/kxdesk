@@ -15,6 +15,7 @@ const log = @import("log.zig");
 const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
+const style = @import("style.zig");
 const theme = @import("theme.zig");
 
 /// The 1Password account whose keys are served, and the only one this touches.
@@ -230,7 +231,7 @@ fn setIndicator(client: *sb.Client, indicator: Indicator) !void {
     const color: theme.Color = switch (indicator) {
         .working => theme.yellow,
         .active => theme.green,
-        .inactive => theme.dark_grey,
+        .inactive => style.dim,
     };
 
     var props: Props = .{};
@@ -665,9 +666,9 @@ fn identityCount(arena: std.mem.Allocator, io: std.Io, ssh_add: []const u8, sock
     return count;
 }
 
-/// The daemon's own environment plus `SSH_AUTH_SOCK`, which is where `ssh-add`
-/// reads the socket from. The daemon is started by launchd, whose environment
-/// says nothing about which agent to use.
+/// The environment this client inherited from whatever started it - a shell, or
+/// the bar's click script - plus `SSH_AUTH_SOCK`, which is where `ssh-add` reads
+/// the socket from: an inherited environment names no agent of its own.
 fn environmentWith(arena: std.mem.Allocator, socket: []const u8) !std.process.Environ.Map {
     var environment = std.process.Environ.Map.init(arena);
 
@@ -829,8 +830,9 @@ fn wireSigning(arena: std.mem.Allocator, io: std.Io, keys: []const Key) !?[]cons
     if (!succeeded(arena, &.{ git, "config", "--global", "user.signingkey", signing.? })) {
         return error.GitConfigFailed;
     }
-    // The signer is named by absolute path, because the daemon's `PATH` is
-    // launchd's and has no Homebrew in it.
+    // The signer is named absolutely: the value goes into git's global config,
+    // and the processes that later use it run with launchd's `PATH`, which has
+    // no Homebrew in it.
     const ssh_keygen = try exec.path(arena, "ssh-keygen");
     if (!succeeded(arena, &.{ git, "config", "--global", "gpg.ssh.program", ssh_keygen })) {
         return error.GitConfigFailed;
@@ -955,8 +957,8 @@ fn terminated(scratch: std.mem.Allocator, argv: []const []const u8) !std.ArrayLi
     return vector;
 }
 
-/// The user's home directory, from the environment the daemon was started with.
-/// The fallback keeps a probe without one working out of `/tmp`.
+/// The user's home directory, from the environment this client inherited. The
+/// fallback keeps a probe without one working out of `/tmp`.
 fn home(arena: std.mem.Allocator) ![]const u8 {
     var environment: [std.fs.max_path_bytes]u8 = undefined;
     if (platform.kx_env("HOME", &environment, environment.len)) {

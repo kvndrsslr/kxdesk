@@ -8,15 +8,15 @@ Swiss-army knife for desktop productivity on macOS, in Zig. One daemon serves Sk
 
 Single binary, single long-lived process (`src/main.zig:Daemon`).
 
-- Transport: `src/platform.m` (`sb_server_serve`) blocks main thread → `onBlock` in `src/main.zig`. Two bootstrap names, one receive port: `org.kdressler.kxdesk` (bar item events via `mach_helper=`) and `org.kdressler.kxdesk.control` (CLI clients).
+- Transport: `src/platform.m` (`kx_server_serve`) blocks main thread → `onBlock` in `src/main.zig`. Two bootstrap names, one receive port: `org.kdressler.kxdesk` (bar item events via `mach_helper=`) and `org.kdressler.kxdesk.control` (CLI clients).
 - Framing: bar events are NUL-separated `key\0value\0…`; control requests are `CMD\0<verb>\0<args>…` (`src/control.zig`). Replies `OK\0<payload>` / `ERR\0<message>` to request reply port; bar sends are one-way.
 - Routing: `isRequest` → control path, else `src/dispatch.zig:Dispatcher` looks up `NAME`/`SENDER` (names mirror `mach_helper` items declared in `src/bar.zig`). No forks on this path; clicks are events.
 - Commands: run as worker tasks on `commands.Context` (own arena freed on return, own `sb.Client`, shared `yabai.Client`, `pomodoro.Timer`, `store.Store`). One `background.Slot` per command in `Daemon.slots` — never run twice, never block loop.
-- Slow refreshes (`brew`, `gh`, usage APIs): `background.Slot.request` → `std.Io.async` pool; task awaits prior `Future` off-loop, applies own bar updates on finish (`src/background.zig`, `src/dispatch.zig:62-63`, `src/items_github.zig`, `src/items_usage.zig`).
-- Bar writes: batched `--set` via `sb.Client`; `bar.zig` emits whole config in one batch (single redraw). Commands calling bar use `Context.ensureBar` with reconnect+retry (`src/commands.zig:55-67`).
+- Slow refreshes (`brew`, `gh`, usage APIs): `background.Slot.request` → `std.Io.async` pool; task awaits prior `Future` off-loop, applies own bar updates on finish (`src/background.zig:Slot`, `src/dispatch.zig`, `src/items_github.zig`, `src/items_usage.zig`).
+- Bar writes: batched `--set` via `sb.Client`; `bar.zig` emits whole config in one batch (single redraw). Commands calling bar use `Context.ensureBar` with reconnect+retry (`src/context.zig:ensureBar`).
 - Platform seam: all Mach/ObjC/libc contact through `src/platform.zig` (`extern "c"`) → `src/platform.m`/`src/platform.h`. Everything else is platform-free logic.
 - State: `src/store.zig:Store` wraps one SQLite file; shared under `std.Io.Mutex`. Best-effort: open failure → `error.Unavailable`, daemon still runs.
-- Exception: `server-mode` runs in the client, not daemon — drives `op`/1Password, whose app integration macOS grants to a shell and refuses to a child of the daemon, of the bar, or of a launchd job's binary (`src/server_mode.zig`, `src/main.zig:22-24`). Its bar item (`server`, `src/bar.zig`) carries the only `click_script` on the bar (`server_mode.clickScript`): a toggle whose `exit` needs no `op` and works, whose `enter` does not — so entering stays a shell command. The client renders that item and serializes changes on a lock in its state dir; the daemon only restores it on `apply` (`commands.restoreState`).
+- Exception: `server-mode` runs in the client, not daemon — drives `op`/1Password, whose app integration macOS grants to a shell and refuses to a child of the daemon, of the bar, or of a launchd job's binary (`src/server_mode.zig:1-10`, `src/main.zig:runLocally`). Its bar item (`server`, `src/bar.zig`) carries the only `click_script` on the bar (`server_mode.clickScript`): a toggle whose `exit` needs no `op` and works, whose `enter` does not — so entering stays a shell command. The client renders that item and serializes changes on a lock in its state dir; the daemon only restores it on `apply` (`commands.restoreState`).
 
 ## Key Directories
 
@@ -45,7 +45,7 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 ## Code Conventions & Common Patterns
 
 - Every file opens with a `//!` module doc: one purpose sentence plus the facts that hold module-wide. A `///` states the caller-facing contract; an inline `//` carries only what the code cannot (a measured constant, a fork quirk, a wire format, an ordering requirement). No narration, no history, no restating code or an assert, no section banners.
-- SketchyBar assembly goes through `src/config.zig` (`config.declare`/`add`/`subscribe`/`move`/`remove`, and `config.node` for comptime property literals), `src/props.zig:Props.write` for values only known at runtime, and `src/style.zig` for anything an item draws with. Never hand-spell `key=value` property strings or `--add`/`--subscribe` boilerplate. Inside a node a nested plain struct is a node and a leaf named `value` collapses to its parent's key.
+- SketchyBar assembly goes through `src/config.zig` (`config.declare`/`add`/`subscribe`/`move`/`remove`, and `config.node` for comptime property literals), `src/props.zig:Props.write` for values only known at runtime, and `src/style.zig` for anything an item draws with. Never hand-spell `key=value` property strings or `--add`/`--subscribe` boilerplate. Inside a node a nested plain struct is a node and a leaf named `value` collapses to its parent's key — so a two-level key whose last segment is `value` is written as a field literally named `"ring.value"`.
 - Single source of truth, never restated: commands in `src/commands.zig` (help/completions/validation derive via `src/cli.zig`); version in `build.zig.zon` (injected as `build_options` in `build.zig:26-28`).
 - No-alloc hot paths: `src/props.zig:Props` (4 KiB scratch + 64 items, `std.debug.assert` on overflow), fixed `[max_path_bytes]` buffers, `bufPrint` into caller buffers. Do not introduce allocators there.
 - Per-command arena: everything a command allocates comes from `Context.arena`; freed wholesale on return — no individual frees.
@@ -78,4 +78,4 @@ Tests live in `src/tests.zig` and run with `zig build test`: the `test` step in 
 
 - Verify by building + exercising the live binary: `zig build`, then `kxdesk --help`, `kxdesk <command> --help`, `kxdesk state …`, or a checkout `daemon` (after stopping the service).
 - `KXDESK_STATE` (`src/store.zig:51`) is the intended sandbox seam for probes/tests, and the suite sets it to keep off the real store.
-- New tests only for genuinely uncertain edges, per repo note that platform-free modules are designed testable (`src/platform.zig:1-5`); Fish completions intentionally unsupported (ships untested otherwise).
+- New tests only for genuinely uncertain edges, per repo note that platform-free modules are designed testable (`src/tests.zig:1-5`); Fish completions intentionally unsupported (ships untested otherwise).

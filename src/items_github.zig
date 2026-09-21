@@ -8,6 +8,7 @@
 
 const std = @import("std");
 
+const config = @import("config.zig");
 const exec = @import("exec.zig");
 const log = @import("log.zig");
 const Props = @import("props.zig").Props;
@@ -23,7 +24,7 @@ pub const template = "github.template";
 
 /// Popup rows, rebuilt from the template on every refresh.
 pub const notification_row = "github.notification.";
-/// What `plugins/github.sh` passed to `--remove`; the regex is delimited by
+/// The pattern the popup rows are removed with; the regex is delimited by
 /// slashes, and the escaped dot keeps it anchored to the row prefix.
 const notification_pattern = "/github.notification\\.*/";
 
@@ -168,8 +169,7 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator, helper: []const u8) anyerror!
     try client.set(bell, props.slice());
 
     // Rows are rebuilt rather than reconciled.
-    try client.arg("--remove");
-    try client.arg(notification_pattern);
+    try config.remove(&client, notification_pattern);
 
     var urls = std.ArrayList([]const u8).empty;
     for (notifications, 1..) |notification, index| {
@@ -259,9 +259,7 @@ fn row(
     try client.arg("--clone");
     try client.arg(name);
     try client.arg(template);
-    try client.arg("--subscribe");
-    try client.arg(name);
-    try client.arg("mouse.clicked");
+    try config.subscribe(client, name, &.{.@"mouse.clicked"});
 
     var icon_buffer: [256]u8 = undefined;
     const icon_text = try std.fmt.bufPrint(&icon_buffer, "{s} {s}:", .{ icon, repo });

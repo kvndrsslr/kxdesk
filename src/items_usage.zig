@@ -252,7 +252,7 @@ fn updateNeuralwatt(
 }
 
 /// OpenRouter: the credit balance from its totals, and nothing to hover: it has
-/// no window endpoint to offer a normal key. See the note at the top of the file.
+/// no window endpoint to offer a normal key.
 fn updateOpenrouter(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -742,18 +742,17 @@ fn fetch(io: std.Io, arena: std.mem.Allocator, url: []const u8, token: []const u
 /// it lasts.
 var refusal: log.Once = .{};
 
-/// The head of a refused body that is quoted; bodies are long, and their head is
-/// what says which refusal this is.
+/// How much of a refused body is compared and quoted: bodies are long, and their
+/// head is what says which refusal this is.
 const refusal_head = 160;
 
 /// Report a refusal with the provider's own words in one line: the alternative is a
-/// number that quietly stops moving.
+/// number that quietly stops moving. The guard compares the head of the body, so a
+/// later refusal with a different body still gets its line.
 fn reportRefusal(url: []const u8, detail: []const u8) void {
-    var buffer: [512]u8 = undefined;
-    const message = std.fmt.bufPrint(&buffer, "{s} refused the request: {s}", .{
-        url, detail[0..@min(detail.len, refusal_head)],
-    }) catch return;
-    if (refusal.changed(message)) log.warn("{s}", .{message});
+    const head = detail[0..@min(detail.len, refusal_head)];
+    if (!refusal.changed(head)) return;
+    log.warn("{s} refused the request: {s}", .{ url, head });
 }
 
 /// Seconds since the epoch.

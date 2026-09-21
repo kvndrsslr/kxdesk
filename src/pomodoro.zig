@@ -3,8 +3,8 @@
 //! The timer belongs to the daemon rather than to the bar: it holds its own
 //! deadline on the awake clock and rings whether or not SketchyBar is running, and
 //! the daemon pushes the countdown to the item only when it changes - once a
-//! second while a phase runs, never while the timer is idle - so no item carries
-//! an `update_freq` and no process is forked per tick.
+//! second while a phase runs, never while the timer is idle. Its own item carries
+//! no `update_freq` and forks nothing: the countdown arrives as a push.
 
 const std = @import("std");
 
@@ -13,6 +13,7 @@ const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const state = @import("store.zig");
+const style = @import("style.zig");
 const theme = @import("theme.zig");
 
 /// The item the daemon drives.
@@ -58,14 +59,6 @@ pub const Phase = enum {
         return switch (self) {
             .work => "work",
             .rest => "break",
-        };
-    }
-
-    /// What the phase is called in the way of a sentence.
-    fn description(self: Phase) []const u8 {
-        return switch (self) {
-            .work => "work",
-            .rest => "rest",
         };
     }
 };
@@ -147,7 +140,7 @@ pub const Timer = struct {
         // rather than a countdown, and it shows nothing.
         const waiting = !self.running and nanos == self.phaseNanos(self.phase);
         const text = if (waiting) "" else time;
-        const color = if (self.running) self.phase.color() else theme.dark_grey;
+        const color = if (self.running) self.phase.color() else style.dim;
 
         const built = std.fmt.bufPrint(key, "{s}:{d}:{s}", .{
             self.phase.name(),
@@ -470,9 +463,4 @@ pub fn parseMinutes(text: []const u8) !u32 {
     const minutes = std.fmt.parseInt(u32, text, 10) catch return error.InvalidArgument;
     if (minutes == 0 or minutes > max_minutes) return error.InvalidArgument;
     return minutes;
-}
-
-/// The `break` phase, under the name a person would use for it.
-pub fn describePhase(phase: Phase) []const u8 {
-    return phase.description();
 }

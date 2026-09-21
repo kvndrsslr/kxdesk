@@ -38,7 +38,11 @@ pub const Props = struct {
     /// Write a nested node as `key=value` properties, the runtime counterpart
     /// of `config.node`: field names become dotted keys, nested structs
     /// descend, a field named `value` collapses to its parent's key, and
-    /// `null` clears.
+    /// `null` clears. Unlike `config.node` a runtime `f64` is spelled `{d:.4}`
+    /// and array leaves are not taken; a field whose name is itself dotted -
+    /// `"ring.value"` - emits that two-level key, which is how a runtime ring
+    /// reading is set, since a field named `value` alone collapses to its
+    /// parent's key.
     pub fn write(self: *Props, node: anytype) !void {
         @setEvalBranchQuota(10_000);
         try self.emit("", node);

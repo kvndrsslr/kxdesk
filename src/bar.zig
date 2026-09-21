@@ -46,17 +46,6 @@ pub const Config = struct {
     helper: []const u8,
 };
 
-/// A badge count's chip: `style.badge`'s look with the count's own value first,
-/// because a node's field order is the property order on the wire.
-const BadgeChip = struct {
-    value: []const u8,
-    font: []const u8 = style.badge.font,
-    anchor: config.Anchors = style.badge.anchor,
-    x_offset: i32 = style.badge.x_offset,
-    y_offset: i32 = style.badge.y_offset,
-    background: @TypeOf(style.badge.background) = style.badge.background,
-};
-
 /// Emit the complete configuration.
 pub fn apply(c: *sb.Client, io: std.Io, config_input: Config) !void {
     for (retired_items) |pattern| try config.remove(c, pattern);
@@ -248,9 +237,7 @@ fn frontAppItems(c: *sb.Client, config_input: Config) !void {
     }
 }
 
-/// Declare a pair of graph items drawn over one another, so that two series share
-/// one window; equal widths are what hold their windows over the same stretch of
-/// time, and each series' readout says which line is which.
+/// Declare one pair of the graph items `style.Graph` describes.
 fn graphPair(c: *sb.Client, comptime pair: [2]style.Graph) !void {
     @setEvalBranchQuota(1_000_000);
     inline for (pair, 0..) |series, index| {
@@ -265,7 +252,6 @@ fn graphPair(c: *sb.Client, comptime pair: [2]style.Graph) !void {
                 .padding_right = style.item_padding,
                 .drawing = true,
                 .associated_display = 1,
-                // A graph draws inside its background's height, not across the whole 24-point bar.
                 .icon = icon_slot,
                 .label = label_slot,
                 .background = .{
@@ -276,12 +262,12 @@ fn graphPair(c: *sb.Client, comptime pair: [2]style.Graph) !void {
                 .graph = .{
                     .color = config.color(series.color),
                     .fill_color = style.graph_fill,
-                    .line_width = 1,
+                    .line_width = style.graph_line_width,
                 },
             }),
         }, "");
-        // The first of a pair takes no room of its own, so the second begins at the
-        // same x and the two are drawn over one another.
+        // The first of a pair takes no room of its own, so the second begins at
+        // the same x.
         if (index == 0) try c.prop("width", "0");
     }
 }
@@ -443,7 +429,7 @@ fn brewItem(c: *sb.Client, config_input: Config) !void {
                 // The count is a badge so that two digits cannot widen the item;
                 // `badge.*` is a property of the local SketchyBar fork - an
                 // upstream bar draws no badge.
-                .badge = BadgeChip{ .value = "?" },
+                .badge = style.BadgeChip{ .value = "?" },
             },
             .label = .{ .value = null, .drawing = false },
             .update_freq = 3600,
@@ -470,7 +456,7 @@ fn githubBell(c: *sb.Client, config_input: Config) !void {
                 .value = theme.glyph.github,
                 .font = style.mono(.Bold, 15),
                 .color = config.color(theme.blue),
-                .badge = BadgeChip{ .value = theme.glyph.loading },
+                .badge = style.BadgeChip{ .value = theme.glyph.loading },
             },
             .label = .{ .value = null, .drawing = false },
             .popup = .{ .@"align" = "right" },

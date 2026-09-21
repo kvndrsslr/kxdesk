@@ -367,8 +367,6 @@ pub const Store = struct {
         }
 
         if (current < 3) {
-            // Nothing interposes if this fails: SQLite reports an unknown
-            // `CREATE TABLE` through the same `exec` as any other statement.
             try execOn(db, "DROP TABLE IF EXISTS usage_samples");
         }
 

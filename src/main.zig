@@ -1,12 +1,11 @@
 //! kxdesk - personal desktop daemon.
 //!
-//! One process serves two things over one mach port: SketchyBar's item events,
-//! routed here by `mach_helper=org.kdressler.kxdesk`, and the command channel
-//! `kxdesk <command> [arguments...]` clients use.
-//!
-//! `kxdesk daemon` is started by launchd, so it starts before SketchyBar and
-//! outlives it. `help`, `completions` and `server-mode` are answered by the binary
-//! itself; the rest is described once in `commands.zig`.
+//! One process serves two things over one mach port: SketchyBar's item events and
+//! the command channel `kxdesk <command> [arguments...]`. Both bootstrap names
+//! share that port. The daemon owns the bar's state, applying the configuration
+//! and restoring the store's state whenever a bar appears. `help`, `completions`
+//! and `server-mode` are answered by the binary itself; the rest is described
+//! once in `commands.zig`.
 
 const std = @import("std");
 

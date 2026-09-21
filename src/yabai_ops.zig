@@ -53,14 +53,15 @@ const managed_signals = [_][]const []const u8{
     &.{ "-m", "signal", "--add", "event=window_created", "app=Telegram", "label=telegram-display-enforcement", "action=zsh -c \"sleep 1.5 && yabai -m window $YABAI_WINDOW_ID --display 1 --focus\"" },
 };
 
-/// Every setting kxdesk asserts on yabai, in the order `~/.yabairc` set them.
+/// Every setting kxdesk asserts on yabai, in the order yabai receives them.
 ///
 /// Flat `key, value, key, value`, because that is the shape `yabai -m config`
 /// reads, and the whole table has to reach yabai in one invocation: a `yabai` per
-/// setting is twenty-three processes and about 460 ms here, against 77 ms for the
+/// setting is twenty-four processes and about 460 ms here, against 77 ms for the
 /// one.
 ///
-/// Settings that file had commented out are not here: they were off.
+/// Settings that stay off are left out: an unasserted setting keeps yabai's
+/// default.
 const settings = [_][]const u8{
     "mouse_follows_focus",         "off",
     "focus_follows_mouse",         "off",
@@ -85,10 +86,10 @@ const settings = [_][]const u8{
     "window_gap",                  "3",
     "external_bar",                "all:26:0",
     "display_arrangement_order",   "horizontal",
-    // Off, where `~/.yabairc` had it on: yabai then writes every event and every
-    // bar query to `/tmp/yabai_kdressler.out.log` on the same thread that
-    // processes them, and the file only grows - 104 MiB in twenty-five minutes,
-    // a drag emitting one event per frame.
+    // Off: yabai then writes every event and every bar query to
+    // `/tmp/yabai_kdressler.out.log` on the same thread that processes them, and
+    // the file only grows - 104 MiB in twenty-five minutes, a drag emitting one
+    // event per frame.
     "debug_output",                "off",
 };
 
@@ -99,7 +100,7 @@ const settings_argv = [_][]const u8{ "-m", "config" } ++ settings;
 /// Assert everything kxdesk manages on yabai: every setting, then every rule,
 /// then every signal.
 ///
-/// One command, because `~/.yabairc` wants all three and this way it is one
+/// One command, because the three are asserted together and this way it is one
 /// round trip to the daemon rather than three - and the three stay reachable on
 /// their own for a targeted refresh.
 pub fn applySettings(context: *Context, args: []const []const u8) anyerror![]const u8 {
@@ -250,8 +251,8 @@ pub fn cycleSpaceWindows(context: *Context, args: []const []const u8) anyerror![
     const arena = context.arena;
     const reverse = hasFlag(args, "--reverse");
 
-    // A query yabai refuses is the shell's every-attempt-failed: nothing to do,
-    // and not an error a keybinding should report.
+    // A query yabai refuses leaves nothing to cycle, and is not an error a
+    // keybinding should report.
     const windows = context.yabai.spaceWindows(arena) catch return "";
     if (windows.len == 0) return "";
 

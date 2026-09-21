@@ -8,11 +8,12 @@
 //!     });
 //!
 //! Leaves are typed: strings go verbatim, `bool` is `on`/`off`, integers are
-//! decimal, enums are their tag (`Anchors`), `color(...)` is `0xAARRGGBB`, and
-//! a `null` leaf emits `key=`, which is how SketchyBar clears a property. A
-//! nested struct is a node: its name joins the dotted key path. Everything is
-//! baked at compile time into one static NUL-separated string - the shape
-//! `sb.Client` ships.
+//! decimal - a float leaf is refused, this side takes comptime values only -
+//! enums are their tag (`Anchors`), `color(...)` is `0xAARRGGBB`, and a `null`
+//! leaf emits `key=`, which is how SketchyBar clears a property. A nested
+//! struct is a node: its name joins the dotted key path. Everything is baked at
+//! compile time into one static NUL-separated string - the shape `sb.Client`
+//! ships.
 
 const std = @import("std");
 

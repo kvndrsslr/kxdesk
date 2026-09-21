@@ -2,9 +2,10 @@
 //! single `--windows` query answers every question an updater asks.
 //!
 //! Two transports, one message. The daemon listens on `/tmp/yabai_<user>.socket`
-//! and answers the framing `yabai -m` itself speaks, which is what everything
-//! here uses first; writes and the socket's failure path go through the binary,
-//! the only way in - yabai exposes no mach service and no library.
+//! and answers the framing `yabai -m` itself speaks, which is what every message
+//! uses first; the binary is the fallback when the socket is not there or does
+//! not answer - the only way in besides it, as yabai exposes no mach service and
+//! no library.
 
 const std = @import("std");
 
@@ -102,9 +103,10 @@ pub const Client = struct {
     /// The yabai binary: the fallback transport, and the only way in when the
     /// socket does not answer.
     exe: [:0]u8,
-    /// Set by the first socket failure. The socket is the fast path, so giving
-    /// up on it is worth one line in the log - the fallback carries the traffic
-    /// from then on, and a line per message would only drown that one.
+    /// Set by the first socket failure, so that one line in the log names the
+    /// failure instead of a line per message. No transport decision reads it: the
+    /// socket is still tried first for every message. The atomic is for the shared
+    /// client, called from the event loop, command tasks and background tasks.
     socket_failure_reported: std.atomic.Value(bool) = .init(false),
 
     pub fn init(gpa: std.mem.Allocator) !Client {
@@ -237,9 +239,9 @@ pub const Client = struct {
         return "";
     }
 
-    /// Say once that the socket is not carrying the traffic, and name what went
-    /// wrong: after this the binary answers everything, so there is nothing else
-    /// to report about it.
+    /// Say once that the socket failed, and name what went wrong: the socket is
+    /// tried for every message regardless, so repeat failures of the same kind
+    /// are not worth a line each.
     fn reportSocketFailure(self: *Client, err: anyerror) void {
         if (self.socket_failure_reported.swap(true, .monotonic)) return;
         log.warn("yabai socket unavailable ({s}), falling back to the binary", .{

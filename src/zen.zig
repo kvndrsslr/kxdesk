@@ -91,8 +91,12 @@ const BarState = struct { items: []const []const u8 = &.{} };
 const Geometry = struct { drawing: []const u8 = "on" };
 const ItemState = struct { geometry: Geometry = .{} };
 
-/// Whether the bar is drawn, per the bell item's `geometry.drawing`; failure means drawn.
+/// Whether the bar is drawn, per the bell item's `geometry.drawing`. An answer
+/// that does not parse means drawn; a bar that cannot be asked is an error.
 fn isVisible(bar: *sb.Client, arena: std.mem.Allocator) !bool {
-    const parsed = bar.query(ItemState, arena, "github.bell") catch return true;
+    const parsed = bar.query(ItemState, arena, "github.bell") catch |err| switch (err) {
+        error.SketchyBarUnavailable, error.ResponseTooLong, error.OutOfMemory => return err,
+        else => return true,
+    };
     return std.mem.eql(u8, parsed.geometry.drawing, "on");
 }

@@ -23,6 +23,9 @@ pub const ring_diameter = 20;
 /// graph without a background height draws across the whole 24-point bar.
 pub const graph_height = 20;
 
+/// A graph's line thickness, in points.
+pub const graph_line_width = 1;
+
 /// A ring's line thickness, in points.
 pub const ring_line_width = 2;
 
@@ -33,9 +36,8 @@ pub const ring_track = config.color(theme.dark_grey);
 /// fill on either would muddle the two lines.
 pub const graph_fill = config.color(theme.graph_no_fill);
 
-/// The visible chip behind a space's label, in points. The updater writes 25,
-/// so a configuration that declares anything else is overruled on the first
-/// tick - 25 is the height the bar shows.
+/// The visible chip behind a space's label, in points - the height the bar
+/// shows.
 pub const space_chip_height = 25;
 
 /// The colour a stale or idle mark wears.
@@ -56,10 +58,8 @@ pub inline fn app(comptime size: u8) []const u8 {
     return std.fmt.comptimePrint("{s}:Regular:{d}.0", .{ theme.app_font, size });
 }
 
-/// The chip behind a badge count: brew's and GitHub's counts wear the same one.
-/// The box is dynamic with a point of air on every side, so the chip hugs the
-/// count - a circle for a single digit - instead of a fixed-height pill.
-/// Use as `.{ .icon = .{ .value = ..., .badge = style.badge } }`.
+/// The chip behind a badge count: a dynamic box with a point of air on every
+/// side, so it hugs the count. Use as `.{ .icon = .{ .badge = style.badge } }`.
 pub const badge = .{
     .font = mono(.Bold, 9),
     .anchor = config.Anchors.bottom_right,
@@ -74,6 +74,20 @@ pub const badge = .{
         .padding_left = 1,
         .padding_right = 1,
     },
+};
+
+/// `badge`'s look with a count in it; every field but `value` is `badge`'s, so
+/// the chip is stated once. `value` leads because a `config.node` literal emits
+/// in field order and the count is the chip's whole text. Write it at the call
+/// site as `style.BadgeChip{ .value = count }` — a struct literal, not a call,
+/// because the literal has to be comptime-known inside `config.node`.
+pub const BadgeChip = struct {
+    value: []const u8,
+    font: []const u8 = badge.font,
+    anchor: config.Anchors = badge.anchor,
+    x_offset: i32 = badge.x_offset,
+    y_offset: i32 = badge.y_offset,
+    background: @TypeOf(badge.background) = badge.background,
 };
 
 /// Popup row background, for the GitHub template and the usage rows. Use as
@@ -170,21 +184,16 @@ const readout_air = 1;
 /// is moved down out of the top half: nine-point digits are about this tall.
 const readout_height = 8;
 
-/// One of a graph item's two text slots - `icon` tells them apart. Both are
-/// declared with no text of their own; what one holds is the room the readings
-/// are drawn in, as its `padding_right` - see `readoutRoom`.
+/// One of a graph item's two text slots - `icon` tells them apart, `high` is
+/// which half of the item its reading sits in. The reading is drawn on the
+/// *label* slot: the two items of a pair overlay, so their label slots coincide
+/// and the readings line up, and the room the readings need is that slot's
+/// `padding_right` (`readoutRoom`) - an item's own padding lies outside the
+/// window it draws into, and a slot that is not drawn has no length.
 ///
-/// The reading is drawn on the *label* slot, the slot after the graph: the two
-/// items of a pair overlay exactly, so their label slots coincide and the two
-/// readings line up, and the icon slot being off is what keeps the bar's
-/// default icon padding off the item's left end. Padding is the only place this
-/// room can live - an item's own padding lies outside the window it draws into,
-/// and a slot that is not drawn has no length.
-///
-/// `high` is which half of the item the reading sits in, and the anchor cannot
-/// say it: a badge hangs up from its slot's bounds, and an empty slot has no
-/// text to have bounds - so the top-half reading sits at the slot's midpoint
-/// and the bottom-half one is moved a reading's height down from there.
+/// The anchor cannot say top from bottom: a badge hangs up from its slot's
+/// bounds, and an empty slot has no text to have bounds. So the top-half reading
+/// sits at the slot's midpoint and the bottom-half one a reading's height below.
 pub fn graphSlot(comptime series: Graph, comptime icon: bool, comptime high: bool) Slot {
     const reading = series.readout and !icon;
     const air: usize = if (series.air) 1 else 0;

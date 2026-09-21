@@ -1,23 +1,10 @@
 //! The daemon's command channel.
 //!
-//! A request is the same NUL-framed block SketchyBar uses for events, with `CMD`
-//! as its first token:
-//!
-//!     CMD\0<verb>\0<argument>...\0\0
-//!
-//! SketchyBar's own traffic can never be mistaken for one. Its events are
-//! `key`/`value` pairs whose keys are `NAME`, `SENDER`, `INFO`, `BUTTON`,
-//! `MODIFIER`, `SELECTED`, `SID`, `DID`, `ONLY` and `YABAI_WINDOW_ID`, and its
-//! shutdown marker is the bare `k`; the receive loop tells the two apart by that
-//! first token alone.
-//!
-//! A reply is posted to the port the request named as its response port:
-//!
-//!     OK\0<payload>\0
-//!     ERR\0<message>\0
-//!
-//! SketchyBar's own sends are one-way, so an event block has no response port
-//! and `postReply` does nothing for it.
+//! A request is the same NUL-framed block SketchyBar uses for events, except that
+//! its first token is `CMD` - `CMD\0<verb>\0<argument>...\0\0` - while an event
+//! block starts with one of its own `key`/`value` keys and names no response
+//! port, so `postReply` does nothing for it. A reply to the port the request
+//! named is `OK\0<payload>\0` or `ERR\0<message>\0`.
 
 const std = @import("std");
 

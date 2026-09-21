@@ -1,22 +1,20 @@
 //! Application name -> icon mapping, read from the installed app font at runtime.
 //!
-//! The font describes its own mapping: the OpenType `meta` table carries a
-//! private data map tagged `APPM` whose payload is JSON listing every ligature
-//! (`:safari:`), the Private Use Area codepoint behind it, and the application
-//! names that resolve to it. Because the codepoints are reassigned by every font
-//! build, the mapping is derived from the installed font rather than compiled in.
-//!
-//! Layout, all big-endian:
-//!
-//!   sfnt header   `sfntVersion` u32 @0, `numTables` u16 @4, then 16-byte records
-//!                 from @12: tag[4], checksum u32, offset u32 (absolute), length u32
-//!   `meta` table  version u32, flags u32, reserved u32, `dataMapsCount` u32 @+12,
-//!                 then 12-byte data maps: tag[4], dataOffset u32, dataLength u32 -
-//!                 where `dataOffset` is relative to the start of `meta`
-//!   `APPM` data   UTF-8 JSON: {"version":1,"release":"2.0.87","icons":[[...]]}
-//!
-//! Every read is bounds checked: a truncated or unrelated font has to degrade to
-//! the fallback icon, never take the helper down with it.
+//! The font describes its own mapping: its OpenType `meta` table carries a
+//! private data map tagged `APPM` whose payload is JSON giving each ligature
+//! (`:safari:`) a Private Use Area codepoint and the application names that
+//! resolve to it. Every font build reassigns those codepoints, so the mapping is
+//! read from the installed font rather than compiled in; every read is bounds
+//! checked, so a truncated font degrades to `:default:`.
+
+// Layout, all big-endian:
+//
+//   sfnt header   `sfntVersion` u32 @0, `numTables` u16 @4, then 16-byte records
+//                 from @12: tag[4], checksum u32, offset u32 (absolute), length u32
+//   `meta` table  version u32, flags u32, reserved u32, `dataMapsCount` u32 @+12,
+//                 then 12-byte data maps: tag[4], dataOffset u32, dataLength u32 -
+//                 where `dataOffset` is relative to the start of `meta`
+//   `APPM` data   UTF-8 JSON: {"version":1,"release":"2.0.87","icons":[[...]]}
 
 const std = @import("std");
 

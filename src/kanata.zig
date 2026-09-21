@@ -271,10 +271,9 @@ fn app(argument: ?[]const u8) ParseError!App {
 /// - not a reason for the channel to stop reading.
 pub fn perform(context: *Context, action: Action) anyerror!void {
     switch (action) {
-        // The helpers that already existed answer with the payload a client
-        // would be sent - they are command implementations - and an action has
-        // nobody to answer, so those payloads are dropped here rather than at
-        // the call sites below.
+        // These helpers return the payload a client would be sent, and an action
+        // has nobody to answer, so the payload is dropped here rather than at the
+        // call sites below.
         .cycle_space_windows => |value| {
             try discard(yabai_ops.cycleSpaceWindows(context, sequenceArgs(value)));
         },
@@ -285,8 +284,8 @@ pub fn perform(context: *Context, action: Action) anyerror!void {
             try discard(yabai_ops.cycleDisplaySpaces(context, sequenceArgs(value)));
         },
         .refresh_yabai => {
-            // The old `op r` binding chained the two with `&&`, so the signals
-            // are only re-provisioned once the rules are in place.
+            // Rules first, then signals: a failed rules refresh stops the signal
+            // refresh too.
             try discard(yabai_ops.refreshRules(context, &.{}));
             try discard(yabai_ops.refreshSignals(context, &.{}));
         },
@@ -332,8 +331,7 @@ fn sequenceArgs(sequence_value: Sequence) []const []const u8 {
 /// `screencapture -ixc`: a selection of the screen, into the clipboard.
 ///
 /// Detached rather than waited for: it lives as long as the user takes to drag
-/// the rectangle, and this thread has a channel to keep reading. The old binding
-/// ran it from a shell, which is also why it used to wait.
+/// the rectangle, and this thread has a channel to keep reading.
 fn screenCapture(context: *Context) !void {
     const arena = context.arena;
     const capture = try exec.path(arena, "screencapture");
@@ -383,11 +381,10 @@ fn spawn(arena: std.mem.Allocator, argv: []const []const u8) !void {
     if (platform.kx_spawn_detached(vector.ptr) < 0) return error.LaunchFailed;
 }
 
-/// Record the PATH this daemon runs things with, and where the channel stands,
-/// where the old `hyper p` binding wrote. skhd recorded its own PATH there; what
-/// can be wrong now is this side of the channel - the daemon runs under launchd,
-/// whose PATH is not a login shell's, which is exactly why every external
-/// command here is resolved rather than assumed.
+/// Record the PATH this daemon runs things with, and where the channel stands, in
+/// `/tmp/kanata-path`. The daemon runs under launchd, whose PATH is not a login
+/// shell's, which is exactly why every external command here is resolved rather
+/// than assumed.
 fn dumpPath(context: *Context) !void {
     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const path = if (platform.kx_env("PATH", &path_buffer, path_buffer.len))
@@ -422,9 +419,8 @@ fn handledCount() u64 {
 /// with no colour of its own.
 ///
 /// The names are the ones `kanata.kbd` defines and the indices are the ones
-/// `kxdesk set_mode_indicator` has always taken - the same call the skhd config
-/// made on entering each mode. `-` is "no mode", which is the default layer: the
-/// bar's space icons stop highlighting.
+/// `kxdesk set_mode_indicator` takes. `-` is "no mode", which is the default
+/// layer: the bar's space icons stop highlighting.
 pub fn indicatorFor(layer: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, layer, "op")) return "1";
     if (std.mem.eql(u8, layer, "wmode")) return "2";
