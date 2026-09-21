@@ -1,16 +1,19 @@
-//! Native updater for the space strips and the per-display front-app items.
+//! Native updater for the space strips and the per-display front-app items:
+//! every `yabai_update` becomes one batch, assembled from the yabai space and
+//! window queries.
 //!
-//! One `yabai_update` event becomes one mach message. The shell version this
-//! replaces forked `yabai`, `jq` and `sketchybar` several times per event, and
-//! re-queried yabai once per stacked window; here every answer comes from the two
-//! queries already in hand. Application icons come from the installed app font,
-//! which publishes its own mapping (see `app_icons.zig`).
+//! A query that fails degrades the update rather than aborting it, and a failure
+//! that repeats is reported once. The display map is cached until SketchyBar
+//! reports a `display_change`. Application icons come from the installed app
+//! font, which publishes its own mapping (see `app_icons.zig`).
 
 const std = @import("std");
 
 const app_icons = @import("app_icons.zig");
+const log = @import("log.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
+const style = @import("style.zig");
 const theme = @import("theme.zig");
 const yabai = @import("yabai.zig");
 
@@ -21,50 +24,47 @@ const max_spaces = 16;
 
 /// A display as SketchyBar sees it.
 const SbDisplay = struct {
-    @"DirectDisplayID": u32 = 0,
+    DirectDisplayID: u32 = 0,
     @"arrangement-id": u32 = 0,
 };
 
+/// The space strips, the front-app items and their status marks, over the
+/// daemon's clients.
 pub const Updater = struct {
     yabai_client: *yabai.Client,
     bar: *sb.Client,
     scratch: *std.heap.ArenaAllocator,
-    /// Reused buffer for SketchyBar's `--query displays` response.
-    response: []u8,
     /// Application name -> app-font ligature, derived from the installed font.
     icons: *const app_icons.Mapping,
     /// The display map gets its own arena because it outlives the per-update
     /// scratch arena, and is rebuilt only when the displays change.
     displays: std.heap.ArenaAllocator,
     arrangement: ?DisplayMap = null,
-    /// Set when a display turned out to be missing from the map, which means it
-    /// went stale and has to be rebuilt before the next update.
+    /// Set when a display was missing from the map, so the map is rebuilt before
+    /// the next update.
     stale: bool = false,
-    /// The last failure reported for each query the updater depends on, so a
-    /// failure that keeps happening is logged when it changes rather than on
-    /// every window focus. Cleared by that query answering again.
-    last_error: struct { spaces: ?[]const u8 = null, displays: ?[]const u8 = null } = .{},
+    /// The last failure reported for each query the updater depends on, cleared
+    /// by that query answering again.
+    reported: struct { spaces: log.Once = .{}, displays: log.Once = .{} } = .{},
 
+    /// One updater over the daemon's bar client, scratch arena and icon map.
     pub fn init(
         gpa: std.mem.Allocator,
         yabai_client: *yabai.Client,
         bar: *sb.Client,
         scratch: *std.heap.ArenaAllocator,
-        response: []u8,
         icons: *const app_icons.Mapping,
     ) Updater {
         return .{
             .yabai_client = yabai_client,
             .bar = bar,
             .scratch = scratch,
-            .response = response,
             .icons = icons,
             .displays = std.heap.ArenaAllocator.init(gpa),
         };
     }
 
-    /// Drop the cached display map. Called when SketchyBar reports that the
-    /// display configuration changed.
+    /// Drop the cached display map, for a `display_change`.
     pub fn invalidateDisplays(self: *Updater) void {
         self.arrangement = null;
         _ = self.displays.reset(.retain_capacity);
@@ -72,30 +72,24 @@ pub const Updater = struct {
 
     /// Refresh every space, `front_app` and `yabai_status` item.
     ///
-    /// A query that fails degrades rather than taking the update down: the strips
-    /// and the front-app labels come from different queries, and yabai refuses
+    /// A failed query degrades rather than taking the update down: yabai refuses
     /// the space and display queries on this machine whenever it cannot place a
-    /// display (it aborts mid-serialisation and answers `[`). Losing the strips
-    /// for one update is a smaller failure than freezing everything.
+    /// display, aborting mid-serialisation with an answer of `[`.
     pub fn update(self: *Updater) !void {
         const arena = self.scratch.allocator();
         defer _ = self.scratch.reset(.retain_capacity);
 
-        // A failed space query costs the strips their colours and the front-app
-        // items their icon; a failed display query costs the front-app items
-        // everything. Neither is worth freezing the bar over, so both degrade and
-        // say so once.
         var spaces: []yabai.Space = &.{};
         if (self.yabai_client.spaces(arena)) |answered| {
             spaces = answered;
-            self.last_error.spaces = null;
+            self.reported.spaces.clear();
         } else |err| {
-            report(&self.last_error.spaces, err);
+            report(&self.reported.spaces, err);
         }
 
         const windows = try self.yabai_client.windows(arena);
         const arrangement = self.displayArrangement() catch |err| blk: {
-            report(&self.last_error.displays, err);
+            report(&self.reported.displays, err);
             break :blk DisplayMap{};
         };
 
@@ -107,14 +101,14 @@ pub const Updater = struct {
         if (self.stale) self.invalidateDisplays();
     }
 
-    /// Cheap path for `window_title_changed`: only the label of the front-app
-    /// item belonging to the changed window's display moves.
+    /// Cheap path for `window_title_changed`: only the label of the changed
+    /// window's own display moves.
     pub fn updateTitle(self: *Updater, window_id: []const u8) !void {
         const arena = self.scratch.allocator();
         defer _ = self.scratch.reset(.retain_capacity);
 
         const window = self.yabai_client.window(arena, window_id) catch |err| {
-            report(&self.last_error.spaces, err);
+            report(&self.reported.spaces, err);
             return;
         };
         const arrangement = try self.displayArrangement();
@@ -128,34 +122,26 @@ pub const Updater = struct {
 
         var title_buf: [max_title + 3]u8 = undefined;
         var props: Props = .{};
-        try props.text("label", truncateTitle(window.title, &title_buf));
+        try props.write(.{ .label = truncateTitle(window.title, &title_buf) });
         try self.bar.set(item, props.slice());
         try self.bar.commit();
     }
 
-    /// Report a failed query once, into the guard for that query. The bar asks
-    /// again on every window focus, so a failure that keeps happening must not be
-    /// logged every time; a different one is worth saying.
-    fn report(guard: *?[]const u8, err: anyerror) void {
+    /// Report a failed query once, into the guard for that query: the bar asks
+    /// again on every window focus, so the same failure must not be logged every
+    /// time.
+    fn report(guard: *log.Once, err: anyerror) void {
         const name = @errorName(err);
-        if (guard.*) |previous| {
-            if (std.mem.eql(u8, previous, name)) return;
-        }
-        guard.* = name;
-        std.debug.print("kxdesk: yabai query failed: {s}\n", .{name});
+        var buffer: [96]u8 = undefined;
+        const message = std.fmt.bufPrint(&buffer, "yabai query failed: {s}", .{name}) catch name;
+        if (guard.changed(message)) log.warn("{s}", .{message});
     }
 
-    /// Map a yabai display *index* to the SketchyBar arrangement id used by
-    /// `front_app.N` items and `associated_display=N`.
+    /// The yabai display *index* -> SketchyBar arrangement id map, cached until
+    /// the display configuration changes (see `invalidateDisplays`).
     ///
-    /// The yabai display id is a `CGDirectDisplayID`, which is what SketchyBar
-    /// reports as `DirectDisplayID`; matching on that is exact, unlike the shell
-    /// version's assumption that display ids are dense and index-aligned.
-    ///
-    /// The result is cached: it only changes when the display configuration
-    /// does, and this runs on every window focus and every window title change,
-    /// where a second round trip is pure latency. `--subscribe` on
-    /// `display_change` tells us when to throw it away.
+    /// Matching the `CGDirectDisplayID` the two tools both report is exact,
+    /// unlike assuming display ids are dense and index-aligned.
     fn displayArrangement(self: *Updater) !DisplayMap {
         if (self.arrangement) |cached| return cached;
 
@@ -165,36 +151,24 @@ pub const Updater = struct {
         // window is on, and that is the focused one for as long as yabai cannot
         // name the others.
         const displays = if (self.yabai_client.displays(arena)) |list| blk: {
-            self.last_error.displays = null;
+            self.reported.displays.clear();
             break :blk list;
         } else |err| blk: {
-            report(&self.last_error.displays, err);
+            report(&self.reported.displays, err);
             break :blk self.yabai_client.query([]yabai.Display, arena, &.{
                 "-m", "query", "--displays", "--display",
             }) catch return error.DisplayMapUnavailable;
         };
 
-        // The query must be the only command in flight, so start from a clean
-        // batch: callers run this before queueing updates.
-        self.bar.clear();
-        try self.bar.arg("--query");
-        try self.bar.arg("displays");
-        const response = try self.bar.commitInto(self.response);
-
-        const known = std.json.parseFromSliceLeaky([]SbDisplay, arena, response, .{
-            .ignore_unknown_fields = true,
-            .allocate = .alloc_if_needed,
-        }) catch |err| {
-            std.debug.print("kxdesk: could not parse '--query displays': {s}\n", .{
-                @errorName(err),
-            });
+        const known = self.bar.query([]SbDisplay, arena, "displays") catch |err| {
+            log.warn("could not parse '--query displays': {s}", .{@errorName(err)});
             return error.InvalidSketchyBarResponse;
         };
 
         var map: DisplayMap = .{};
         for (displays) |display| {
             for (known) |candidate| {
-                if (candidate.@"DirectDisplayID" != display.id) continue;
+                if (candidate.DirectDisplayID != display.id) continue;
                 try map.put(arena, display.index, candidate.@"arrangement-id");
                 break;
             }
@@ -224,14 +198,22 @@ pub const Updater = struct {
             const item = try std.fmt.bufPrint(&name, "space.{d}", .{index});
 
             var props: Props = .{};
-            try props.text("label", strip);
-            props.raw("label.drawing=on");
-            try props.text("label.width", if (strip.len == 0) "0" else "dynamic");
-            try props.color("label.background.color", background);
-            try props.num("label.background.height", 25);
-            try props.num("label.background.y_offset", 0);
-            props.raw(if (highlighted) "icon.highlight=on" else "icon.highlight=off");
-            props.raw(if (highlighted) "label.highlight=on" else "label.highlight=off");
+            try props.write(.{
+                .label = .{
+                    .value = strip,
+                    .drawing = true,
+                    .width = if (strip.len == 0) "0" else "dynamic",
+                    .background = .{
+                        .color = try props.argb(background),
+                        .height = style.space_chip_height,
+                        .y_offset = 0,
+                    },
+                },
+                .icon = .{ .highlight = highlighted },
+            });
+            // One node cannot carry both highlights in the batch's order, so the
+            // label's follows the icon's in a node of its own.
+            try props.write(.{ .label = .{ .highlight = highlighted } });
             try self.bar.set(item, props.slice());
         }
     }
@@ -252,52 +234,30 @@ pub const Updater = struct {
                 continue;
             };
             const window = windows[window_index];
-            const space = layout.space_of(window.space);
-
-            var icon: []const u8 = theme.glyph.yabai_grid;
-            var icon_color: theme.Color = theme.orange;
-            if (space != null and std.mem.eql(u8, space.?.@"type", "stack")) {
-                icon = theme.glyph.yabai_stack;
-                icon_color = theme.aqua;
-            }
-            if ((space != null and std.mem.eql(u8, space.?.@"type", "float")) or window.@"is-floating") {
-                icon = theme.glyph.yabai_float;
-                icon_color = theme.magenta;
-            } else if (window.@"has-fullscreen-zoom") {
-                icon = theme.glyph.yabai_fullscreen_zoom;
-                icon_color = theme.green;
-            } else if (window.@"has-parent-zoom") {
-                icon = theme.glyph.yabai_parent_zoom;
-                icon_color = theme.blue;
-            } else if (space != null and std.mem.eql(u8, space.?.@"type", "bsp")) {
-                icon = theme.glyph.yabai_grid;
-                icon_color = theme.orange;
-            }
+            const mark = markFor(layout.space_of(window.space), window);
 
             var title_buf: [max_title + 3]u8 = undefined;
             var stack_buf: [32]u8 = undefined;
 
             var front: Props = .{};
-            try front.text("icon", window.app);
-            try front.text("label", truncateTitle(window.title, &title_buf));
-            var status: Props = .{};
-            try status.text("icon", icon);
-            try status.color("icon.color", icon_color);
+            try front.write(.{
+                .icon = window.app,
+                .label = truncateTitle(window.title, &title_buf),
+            });
 
-            if (window.@"stack-index" > 0) {
-                const total = layout.max_stack_of(window.space);
-                try status.text(
-                    "label",
-                    try std.fmt.bufPrint(&stack_buf, "[{d}/{d}]", .{
-                        window.@"stack-index",
-                        total,
-                    }),
-                );
-                status.raw("label.drawing=on");
-            } else {
-                status.raw("label=");
-                status.raw("label.drawing=off");
-            }
+            const stack: ?[]const u8 = if (window.@"stack-index" > 0)
+                try std.fmt.bufPrint(&stack_buf, "[{d}/{d}]", .{
+                    window.@"stack-index",
+                    layout.max_stack_of(window.space),
+                })
+            else
+                null;
+
+            var status: Props = .{};
+            try status.write(.{
+                .icon = .{ .value = mark.icon, .color = try status.argb(mark.color) },
+                .label = .{ .value = stack, .drawing = stack != null },
+            });
 
             var name: [32]u8 = undefined;
             const front_item = try std.fmt.bufPrint(&name, "front_app.{d}", .{arrangement});
@@ -307,6 +267,28 @@ pub const Updater = struct {
         }
     }
 };
+
+/// What one window's status item draws.
+const Mark = struct { icon: []const u8, color: theme.Color };
+
+/// The status mark for one window: the space's window layout first - a stack or a
+/// float - then the window's own floating and zoom state.
+fn markFor(space: ?yabai.Space, window: yabai.Window) Mark {
+    var mark: Mark = .{ .icon = theme.glyph.yabai_grid, .color = theme.orange };
+    if (space != null and std.mem.eql(u8, space.?.type, "stack")) {
+        mark = .{ .icon = theme.glyph.yabai_stack, .color = theme.aqua };
+    }
+    if ((space != null and std.mem.eql(u8, space.?.type, "float")) or window.@"is-floating") {
+        mark = .{ .icon = theme.glyph.yabai_float, .color = theme.magenta };
+    } else if (window.@"has-fullscreen-zoom") {
+        mark = .{ .icon = theme.glyph.yabai_fullscreen_zoom, .color = theme.green };
+    } else if (window.@"has-parent-zoom") {
+        mark = .{ .icon = theme.glyph.yabai_parent_zoom, .color = theme.blue };
+    } else if (space != null and std.mem.eql(u8, space.?.type, "bsp")) {
+        mark = .{ .icon = theme.glyph.yabai_grid, .color = theme.orange };
+    }
+    return mark;
+}
 
 /// yabai display index -> SketchyBar arrangement id.
 const DisplayMap = struct {
@@ -353,8 +335,7 @@ const Layout = struct {
         app_icon_map: *const app_icons.Mapping,
     ) !Layout {
         // Sized from the windows as well as the spaces: the space query can fail
-        // while the window query answers, and the front-app items still need their
-        // stack totals then.
+        // while the window query answers, and the stack totals come from windows.
         var space_count: usize = 0;
         for (spaces) |space| space_count = @max(space_count, space.index);
         for (windows) |window| space_count = @max(space_count, window.space);
@@ -400,7 +381,7 @@ const Layout = struct {
         @memset(tail, "");
 
         for (windows, 0..) |window, index| {
-            if (!std.mem.eql(u8, window.@"role", "AXWindow")) continue;
+            if (!std.mem.eql(u8, window.role, "AXWindow")) continue;
             if (window.@"is-minimized" or window.@"is-hidden") continue;
 
             const space_index = if (window.@"is-sticky")
@@ -434,13 +415,11 @@ const Layout = struct {
             }
         }
 
-        // With no space to ask about visibility - the space query failing is the
-        // reason this runs - the display that has focus is placed from the window
-        // that has it. The label and the application matter more than the icon,
-        // which needs a space's type and falls back to the default one.
+        // The space query failing is why this runs, so visibility is unknown: the
+        // focused window places the display that has focus.
         for (windows, 0..) |window, index| {
             if (!window.@"has-focus") continue;
-            if (!std.mem.eql(u8, window.@"role", "AXWindow")) continue;
+            if (!std.mem.eql(u8, window.role, "AXWindow")) continue;
             if (window.@"is-minimized" or window.@"is-hidden") continue;
             if (window.display == 0 or window.display >= layout.front_window.len) continue;
 

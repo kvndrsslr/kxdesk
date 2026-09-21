@@ -80,6 +80,7 @@ pub fn parse(block: [*:0]const u8) ?Request {
     return request;
 }
 
+/// A reply's outcome and payload, as posted and as decoded.
 pub const Reply = union(enum) {
     ok: []const u8,
     err: []const u8,
@@ -120,14 +121,8 @@ fn frame(buffer: []u8, reply: Reply) []u8 {
     return buffer[0 .. kind.len + 2 + kept];
 }
 
-/// A reply's outcome and payload.
-pub const Answer = union(enum) {
-    ok: []const u8,
-    err: []const u8,
-};
-
 /// Split a reply into its outcome and payload.
-pub fn decode(reply: []const u8) ?Answer {
+pub fn decode(reply: []const u8) ?Reply {
     const kind_end = std.mem.indexOfScalar(u8, reply, 0) orelse reply.len;
     const rest = reply[@min(kind_end + 1, reply.len)..];
     const body_end = std.mem.indexOfScalar(u8, rest, 0) orelse rest.len;

@@ -1,9 +1,10 @@
 //! The command registry.
 //!
-//! Every command is a function over `Context` that returns the payload to send
-//! back to whoever asked. Commands run as worker tasks rather than on the
-//! receive loop, so one that spawns yabai a dozen times does not hold up the
-//! bar's item updates while it works.
+//! Every command is a function over `Context` returning the payload its caller
+//! gets. Commands run as worker tasks rather than on the receive loop, so one
+//! that spawns yabai a dozen times does not hold up the bar's item updates.
+//! `cli.zig` draws the help, the completions and the validation checks from this
+//! table, so none of them can drift from what the daemon dispatches on.
 
 const std = @import("std");
 
@@ -11,56 +12,47 @@ const bar_config = @import("bar.zig");
 const Context = @import("context.zig").Context;
 const items_usage = @import("items_usage.zig");
 const kanata = @import("kanata.zig");
+const log = @import("log.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
 const server_mode = @import("server_mode.zig");
 const yabai_ops = @import("yabai_ops.zig");
 const zen = @import("zen.zig");
 
-/// What a command takes after its name, in the terms the usage line is drawn
-/// from: `kxdesk pomodoro set 25 5` is `set` (a `Sub`) with `<work>` and
-/// `[<rest>]` (`Arg`s), and there is no other spelling of that.
-///
-/// The whole command line is described here rather than written out twice, so
-/// `--help` and the shell completions are derived from the same table the daemon
-/// dispatches on and cannot drift from it.
+/// One command: the name a client spells, what may follow it, and the function
+/// that runs it - null for the commands this binary answers itself.
 pub const Command = struct {
     /// The name a client spells.
     name: []const u8,
-    /// One line for the overview and for a command's own help.
+    /// One line for the overview and for the command's own help.
     summary: []const u8,
-    /// Words that may follow the name and select a subcommand: the first
-    /// positional is one of these, and its own arguments and flags apply after
-    /// it. Empty when the command takes plain arguments or none.
+    /// Words that may follow the name and select a subcommand, whose own
+    /// arguments and flags then apply: the first positional must be one of them.
     subcommands: []const Sub = &.{},
-    /// Positional arguments, in order. Brackets in `name` mark one that may be
+    /// Positional arguments, in order; brackets in `name` mark one that may be
     /// left out.
     args: []const Arg = &.{},
     /// Flags, accepted anywhere the command accepts arguments.
     flags: []const Flag = &.{},
-    /// Where the command runs. Null for the commands this binary answers itself,
-    /// which the daemon is never asked about: `help` and `completions`, which a
-    /// shell asks for while it is being set up, before any daemon need be
-    /// running, and `server-mode`, which drives `op` and so belongs to the
-    /// session that asked rather than to launchd's daemon.
+    /// Where the command runs; null for `help`, `completions` and `server-mode`,
+    /// which the client answers and the daemon is never asked about.
     run: ?*const fn (*Context, []const []const u8) anyerror![]const u8 = null,
 };
 
-/// One subcommand of a `Command`: a literal word, and what it takes.
+/// One subcommand: a literal word and what it takes.
 pub const Sub = struct {
     /// The word a client types.
     name: []const u8,
     summary: []const u8,
     /// The subcommand a bare `<command>` means, so `kxdesk pomodoro` is
-    /// `kxdesk pomodoro status`. At most one per command.
+    /// `kxdesk pomodoro status`; at most one per command.
     default: bool = false,
     args: []const Arg = &.{},
     flags: []const Flag = &.{},
 };
 
-/// Where a positional argument's values come from. The ones that are not `fixed`
-/// are resolved when a completion is asked for, which is why the values are not
-/// written down here.
+/// Where a positional argument's values come from; every source but `fixed` is
+/// resolved when a completion is asked for.
 pub const Source = enum {
     /// The user's to type; there is nothing to offer.
     free,
@@ -92,9 +84,16 @@ pub const Flag = struct {
     summary: []const u8,
 };
 
-/// The mode indicator's indices, as `set_mode_indicator` accepts them: `1`…`7`
-/// select a mode, `-` clears the highlight.
-const mode_indices = [_][]const u8{ "1", "2", "3", "4", "5", "6", "7", "-" };
+/// The mode indicator's indices, as `set_mode_indicator` accepts them: `1`…`N`
+/// select a mode and `-` clears the highlight, over `mode_indicator`'s own table.
+const mode_indices = derive: {
+    var indices: [mode_indicator.mode_count + 1][]const u8 = undefined;
+    for (0..mode_indicator.mode_count) |position| {
+        indices[position] = std.fmt.comptimePrint("{d}", .{position + 1});
+    }
+    indices[mode_indicator.mode_count] = "-";
+    break :derive indices;
+};
 
 pub const all = [_]Command{
     .{
@@ -108,9 +107,7 @@ pub const all = [_]Command{
         .run = status,
     },
 
-    // The channel kanata's key bindings speak through. A binding pushes a
-    // message naming an action and the daemon runs it, so this is the one
-    // command that both reports on that channel and can stand in for it.
+    // The one command that both reports on kanata's channel and can stand in for it.
     .{
         .name = "kanata",
         .summary = "report on the kanata channel, or act on a message from it",
@@ -183,8 +180,7 @@ pub const all = [_]Command{
         .run = yabai_ops.spaceLabels,
     },
 
-    // Provisioning, reached from `~/.yabairc` and from the bindings that
-    // reload the rules and signals after an edit.
+    // Reached from `~/.yabairc` and from the bindings that reload rules and signals.
     .{
         .name = "apply_settings",
         .summary = "assert every setting, rule and signal kxdesk manages on yabai",
@@ -205,8 +201,6 @@ pub const all = [_]Command{
         .summary = "drop every configured yabai signal",
         .run = yabai_ops.clearSignals,
     },
-
-    // Appearance.
     .{
         .name = "set_mode_indicator",
         .summary = "set the colour the space icons highlight with",
@@ -220,8 +214,6 @@ pub const all = [_]Command{
         },
         .run = mode_indicator.setMode,
     },
-
-    // The timer on the bar, and the intervals it ends.
     .{
         .name = "pomodoro",
         .summary = "run the interval timer on the bar",
@@ -251,8 +243,6 @@ pub const all = [_]Command{
         },
         .run = pomodoroTimer,
     },
-
-    // Durable state, for this daemon and for anything that speaks to it.
     .{
         .name = "state",
         .summary = "read and write the daemon's durable state",
@@ -295,10 +285,8 @@ pub const all = [_]Command{
         .run = stateCommand,
     },
 
-    // This machine as a remote coding server: the 1Password keys served over one
-    // ssh-agent, and the ssh and git configuration that points at it. The one
-    // command with no `run`: it is the client's, because it drives `op` and
-    // 1Password's unlock is granted to the session that asked, not to the daemon.
+    // The one command with no `run`: it drives `op`, whose 1Password unlock is
+    // granted to the session that asked, not to launchd's daemon.
     .{
         .name = "server-mode",
         .summary = "serve this machine as a remote coding server",
@@ -312,25 +300,30 @@ pub const all = [_]Command{
     },
 };
 
-/// Index of the command called `name`, or null. An index rather than a pointer,
-/// because the daemon keeps one in-flight-task slot per registry entry.
-pub fn find(name: []const u8) ?usize {
-    for (all, 0..) |command, index| {
+/// Index of the command called `name` in `registry`, or null. The one lookup by
+/// name, shared with `cli.find`, whose registry is the daemon's plus its own.
+pub fn indexIn(registry: []const Command, name: []const u8) ?usize {
+    for (registry, 0..) |command, index| {
         if (std.mem.eql(u8, command.name, name)) return index;
     }
     return null;
 }
 
-/// The pomodoro timer: start it, stop it, reset it, skip a phase, or set the
-/// interval lengths. Every spelling answers with the timer's state, so
+/// Index in `all` of the command called `name`, or null. An index rather than a
+/// pointer, because the daemon keeps one in-flight-task slot per registry entry.
+pub fn find(name: []const u8) ?usize {
+    return indexIn(&all, name);
+}
+
+/// The pomodoro timer; every spelling answers with the timer's state, so
 /// `kxdesk pomodoro start` says what it started.
 fn pomodoroTimer(context: *Context, args: []const []const u8) ![]const u8 {
     const verb = if (args.len > 0) args[0] else "status";
     const values = if (args.len > 0) args[1..] else args;
 
     if (std.mem.eql(u8, verb, "start")) {
-        // Started with a length, it is the work interval for this run; without
-        // one the timer keeps the lengths it has.
+        // A length given here is this run's work interval; otherwise the stored
+        // length stands.
         if (values.len > 0) {
             const lengths = context.pomodoro.lengths(context.io);
             const work = try pomodoro.parseMinutes(values[0]);
@@ -353,20 +346,15 @@ fn pomodoroTimer(context: *Context, args: []const []const u8) ![]const u8 {
         return error.UnknownArgument;
     }
 
-    // The item shows the timer, so a command that changed it shows the change
-    // now rather than at the next tick.
+    // The item shows the timer, so a change shows now rather than at the next tick.
     const bar = if (context.bar_present.load(.monotonic)) context.bar else null;
     context.pomodoro.render(context.io, bar);
 
     return context.pomodoro.describe(context.arena, context.io);
 }
 
-/// Durable state, reachable from anything that can talk to this daemon: a key
-/// binding, a plugin, a shell prompt, or one of the items above.
-///
-/// The value is text unless a flag says otherwise, because a key binding has
-/// nowhere to put a type: `state set layout grid`, `state set pomodoro.work 25
-/// --int`.
+/// Durable state, reachable from anything that can talk to this daemon. The value
+/// is text unless a flag says otherwise: a key binding has nowhere to put a type.
 fn stateCommand(context: *Context, args: []const []const u8) ![]const u8 {
     const verb = if (args.len > 0) args[0] else return error.MissingArgument;
     const values = if (args.len > 0) args[1..] else args;
@@ -375,7 +363,7 @@ fn stateCommand(context: *Context, args: []const []const u8) ![]const u8 {
     if (std.mem.eql(u8, verb, "get")) {
         if (values.len == 0) return error.MissingArgument;
         // A missing key is not an empty value: a script has to be able to tell
-        // them apart, and only one of the two is worth falling back from.
+        // them apart.
         return try store.getTextAlloc(context.io, context.arena, values[0]) orelse error.KeyNotFound;
     }
 
@@ -383,8 +371,7 @@ fn stateCommand(context: *Context, args: []const []const u8) ![]const u8 {
         if (values.len == 0) return error.MissingArgument;
         const key = values[0];
 
-        // A null has no value to spell, so its flag stands where the value would
-        // be: `state set scratch --null`.
+        // A null has no value to spell, so its flag stands where the value would be.
         if (values.len >= 2 and std.mem.eql(u8, values[1], "--null")) {
             try store.setNull(context.io, key);
             return "";
@@ -426,11 +413,9 @@ fn stateCommand(context: *Context, args: []const []const u8) ![]const u8 {
     return error.UnknownArgument;
 }
 
-/// Apply the bar configuration.
-///
-/// This is what `sketchybarrc` runs, and it is the only thing that applies it:
-/// re-applying points every item's `mach_helper` at this daemon again, so a
-/// SketchyBar that was restarted ends up with the items this process serves.
+/// Apply the bar configuration. Re-applying points every item's `mach_helper` at
+/// this daemon again, so a SketchyBar that was restarted ends up with the items
+/// this process serves.
 fn apply(context: *Context, _: []const []const u8) ![]const u8 {
     try context.ensureBar();
     try bar_config.apply(context.bar, context.io, .{ .helper = context.event_service });
@@ -441,20 +426,16 @@ fn apply(context: *Context, _: []const []const u8) ![]const u8 {
     return "";
 }
 
-/// Put back the state the bar configuration cannot rebuild by itself: a bar that
-/// was collapsed, the mode the spaces were highlighted in, and whether this
-/// machine is serving.
-///
-/// Best effort by design - all of it is cosmetic, and none of it is a reason to
-/// fail the `apply` that just succeeded.
+/// Put back the state the bar configuration cannot rebuild: a bar that was
+/// collapsed, the mode the spaces were highlighted in, and whether this machine is
+/// serving. Best effort by design: all of it is cosmetic.
 pub fn restoreState(context: *Context) void {
     zen.restore(context.bar, context.arena, context.store, context.io) catch |err| {
-        std.debug.print("kxdesk: cannot restore the bar's collapsed state: {s}\n", .{@errorName(err)});
+        log.warn("cannot restore the bar's collapsed state: {s}", .{@errorName(err)});
     };
     mode_indicator.restore(context);
-    // The server item's state lives in the file `enter` wrote, not in the store:
-    // the daemon never runs that command, and this is the one place it has to
-    // read it; see `server_mode.restore`.
+    // The server item's state lives in the file `enter` wrote rather than in the
+    // store, since the daemon never runs that command; see `server_mode.restore`.
     server_mode.restore(context);
 }
 
@@ -475,12 +456,9 @@ fn status(context: *Context, _: []const []const u8) ![]const u8 {
     });
 }
 
-/// Report on the kanata channel, or act on a message as if kanata had pushed it.
-///
-/// The injection is what makes a binding testable without pressing its keys -
-/// `kxdesk kanata inject yabai:window-swap:west` - and what makes the channel
-/// testable with kanata not running at all: the parsing and the action are the
-/// same code the socket path runs.
+/// Report on the kanata channel, or act on a message as if kanata had pushed it:
+/// the injection runs the same parsing and the same action the socket path does,
+/// which is what makes a binding testable without pressing its keys.
 fn kanataCommand(context: *Context, args: []const []const u8) ![]const u8 {
     const verb = if (args.len > 0) args[0] else return kanata.status(context.arena);
     const values = if (args.len > 0) args[1..] else args;
@@ -513,16 +491,7 @@ fn itemCount(context: *Context) !usize {
         items: []const []const u8 = &.{},
     };
 
-    var response: [64 * 1024]u8 = undefined;
-    try context.bar.connect();
-    context.bar.clear();
-    try context.bar.arg("--query");
-    try context.bar.arg("bar");
-    const body = try context.bar.commitInto(&response);
-
-    const parsed = std.json.parseFromSliceLeaky(Bar, context.arena, body, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_if_needed,
-    }) catch return error.InvalidSketchyBarResponse;
+    const parsed = context.bar.query(Bar, context.arena, "bar") catch
+        return error.InvalidSketchyBarResponse;
     return parsed.items.len;
 }

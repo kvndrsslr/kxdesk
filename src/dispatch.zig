@@ -1,22 +1,10 @@
-//! Event routing.
+//! Event routing: every event SketchyBar addresses to the item that declared
+//! `mach_helper=`, routed on `NAME` (`SENDER` says what happened). The names here
+//! mirror the items in `bar.zig` that declare the helper.
 //!
-//! SketchyBar addresses every event to the item that declared `mach_helper=`, so
-//! routing is a lookup on `NAME`; `SENDER` says what actually happened. The names
-//! here mirror the items in `bar.zig` that declare the helper.
-//!
-//! Nothing on this path forks a process. A click is an event - the items that
-//! used to carry a `click_script` declare `--subscribe ... mouse.clicked`
-//! instead - and what a click asks for is a yabai command or a message back to
-//! the bar.
-//!
-//! Most events are handled inline, because the answers come from yabai or from
-//! the kernel and cost about a tenth of a second: a full refresh forks yabai
-//! twice (`--spaces`, `--windows`), so a lone change refreshes the strips at
-//! once and a stream of them - a drag, a flood of `window_moved` - is collapsed
-//! to one refresh per `yabai_refresh_interval_ms`, drained by the receive loop's
-//! timer. Only the two items whose refresh reaches the network are handed to
-//! `std.Io.async` instead, so the receive loop keeps running while they work;
-//! see `background.zig`.
+//! Nothing on this path forks a process, and every event is handled inline except
+//! the two whose refresh reaches the network: those run as `std.Io.async` tasks so
+//! the receive loop keeps running while they work - see `background.zig`.
 
 const std = @import("std");
 
@@ -26,6 +14,7 @@ const items_github = @import("items_github.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const items_yabai = @import("items_yabai.zig");
+const log = @import("log.zig");
 const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
 const pomodoro = @import("pomodoro.zig");
@@ -73,12 +62,10 @@ pub const Dispatcher = struct {
     /// Awake-clock instant the last full refresh started; `.zero` for none yet.
     yabai_refreshed: std.Io.Timestamp = .zero,
 
-    /// A full refresh forks yabai twice and rebuilds every strip, and a drag or
-    /// a space flood turns into a stream of `window_moved` events. The loop runs
-    /// one update at a time, so a stream would otherwise cost one fork per
-    /// event and every click behind them would wait; holding refreshes this far
-    /// apart collapses the stream into one while a lone event still refreshes at
-    /// once.
+    /// A full refresh forks yabai twice and rebuilds every strip, and a drag or a
+    /// space flood turns into a stream of `window_moved` events; the loop runs one
+    /// update at a time, so holding refreshes this far apart collapses the stream
+    /// into one while a lone event still refreshes at once.
     const yabai_refresh_interval_ms: i64 = 120;
 
     /// Milliseconds since the last full refresh; effectively infinite before the
@@ -134,11 +121,10 @@ pub const Dispatcher = struct {
             self.brew.request(self.io, items_brew.refresh, .{ self.io, self.gpa });
             return;
         }
-        // The provider items are refreshed by the receive loop's clock, not by
-        // their own events: a refresh pushes labels back to the items, and an
-        // item that is subscribed to updates turns that push into another event.
-        // Here only the mouse matters, and only a provider with windows to report
-        // has a popup to show for it.
+        // Provider items are refreshed by the receive loop's clock, not by their
+        // own events - a refresh pushes labels back to the items, and an item
+        // subscribed to updates turns that push into another event - so only the
+        // mouse matters here, and only a provider with windows has a popup.
         if (items_usage.providerFor(name)) |provider| {
             if (provider.rows.len == 0) return;
 
@@ -176,15 +162,11 @@ pub const Dispatcher = struct {
             return;
         }
 
-        // Unknown senders are ignored: items SketchyBar drives itself need no
-        // handling here, and so do the `space_change` events the space items
-        // receive only because they were created with that subscription.
+        // Unknown senders are ignored; `space_change` reaches the space items
+        // only because they were created with that subscription.
     }
 
     /// What a click asks for.
-    ///
-    /// Each of these was a `click_script` that forked a shell, the `sketchybar`
-    /// CLI and `osascript`; the item now sends its click here instead.
     fn click(self: *Dispatcher, name: []const u8, env: sb.Env) !void {
         if (std.mem.eql(u8, name, "calendar")) return self.toggleZen();
         if (std.mem.eql(u8, name, pomodoro.item)) return self.clickPomodoro(env);
@@ -219,14 +201,10 @@ pub const Dispatcher = struct {
         return items_usage.waitMs(self.io);
     }
 
-    /// Drain a refresh that was held back because one had just run, and report
-    /// how long the receive loop may wait next. Called from that loop's timer,
-    /// on the loop's own thread, so the refresh it runs shares nothing with a
-    /// handler mid-flight.
-    ///
-    /// Follows the loop's convention that 0 means "nothing scheduled": a
-    /// refresh still inside the interval reports the wait left, so the loop
-    /// wakes when the interval closes instead of sleeping through it.
+    /// Drain a refresh that was held back because one had just run, and report how
+    /// long the receive loop may wait next; 0 means "nothing scheduled", so a
+    /// refresh still inside the interval reports the wait left instead of sleeping
+    /// through it.
     pub fn pollYabai(self: *Dispatcher) u32 {
         if (!self.yabai_pending) return 0;
 
@@ -237,7 +215,7 @@ pub const Dispatcher = struct {
 
         self.yabai_pending = false;
         self.refreshYabai() catch |err| {
-            std.debug.print("kxdesk: yabai refresh failed: {s}\n", .{@errorName(err)});
+            log.warn("yabai refresh failed: {s}", .{@errorName(err)});
         };
         return 0;
     }
@@ -245,10 +223,7 @@ pub const Dispatcher = struct {
     /// Show or hide the rows under one of the provider items.
     fn setUsagePopup(self: *Dispatcher, name: []const u8, wanted: Popup) !void {
         var props: Props = .{};
-        switch (wanted) {
-            .show => props.raw("popup.drawing=on"),
-            .hide => props.raw("popup.drawing=off"),
-        }
+        try props.write(.{ .popup = .{ .drawing = wanted == .show } });
         try self.bar.set(name, props.slice());
         try self.bar.commit();
     }

@@ -1,44 +1,17 @@
-//! "Remote coding server" mode for this Mac: the port of the
-//! `~/.local/bin/kxb-server-mode` shell script.
+//! "Remote coding server" mode: materialize the personal 1Password account's SSH
+//! keys to disk, serve them from one persistent agent on a socket of its own, and
+//! wire ssh and git signing to it - plus an AC-only keep-awake agent - until
+//! `exit` puts the snapshot back. Only the personal account is read; the business
+//! one is off-limits.
 //!
-//! `enter` makes the machine usable as a long-lived server. Every SSH key of the
-//! personal 1Password account is materialized to disk, loaded into one
-//! persistent ssh-agent on a socket of its own, and wired into `~/.ssh/config`
-//! and into git's commit and tag signing, so that ssh and signing serve every
-//! host with every key and ask 1Password for nothing per use. The AC-only
-//! keep-awake agent goes in as well, so the machine does not sleep while it is
-//! being a server. `exit` puts each of those back from the snapshot `enter` took
-//! - the ssh config, the three git settings, the keep-awake service - stops the
-//! agent and wipes the keys.
-//!
-//! Only the personal account is ever read. The business one is off-limits.
-//!
-//! Unlike every other command, this one is run by the client and not by the
-//! daemon. It is the only command that drives `op`, and 1Password's unlock is the
-//! desktop app's to grant, in the session that asked: a launchd agent cannot
-//! complete it - the daemon spawns `op` with no terminal and stdin at
-//! `/dev/null`, and `op` exits non-zero rather than waiting for an approval
-//! nobody there can give - and the client's own reply deadline is far shorter
-//! than the handful of `op` round trips `enter` makes. Run from the shell that
-//! asked for it, the prompt lands in front of the person who can answer it.
-//!
-//! That is also why the bar's `server` item is written from here: its click is a
-//! `click_script` that runs this command - `bar.zig` - so the process that
-//! changes the mode is the one that shows it, and the daemon only puts the item
-//! back after a bar reload, from the cookie `enter` wrote.
-//!
-//! The shell script kept its state in `~/.local/share/kxb-server-mode`, piped
-//! `op` through `jq`, rewrote the ssh config by handing `sed` an expression and
-//! snapshotted git by appending to a file. The same work happens here: the state
-//! lives beside the daemon's own under `~/Library/Application Support/kxdesk`,
-//! `op --format=json` comes back typed, the config is rewritten line by line
-//! with the indentation it had, and the snapshot is written rather than appended
-//! to.
+//! Client-run, not daemon-run: `op`'s unlock is the desktop app's to grant in the
+//! session that asked, and the bar item's `click_script` runs this same command.
 
 const std = @import("std");
 
 const Context = @import("context.zig").Context;
 const exec = @import("exec.zig");
+const log = @import("log.zig");
 const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
@@ -48,13 +21,11 @@ const theme = @import("theme.zig");
 const account = "my.1password.com";
 
 /// The keep-awake service, owned by server mode: installed on `enter`, removed
-/// on `exit`, so the machine sleeps normally as a laptop otherwise.
+/// on `exit`.
 const caffeinate_label = "local.caffeinate.ac";
 
-/// The bar item that says whether this machine is serving, and whose click runs
-/// this command. `bar.zig` declares it - switched off, with the click - and the
-/// client keeps its glyph and colour up to date, so the daemon owns only the
-/// state `restore` puts back after a bar reload.
+/// The bar item that says whether this machine is serving; its click runs this
+/// command, and `restore` puts it back after a bar reload from the cookie.
 pub const bar_item = "server";
 
 /// Names another state directory. A probe uses it to run against a throwaway
@@ -109,15 +80,12 @@ const caffeinate_plist =
     \\
 ;
 
-/// `kxdesk server-mode [enter|exit|toggle|status|refresh]`, `status` by
-/// default: with no verb the command says what the mode is doing, as the
-/// script's `status` did and as `pomodoro` answers here.
+/// `kxdesk server-mode [enter|exit|toggle|status|refresh]`, `status` by default:
+/// with no verb the command says what the mode is doing, as `pomodoro` answers.
 ///
-/// Called by the client, not by the daemon - see the module comment - so the
-/// arena and the io are the client's own and are handed in rather than taken
-/// from a command context. `toggle` is what the bar item's click asks for, and
-/// every verb that changes the mode shows it on that item while it runs; see
-/// `transition`.
+/// Called by the client, so the arena and the io are the client's own and are
+/// handed in. `toggle` is what the bar item's click asks for, and every verb that
+/// changes the mode shows it on that item while it runs; see `transition`.
 pub fn serverMode(arena: std.mem.Allocator, io: std.Io, args: []const []const u8) anyerror![]const u8 {
     const verb = if (args.len > 0) args[0] else "status";
     if (args.len > 1) return error.UnknownArgument;
@@ -141,15 +109,13 @@ pub fn serverMode(arena: std.mem.Allocator, io: std.Io, args: []const []const u8
 /// trip to the last `launchctl` one.
 const Transition = enum { enter, leave, refresh, toggle };
 
-/// Run one of them, with the item saying a change is in flight - that is what a
-/// click on it gets: an `enter` makes a dozen `op` calls and asks 1Password for
-/// an unlock, so without it the bar would look as if the click had done nothing
-/// until it was over.
+/// Run one of them, with the item saying a change is in flight: an `enter` makes
+/// a dozen `op` calls and asks 1Password for an unlock, so without it the bar
+/// would look as if the click had done nothing until it was over.
 ///
 /// The item is put back the way the mode *ended up*, whether the command
-/// succeeded or failed: the cookie on disk is the truth both `leave` and
-/// `report` read, so a failed `enter` shows the mode as off and a failed `exit`
-/// as on.
+/// succeeded or failed: the cookie on disk is the truth `modeOf` reads, so a
+/// failed `enter` shows the mode as off and a failed `exit` as on.
 fn transition(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -193,22 +159,14 @@ fn modeOf(io: std.Io, paths: Paths) Indicator {
 }
 
 /// The item's `click_script`: the shell line SketchyBar runs when the `server`
-/// item is clicked - the mode's own command, with its output kept where a click
-/// can be read.
+/// item is clicked, each path quoted, running this binary's `server-mode toggle`
+/// with the click's output kept in a log beside the state directory.
 ///
-/// The click runs it as a child of the bar, and 1Password's app integration is
-/// not granted to such a child: `op` answers "No accounts configured for use
-/// with 1Password CLI", because the group container it asks the app through
-/// answers `Operation not permitted`. So entering the mode this way fails, and
-/// leaves the reason in the log below; leaving it - which asks 1Password nothing
-/// - works, and so does what the item is for, saying which state the mode is in.
-/// A launchd job does not help: 1Password is refused a third-party binary there
-/// too, and only a shell's own `op` is answered, which is how `enter` run from a
-/// terminal succeeds.
-///
-/// The line is composed here rather than in `bar.zig` so that the state
-/// directory, the log and the path this binary was started from are known in one
-/// place. `storage` is the caller's: the bar's configuration is built from fixed
+/// Entering the mode this way fails - the click runs as a child of the bar, and
+/// 1Password will not answer a third-party child - while leaving it asks
+/// 1Password nothing and works. Composed here rather than in `bar.zig` so that
+/// the state directory, the log and this binary's path are known in one place;
+/// `storage` is the caller's because the bar's configuration is built from fixed
 /// buffers and has no allocator to hand out.
 pub fn clickScript(io: std.Io, storage: []u8) ![]const u8 {
     var exe_buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -244,12 +202,8 @@ fn stateDirectory(storage: []u8) ![]const u8 {
 }
 
 /// Take the lock the mode's changes serialize on, or report that another one is
-/// already holding it.
-///
-/// The lock is held for as long as the change runs and is released when the
-/// process ends however it ends, so there is no state left behind to go stale:
-/// a change killed halfway does not leave the mode uncallable. The file itself
-/// holds nothing; only the lock matters.
+/// already holding it. It is released when the process ends however it ends, so
+/// a change killed halfway does not leave the mode uncallable.
 fn lock(io: std.Io, paths: Paths) !std.Io.File {
     var file = std.Io.Dir.createFileAbsolute(io, paths.lock, .{ .truncate = false }) catch |err| return err;
     errdefer file.close(io);
@@ -257,13 +211,8 @@ fn lock(io: std.Io, paths: Paths) !std.Io.File {
     return file;
 }
 
-/// Put the mode's state on the bar, in a connection of this command's own.
-///
-/// The item is written from here rather than from the daemon because the click
-/// that toggles it is a `click_script` - `bar.zig` - and so is this process:
-/// only a process in the session that asked can complete the 1Password unlock
-/// `enter` needs, and the daemon is not one. The daemon only puts the item back
-/// after a bar reload, from the same cookie, in `restore`.
+/// Put the mode's state on the bar, in a connection of this command's own - see
+/// the module comment for why this runs here and not in the daemon.
 ///
 /// Best effort: a command whose work succeeded must not fail because there was
 /// no bar to tell about it.
@@ -277,22 +226,24 @@ fn show(arena: std.mem.Allocator, indicator: Indicator) void {
 /// The two properties the item is: its glyph, and the colour that says the
 /// state. One `--set` for both, so the bar redraws once.
 fn setIndicator(client: *sb.Client, indicator: Indicator) !void {
-    var props: Props = .{};
-    try props.text("icon", if (indicator == .working) theme.glyph.loading else theme.glyph.server);
-    try props.color("icon.color", switch (indicator) {
+    const glyph: []const u8 = if (indicator == .working) theme.glyph.loading else theme.glyph.server;
+    const color: theme.Color = switch (indicator) {
         .working => theme.yellow,
         .active => theme.green,
         .inactive => theme.dark_grey,
-    });
+    };
+
+    var props: Props = .{};
+    const argb = try props.argb(color);
+    try props.write(.{ .icon = .{ .value = glyph, .color = argb } });
     try client.set(bar_item, props.slice());
     try client.commit();
 }
 
 /// Put the item back the way the mode is. Called wherever the bar configuration
-/// is applied, because that is what declares the item - switched off - and
-/// nothing else there can know what the mode was: a freshly built bar has no
-/// memory of the one before it, and the daemon did not run the command that
-/// changed it.
+/// is applied, because a freshly built bar declares the item switched off and
+/// nothing else there can know what the mode was: the daemon did not run the
+/// command that changed it.
 pub fn restore(context: *Context) void {
     const paths = Paths.derive(context.arena) catch return;
     // The `apply` this runs from has already connected, but a bar that went away
@@ -462,11 +413,10 @@ fn report(arena: std.mem.Allocator, io: std.Io, paths: Paths) anyerror![]const u
 /// happen before any of them can be read.
 fn sshKeyItems(arena: std.mem.Allocator, io: std.Io, op: []const u8) ![]const Item {
     // One 1Password approval per run: the session that leaves behind is what the
-    // reads below use, so none of them prompts again. A sign-in that does not
-    // finish is not fatal by itself - the reads are the real gate, and their
-    // failure says what is wrong - so it is logged and stepped over.
+    // reads below use. A sign-in that does not finish is not fatal by itself -
+    // the reads are the real gate, and their failure says what is wrong.
     if (try output(arena, io, &.{ op, "signin", "--account", account }, null) == null) {
-        std.debug.print("kxdesk: 1Password sign-in did not finish; using the session op already has\n", .{});
+        log.warn("1Password sign-in did not finish; using the session op already has", .{});
     }
 
     const listing = try output(arena, io, &.{ op, "item", "list", "--account", account, "--format=json" }, null) orelse {
@@ -474,8 +424,8 @@ fn sshKeyItems(arena: std.mem.Allocator, io: std.Io, op: []const u8) ![]const It
         // produces, and its cause is not the mode's but the process's - a child
         // of the bar, or of the daemon, is refused 1Password's app however well
         // the CLI is set up, while a shell is answered.
-        std.debug.print(
-            "kxdesk: `op item list` answered nothing: either the CLI is not signed in, or this process is not one 1Password answers - a shell is, the bar and the daemon are not\n",
+        log.warn(
+            "`op item list` answered nothing: either the CLI is not signed in, or this process is not one 1Password answers - a shell is, the bar and the daemon are not",
             .{},
         );
         return error.OnePasswordUnavailable;
@@ -495,11 +445,11 @@ fn sshKeyItems(arena: std.mem.Allocator, io: std.Io, op: []const u8) ![]const It
     return selected.items;
 }
 
-/// Write every key's private half to the state directory, under the name the
-/// shell script gave it, and report the keys that were written.
+/// Write every key's private half to the state directory, under a name derived
+/// from the item's title, and report the keys that were written.
 ///
 /// A key 1Password will not give up is skipped rather than fatal: the others are
-/// still worth serving, and the shell script skipped it the same way.
+/// still worth serving.
 fn materialize(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -523,7 +473,7 @@ fn materialize(
             item.id,
         });
         const private_key = try output(arena, io, &.{ op, "read", reference }, null) orelse {
-            std.debug.print("kxdesk: skipping '{s}': 1Password would not hand over its private key\n", .{
+            log.warn("skipping '{s}': 1Password would not hand over its private key", .{
                 item.title,
             });
             continue;
@@ -531,8 +481,7 @@ fn materialize(
         try writeFile(io, name, private_key, file_mode);
 
         // The public half is written beside the private one: it is how the git
-        // signing identity is matched later, and the shell script left it there
-        // for inspection.
+        // signing identity is matched later.
         const public_key = try publicHalf(arena, io, op, item);
         if (public_key.len > 0) {
             try writeFile(io, try std.fmt.allocPrint(arena, "{s}.pub", .{name}), public_key, file_mode);
@@ -575,9 +524,8 @@ fn publicHalf(arena: std.mem.Allocator, io: std.Io, op: []const u8, item: Item) 
 }
 
 /// The name a key is materialized under: the item's title, lowercased with its
-/// slashes and spaces turned into underscores, and everything that is neither a
-/// letter, a digit, an underscore nor a hyphen dropped. The shell script's `tr`
-/// pair produced the same names, so a key is still recognizable by its file.
+/// slashes and spaces turned into underscores and everything else but letters,
+/// digits, underscores and hyphens dropped.
 fn slug(arena: std.mem.Allocator, title: []const u8) ![]const u8 {
     const kept = try arena.alloc(u8, title.len);
     var length: usize = 0;
@@ -671,7 +619,6 @@ fn wipeAgentAndKeys(arena: std.mem.Allocator, io: std.Io, paths: Paths) void {
     deleteKeys(io, paths);
 }
 
-/// Remove the keys directory and everything in it.
 fn deleteKeys(io: std.Io, paths: Paths) void {
     if (std.Io.Dir.openDirAbsolute(io, paths.dir, .{ .iterate = true })) |opened| {
         var dir = opened;
@@ -739,7 +686,7 @@ fn environmentWith(arena: std.mem.Allocator, socket: []const u8) !std.process.En
 fn rewireSshConfig(arena: std.mem.Allocator, io: std.Io, paths: Paths) !void {
     const config_path = try sshConfigPath(arena);
     const original = std.Io.Dir.cwd().readFileAlloc(io, config_path, arena, .limited(max_text)) catch |err| {
-        std.debug.print("kxdesk: cannot read {s}: {s}\n", .{ config_path, @errorName(err) });
+        log.warn("cannot read {s}: {s}", .{ config_path, @errorName(err) });
         return err;
     };
 
@@ -769,7 +716,7 @@ fn rewireSshConfig(arena: std.mem.Allocator, io: std.Io, paths: Paths) !void {
         // 1Password's agent sets this line for every host, so a config without
         // one is a machine set up differently. Writing the file unchanged and
         // saying so beats reporting a server mode that is not wired.
-        std.debug.print("kxdesk: {s} sets no IdentityAgent; ssh keeps the agent it had\n", .{config_path});
+        log.warn("{s} sets no IdentityAgent; ssh keeps the agent it had", .{config_path});
         return;
     }
     try writeFile(io, config_path, rewritten.items, file_mode);
@@ -780,7 +727,7 @@ fn restoreSshConfig(arena: std.mem.Allocator, io: std.Io, paths: Paths) void {
     const recorded = readText(arena, io, paths.ssh_backup) catch return;
     const config_path = sshConfigPath(arena) catch return;
     writeFile(io, config_path, recorded, file_mode) catch |err| {
-        std.debug.print("kxdesk: cannot restore {s}: {s}\n", .{ config_path, @errorName(err) });
+        log.warn("cannot restore {s}: {s}", .{ config_path, @errorName(err) });
         return;
     };
     std.Io.Dir.deleteFileAbsolute(io, paths.ssh_backup) catch {};
@@ -788,8 +735,7 @@ fn restoreSshConfig(arena: std.mem.Allocator, io: std.Io, paths: Paths) void {
 
 /// `line` with its `IdentityAgent` value replaced by the agent's socket, or null
 /// when the line sets no agent. The indentation and the whitespace after the
-/// keyword are kept exactly as they were - the shell script's `sed` replacement
-/// kept the same two - so the file reads the same afterwards.
+/// keyword are kept exactly as they were, so the file reads the same afterwards.
 fn identityAgentLine(arena: std.mem.Allocator, line: []const u8, socket: []const u8) !?[]const u8 {
     const key = "IdentityAgent";
     const indentation = line.len - std.mem.trimStart(u8, line, " \t").len;
@@ -848,13 +794,11 @@ fn restoreGit(arena: std.mem.Allocator, io: std.Io, paths: Paths) void {
 }
 
 /// Point git's commit and tag signing at a materialized key, answering which key
-/// that is - or null, when there is no materialized key to sign with.
+/// that is - or null when there is none to sign with.
 ///
-/// The key git already signs with wins, and without a match - an identity
-/// 1Password no longer holds, say - the first ed25519 serves. The shell script
-/// chose the same two ways. Signing is left alone when neither finds a key
-/// rather than failed over: ssh is wired either way, and signing keeps working
-/// however it was configured.
+/// The key git already signs with wins; without a match, the first ed25519
+/// serves. Signing is left alone when neither finds a key rather than failed
+/// over: ssh is wired either way.
 fn wireSigning(arena: std.mem.Allocator, io: std.Io, keys: []const Key) !?[]const u8 {
     const current = try gitGet(arena, io, "user.signingkey");
 
@@ -877,7 +821,7 @@ fn wireSigning(arena: std.mem.Allocator, io: std.Io, keys: []const Key) !?[]cons
     }
 
     if (signing == null) {
-        std.debug.print("kxdesk: no materialized key to sign with; git signing is left alone\n", .{});
+        log.warn("no materialized key to sign with; git signing is left alone", .{});
         return null;
     }
 
@@ -930,12 +874,11 @@ fn setCaffeinate(arena: std.mem.Allocator, io: std.Io, on: bool) !void {
     // keep when this runs on a machine that was in server mode already.
     if (!launchdKnows(arena, launchctl, service)) {
         if (!succeeded(arena, &.{ launchctl, "bootstrap", domain, plist })) {
-            std.debug.print("kxdesk: launchd would not load {s}; the machine may still sleep\n", .{plist});
+            log.warn("launchd would not load {s}; the machine may still sleep", .{plist});
         }
     }
 }
 
-/// Whether launchd already knows the service.
 fn launchdKnows(arena: std.mem.Allocator, launchctl: []const u8, service: []const u8) bool {
     return succeeded(arena, &.{ launchctl, "print", service });
 }
@@ -978,11 +921,8 @@ fn succeeded(scratch: std.mem.Allocator, argv: []const []const u8) bool {
 }
 
 /// Run `argv` to completion and return its standard output, or null when it did
-/// not exit zero - and when it could not be started at all, which is said in the
-/// log so that a missing binary is not mistaken for an empty answer. A non-zero
-/// exit is said in the log too, with whatever the command wrote to stderr: that
-/// is the whole explanation of a refusal, and it is read by the person who asked
-/// for the run, since server mode is the client's and not the daemon's.
+/// not exit zero - and when it could not be started at all. Either failure is
+/// logged with the command's stderr: that is the whole explanation of a refusal.
 fn output(
     scratch: std.mem.Allocator,
     io: std.Io,
@@ -990,16 +930,16 @@ fn output(
     environment: ?*const std.process.Environ.Map,
 ) !?[]u8 {
     const result = std.process.run(scratch, io, .{ .argv = argv, .environ_map = environment }) catch |err| {
-        std.debug.print("kxdesk: cannot run {s}: {s}\n", .{ argv[0], @errorName(err) });
+        log.warn("cannot run {s}: {s}", .{ argv[0], @errorName(err) });
         return null;
     };
     switch (result.term) {
         .exited => |code| if (code != 0) {
             const said = std.mem.trim(u8, result.stderr, " \t\r\n");
             if (said.len == 0) {
-                std.debug.print("kxdesk: {s} exited {d}\n", .{ argv[0], code });
+                log.warn("{s} exited {d}", .{ argv[0], code });
             } else {
-                std.debug.print("kxdesk: {s} exited {d}: {s}\n", .{ argv[0], code, said });
+                log.warn("{s} exited {d}: {s}", .{ argv[0], code, said });
             }
             return null;
         },
@@ -1008,8 +948,6 @@ fn output(
     return result.stdout;
 }
 
-/// `argv` as the NULL-terminated vector the platform helpers take, allocated
-/// from `scratch`.
 fn terminated(scratch: std.mem.Allocator, argv: []const []const u8) !std.ArrayList(?[*:0]const u8) {
     var vector = std.ArrayList(?[*:0]const u8).empty;
     for (argv) |argument| try vector.append(scratch, try scratch.dupeZ(u8, argument));

@@ -1,18 +1,11 @@
 //! The command line as the outside sees it: the help, the completions, and the
 //! check that a request is spelled the way the command says it is.
 //!
-//! Nothing here restates the command table. It is read out of `commands.zig`, so
-//! a command that is added, renamed, or given an argument documents itself,
-//! completes itself, and is validated against its own description; the two
-//! commands this binary answers itself live in the same table, next to the
-//! daemon's, and are treated identically.
-//!
-//! Completions are computed here rather than in each shell: the generated script
-//! is a few lines that hand the words to `kxdesk __complete` and print what comes
-//! back. That keeps one description of the command line instead of four, and it
-//! is what lets a candidate carry what it does alongside its name - and lets a
-//! value that only exists at runtime, such as a state key or a space label, be
-//! offered at all.
+//! Nothing here restates the command table: it is read out of `commands.zig`, so
+//! a command documents itself, completes itself, and is validated against its own
+//! description. Completions are computed here rather than in each shell, which is
+//! what lets a candidate carry what it does alongside its name - and lets a value
+//! that only exists at runtime, such as a state key, be offered at all.
 
 const std = @import("std");
 
@@ -30,9 +23,9 @@ pub const program = "kxdesk";
 /// installed here, and an unexercised script is worse than none.
 pub const shells = [_][]const u8{ "zsh", "bash" };
 
-/// The commands this binary answers itself. Same shape as the daemon's, so the
-/// help, the completions and the validation treat them alike; `run` stays null,
-/// because the daemon is never asked about them.
+/// The commands this binary answers itself, in the daemon's shape so the help,
+/// the completions and the validation treat them alike; `run` stays null, because
+/// the daemon is never asked about them.
 const local = [_]Command{
     .{
         .name = "help",
@@ -58,12 +51,10 @@ const local = [_]Command{
 /// Everything a client can spell: the daemon's commands, then this binary's.
 pub const registry = commands.all ++ local;
 
-/// The command called `name`, or null.
+/// The command called `name`, this binary's or the daemon's, or null.
 pub fn find(name: []const u8) ?Command {
-    for (registry) |command| {
-        if (std.mem.eql(u8, command.name, name)) return command;
-    }
-    return null;
+    const index = commands.indexIn(&registry, name) orelse return null;
+    return registry[index];
 }
 
 /// What a command's own arguments and flags are, once its subcommand - named or
@@ -80,8 +71,6 @@ fn specOf(command: Command, sub: ?commands.Sub) Spec {
     else
         .{ .args = command.args, .flags = command.flags };
 }
-
-// -- help -------------------------------------------------------------------
 
 /// The list `--help` prints: every command, one line each.
 pub fn overview(arena: Allocator) Allocator.Error![]const u8 {
@@ -327,23 +316,13 @@ fn pad(out: *ArrayList(u8), arena: Allocator, count: usize) Allocator.Error!void
     for (0..count) |_| try out.append(arena, ' ');
 }
 
-// -- validation -------------------------------------------------------------
-
-/// Check `args` against the command's own description: the subcommand it names,
-/// how many arguments it takes, and the flags it accepts. Returns null when the
-/// request is well-formed, or a message naming what was expected and how the
-/// command is spelled.
+/// Check `args` against the command's own description, returning null when the
+/// request fits or a message naming what was expected and how the command is
+/// spelled.
 ///
-/// This is what turns a request the daemon would otherwise have to guess at into
-/// a sentence: `state set` used to answer `MissingArgument`, and now answers
-/// `state set: missing <key>` with its usage line under it.
-///
-/// Only `--`-prefixed words are read as flags. A value may begin with one dash -
-/// `state set level -5`, `set_mode_indicator -` - and no command here declares a
-/// single-dash flag, so that reading never has to guess. Flags are refused before
-/// arguments for the same reason: a command reads its arguments by position, so
-/// `state set --null key` would be taken as the key `--null` with the value
-/// `key`.
+/// Only `--`-prefixed words are flags, so a value may begin with one dash -
+/// `state set level -5`, `set_mode_indicator -` - and flags are refused before
+/// arguments, which a command reads by position.
 pub fn validate(arena: Allocator, command: Command, args: []const []const u8) Allocator.Error!?[]const u8 {
     var rest = args;
     var spec = specOf(command, null);
@@ -467,22 +446,15 @@ fn declares(flags: []const commands.Flag, name: []const u8) bool {
     return false;
 }
 
-// -- completions ------------------------------------------------------------
-
 /// The words that may follow what has been typed, one per line, and nothing when
 /// there is nothing to offer.
 ///
 /// `described` adds a tab and what each candidate does, for a shell that has
-/// somewhere to show it. It is opt-in because the script that asks and the binary
-/// that answers are installed separately and can be out of step: the words on
-/// their own are what every version of the protocol has meant, so a script that
-/// predates this flag still reads a clean list, and one that is newer than the
-/// binary simply finds nothing to describe.
-///
-/// `words` are the words after the program name, and `cword` is the index within
-/// them of the word being completed. It may be one past the end of `words`,
-/// because a shell whose line ends in a space may or may not hand over the empty
-/// word; both spell the same request, so both are read the same way.
+/// somewhere to show it; it is opt-in because the script that asks and the binary
+/// that answers are installed separately and can be out of step. `words` are the
+/// words after the program name, and `cword` is the index within them of the word
+/// being completed - which may be one past the end, since a shell whose line ends
+/// in a space may or may not hand over the empty word.
 pub fn complete(
     arena: Allocator,
     described: bool,
@@ -604,11 +576,9 @@ fn offerFlags(
     if (!contains(used, "--help")) try offer(out, arena, partial, "--help", "show this");
 }
 
-/// One candidate, and what it does.
-///
-/// The description follows a tab, which is what keeps this readable to both
-/// shells: zsh splits it off to show beside the match (`compadd -d`), and bash
-/// takes the word and drops the rest.
+/// One candidate, and what it does. The description follows a tab, which both
+/// shells understand: zsh splits it off to show beside the match, and bash takes
+/// the word and drops the rest.
 fn offer(
     out: *ArrayList(u8),
     arena: Allocator,
@@ -676,23 +646,18 @@ pub fn script(shell: []const u8) ?[]const u8 {
 }
 
 /// zsh completes with `words` 1-based and holding the program name, so the word
-/// being completed is `CURRENT` and its index among the words after the program
-/// name is `CURRENT - 2`.
+/// being completed is `CURRENT - 2` among the words after it.
 ///
-/// It is the one caller that passes `--describe`, because it is the one shell
-/// with somewhere to show the explanation, and `_describe` is how the explanation
-/// is shown: it lays the candidates out as `name  -- what it does`, which is the
-/// same thing brew's own completions do. `compadd -d` looks like the right call
-/// but is not - it displays the description *instead of* the candidate.
+/// It alone passes `--describe`: `_describe` lays candidates out as
+/// `name  -- what it does` and reads each element as `name:description`, which is
+/// why a colon in a description is escaped here - the binary does not know what is
+/// reading it. (`compadd -d` is not the call: it displays the description instead
+/// of the candidate.)
 ///
-/// `_describe` reads each element as `name:description`, so a colon in a
-/// description has to be escaped, and the escaping happens here rather than in
-/// the answer: the binary has no idea what is reading it.
-///
-/// A candidate that arrives without a tab is taken as a bare word, so this script
-/// keeps working if it ever runs ahead of the binary - and if the binary is the
-/// older one, which does not know `--describe`, the first call answers nothing
-/// and the second one asks without it.
+/// A candidate that arrives without a tab is taken as a bare word, so the script
+/// keeps working if it runs ahead of the binary - and if the binary is the older
+/// one, which does not know `--describe`, the first call answers nothing and the
+/// second one asks without it.
 const zsh =
     \\#compdef kxdesk
     \\# kxdesk completions for zsh, from `kxdesk completions zsh`.

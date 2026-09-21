@@ -1,24 +1,22 @@
-//! The yabai-touching ports of `~/bin/yabai_util`.
+//! The yabai commands kxdesk manages: settings, rules, signals, and the
+//! workspace and window actions the key bindings name.
 //!
-//! The shell piped every query through `jq` and spawned `yabai` once per
-//! mutation, relying on `||` chains between them: yabai exits non-zero for a
-//! command it refuses, and those chains are the fallback logic. `Client.command`
-//! errors on a non-zero exit, so each `||` maps to a `catch` here. Anything the
-//! shell shaped with jq - sorting spaces, extracting labels by predicate - is a
-//! typed query plus a loop instead.
+//! Every command is an exact argv, one `yabai -m` per call; a `&&` between two
+//! commands is two `try`s, so the second only runs when the first was taken.
 
 const std = @import("std");
 
 const Context = @import("context.zig").Context;
 const kanata = @import("kanata.zig");
+const log = @import("log.zig");
 const platform = @import("platform.zig");
 const yabai = @import("yabai.zig");
 
 /// One `rule --add`, complete: the exact argv tokens, spaces inside tokens
-/// exactly as the shell passed them - quoting them differently would change
-/// what yabai matches.
+/// exactly as they must reach yabai - quoting them differently would change what
+/// yabai matches.
 ///
-/// Every rule carries a label, including the two the shell left unlabelled: a
+/// Every rule carries a label, including the two that used to go unlabelled: a
 /// rule is removed by naming it, so an unlabelled one could never be removed and
 /// accumulated a copy per refresh. Nothing here is added without a name.
 const managed_rules = [_][]const []const u8{
@@ -33,15 +31,13 @@ const managed_rules = [_][]const []const u8{
 /// One `signal --add`, complete: the exact argv tokens. `$YABAI_WINDOW_ID` is
 /// substituted by yabai at signal time, so it must reach yabai verbatim; argv
 /// tokens rather than a shell keep it intact.
-/// The `kx_*` family fans every event that changes what the bar renders - a
-/// window arriving on a space, leaving it, closing, hiding - into the one
-/// `yabai_update` trigger the helper serves. The strip and front-app items are
-/// built from yabai queries, and a window moved to another space shows up
-/// without any focus or space change: yabai retiles it there, so
-/// `window_resized` is the event that arrives (measured - `window_moved` is the
-/// positional one, a drag in place), and `window_focused`/`space_changed` alone
-/// leave the bar showing a window that has already left. The display list is
-/// left to the bar's own `display_change` subscription.
+///
+/// The `kx_*` family fans every event that changes what the bar renders into the
+/// one `yabai_update` trigger the helper serves; `window_resized` is in it
+/// because yabai retiles a window moved to another space, so that is the event
+/// that arrives (measured - `window_moved` is the positional one, a drag in
+/// place). The display list is left to the bar's own `display_change`
+/// subscription.
 const managed_signals = [_][]const []const u8{
     &.{ "-m", "signal", "--add", "event=window_title_changed", "label=kx_atc", "action=sketchybar --trigger yabai_update ONLY=title YABAI_WINDOW_ID=$YABAI_WINDOW_ID", "active=yes" },
     &.{ "-m", "signal", "--add", "event=window_focused", "label=kx_wf", "action=sketchybar --trigger yabai_update" },
@@ -60,9 +56,9 @@ const managed_signals = [_][]const []const u8{
 /// Every setting kxdesk asserts on yabai, in the order `~/.yabairc` set them.
 ///
 /// Flat `key, value, key, value`, because that is the shape `yabai -m config`
-/// reads, and the whole table has to reach yabai in one invocation: the shell
-/// spawned a `yabai` per setting - twenty-three processes and about 460 ms here,
-/// against 77 ms for the one - so these are batched.
+/// reads, and the whole table has to reach yabai in one invocation: a `yabai` per
+/// setting is twenty-three processes and about 460 ms here, against 77 ms for the
+/// one.
 ///
 /// Settings that file had commented out are not here: they were off.
 const settings = [_][]const u8{
@@ -89,11 +85,10 @@ const settings = [_][]const u8{
     "window_gap",                  "3",
     "external_bar",                "all:26:0",
     "display_arrangement_order",   "horizontal",
-    // Off, where `~/.yabairc` had it on. With it on, yabai writes every event it
-    // handles - and every query the bar's refresh sends it - to its stdout in
-    // `/tmp/yabai_kdressler.out.log`, on the same thread that processes them,
-    // and the file only grows: 104 MiB in twenty-five minutes here. A drag emits
-    // one event per frame, so the log is written to on the drag path.
+    // Off, where `~/.yabairc` had it on: yabai then writes every event and every
+    // bar query to `/tmp/yabai_kdressler.out.log` on the same thread that
+    // processes them, and the file only grows - 104 MiB in twenty-five minutes,
+    // a drag emitting one event per frame.
     "debug_output",                "off",
 };
 
@@ -116,9 +111,8 @@ pub fn applySettings(context: *Context, args: []const []const u8) anyerror![]con
 }
 
 /// Re-provision the yabai rules: drop whatever is configured, then add the six
-/// managed ones, in the shell's order. An empty `--list` is not an error, as
-/// the shell's `xargs` over empty input also succeeded; failed removals did
-/// not stop its adds either (they continued and its status was the last add's).
+/// managed ones. An empty `--list` is not an error, failed removals do not stop
+/// the adds, and the result is the last add's.
 pub fn refreshRules(context: *Context, args: []const []const u8) anyerror![]const u8 {
     _ = args;
     const arena = context.arena;
@@ -126,10 +120,9 @@ pub fn refreshRules(context: *Context, args: []const []const u8) anyerror![]cons
     const listed = try context.yabai.query([]yabai.Labeled, arena, &.{ "-m", "rule", "--list" });
     for (listed) |rule| removeByLabel(arena, context.yabai, "rule", rule.label) catch {};
 
-    // zsh keeps going after a failed add (no `set -e`) and the function's exit
-    // is the last add's status. On this machine the `display=^3` rule can
-    // never be added - yabai locates no display with arrangement index 3 -
-    // and the shell still exited 0 because the final add succeeded.
+    // The exit status is the last add's, so a rule that cannot be added - the
+    // `display=^3` one here, yabai finding no display with arrangement index 3 -
+    // does not fail the refresh.
     var last_add: anyerror!void = {};
     for (managed_rules) |rule| {
         last_add = context.yabai.command(arena, rule);
@@ -145,8 +138,7 @@ pub fn refreshSignals(context: *Context, args: []const []const u8) anyerror![]co
     try clearSignalsInner(context, true);
 
     const arena = context.arena;
-    // Same last-add-status semantics as `refreshRules`: the telegram add was
-    // the shell's final statement, and only its status reached the caller.
+    // The result is the last add's, as in `refreshRules`.
     var last_add: anyerror!void = {};
     for (managed_signals) |signal| {
         last_add = context.yabai.command(arena, signal);
@@ -155,16 +147,15 @@ pub fn refreshSignals(context: *Context, args: []const []const u8) anyerror![]co
     return "";
 }
 
-/// Drop every configured yabai signal. Removing nothing is not an error, as
-/// the shell's `xargs` over an empty list also succeeded.
+/// Drop every configured yabai signal; removing nothing is not an error.
 pub fn clearSignals(context: *Context, args: []const []const u8) anyerror![]const u8 {
     _ = args;
     try clearSignalsInner(context, false);
     return "";
 }
 
-/// Shared by `refreshSignals` and `clearSignals`. As a provisioner the shell
-/// tolerated failed removals among its adds; standalone it did not.
+/// `tolerate_removal_failure` is set by the provisioners, which continue past a
+/// failed removal among their adds.
 fn clearSignalsInner(context: *Context, tolerate_removal_failure: bool) !void {
     const arena = context.arena;
 
@@ -179,34 +170,26 @@ fn clearSignalsInner(context: *Context, tolerate_removal_failure: bool) !void {
 /// Focus a set of spaces named by label, leaving a member of the group on the
 /// currently focused display for last, so that is where focus lands.
 ///
-/// `args[0]` is a comma-separated list of labels, quoted or not: whoever typed
-/// the command may write `"stonks","pkms","gtd"` and a completion passes the
-/// bare labels, so the embedded double quotes are stripped when a caller
-/// supplies them and tolerated when it does not. A label matching no space is
-/// simply absent, and nothing to focus at all is not an error - the shell piped
-/// an empty list through `xargs -I {}` and exited 0. Degenerate case it did not
-/// handle and neither does this: no match on the focused display.
+/// `args[0]` is a comma-separated list of labels, quoted or not. A label
+/// matching no space is simply absent, and nothing to focus at all is not an
+/// error. Degenerate case this does not handle: no match on the focused display.
 pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
     if (args.len == 0) return error.MissingArgument;
 
     const wanted = parseLabels(args[0], arena);
 
-    // The spaces of every display, asked for one display at a time and kept: the
-    // command passes over them twice, and a query per pass would double the
-    // processes it spawns. The displays themselves come from a display query
-    // rather than from counting upwards, so a machine whose arrangement has a
-    // gap cannot hide a display above it.
+    // Queried once and kept: the command passes over them twice. The displays
+    // come from a display query rather than from counting upwards, so an
+    // arrangement with a gap cannot hide a display above it.
     const displays = displayList(arena, context.yabai);
     const per_display = try arena.alloc([]yabai.Space, displays.len);
     for (displays, 0..) |display, position| {
         per_display[position] = spacesOf(arena, context.yabai, display.index);
     }
 
-    // Which display decides the order: the shell took `sort_by(."has-focus") |
-    // .[-1].display` over every space, so it is the one holding the highest-index
-    // space that has focus, not the first display that has one. Determined before
-    // anything is focused, as the shell's separate pass did.
+    // The deciding display is the one holding the highest-index focused space,
+    // determined before anything is focused.
     var focused_display: ?u32 = null;
     for (per_display) |spaces| {
         for (spaces) |space| {
@@ -214,11 +197,9 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
         }
     }
 
-    // The shell's two lists, run through one `xargs` in this order: matches on the
-    // other displays are focused first, in index order, and the deciding display's
-    // matches are left for last - the one that is chosen is the one left focused.
-    // A focus that fails is remembered rather than aborting: `xargs` ran the rest
-    // and then reported the failure, which is this command's exit status.
+    // Matches on the other displays are focused first, in index order, and the
+    // deciding display's matches last, so the one chosen is the one left focused.
+    // A focus that fails is remembered rather than aborting the rest.
     var final_focus: ?yabai.Space = null;
     var failed = false;
     for (per_display) |spaces| {
@@ -228,9 +209,8 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
             if (!isSelected(wanted, space.label)) continue;
 
             if (focused_display != null and space.display == focused_display.?) {
-                // `.[-1]` of `sort_by(."has-focus")` over this display's matches:
-                // a match that holds focus sorts last and so wins, and otherwise
-                // the last match in index order does.
+                // A match holding focus wins; otherwise the last match in index
+                // order does.
                 const chosen_holds_focus = if (final_focus) |chosen| chosen.@"has-focus" else false;
                 if (space.@"has-focus" or
                     (!chosen_holds_focus and
@@ -246,7 +226,6 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
         }
     }
 
-    // The deciding display's match goes last, so it is the one left focused.
     if (final_focus) |space| {
         focusSpace(arena, context.yabai, space.index) catch {
             failed = true;
@@ -259,17 +238,14 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
 /// Cycle focus through every window of the current space, floating ones
 /// included.
 ///
-/// yabai's own selectors cannot do this: `--focus next`/`first` and their
-/// `stack.*` cousins resolve through `view_find_window_node`, the BSP tree, so a
-/// floating window is never their target - and a floating window *holding*
-/// focus has no node at all, so all four attempts of the shell's chain fail and
-/// the key does nothing. The tree was good for one thing, an order to cycle in;
-/// focusing by id needs no tree, so the order here is the space's window list
-/// sorted by window id, which is creation order and does not shift as focus
-/// moves. Minimized windows are left out, as yabai leaves them out of the tree
-/// by untiling them. The focused window is the last candidate, so a space with
-/// one window re-raises it; a space with nothing focusable does nothing and
-/// still succeeds, as the shell's trailing `exit 0` did.
+/// yabai's own `--focus next`/`first` and their `stack.*` cousins resolve through
+/// `view_find_window_node`, the BSP tree, so a floating window is never their
+/// target - and a floating window holding focus has no node at all. The order
+/// here is the space's window list sorted by window id, which is creation order
+/// and does not shift as focus moves. Minimized windows are left out, as yabai
+/// leaves them out of the tree by untiling them; the focused window is the last
+/// candidate, so a space with one window re-raises it; a space with nothing
+/// focusable does nothing and still succeeds.
 pub fn cycleSpaceWindows(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
     const reverse = hasFlag(args, "--reverse");
@@ -314,16 +290,13 @@ pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror!
     const arena = context.arena;
     const reverse = hasFlag(args, "--reverse");
 
-    // The current display's spaces, which is the scope this command works on.
     const spaces = try context.yabai.query([]yabai.Space, arena, &.{ "-m", "query", "--spaces", "--display" });
     if (spaces.len == 0) return error.YabaiFailed;
 
     sort(spaces);
 
-    // The shell's selector: `nth(index(focused) - 1)` into `sort_by(.index)`,
-    // reversed when going forward. jq's negative index wraps, so the net
-    // effect is next with wrap-around forward, previous with wrap-around
-    // reversed, and a self-focus cycle on a one-space display.
+    // Next with wrap-around forward, previous with wrap-around reversed, and a
+    // self-focus cycle on a one-space display.
     const focused_position: ?usize = for (spaces, 0..) |space, position| {
         if (space.@"has-focus") break position;
     } else null;
@@ -335,18 +308,15 @@ pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror!
             break :blk spaces[if (focused + 1 >= spaces.len) 0 else focused + 1];
         }
     } else blk: {
-        // jq's `index` misses (`null - 1 == -1`): `nth(-1)` of the array -
-        // its last element forward, its first reversed.
+        // No focused space: the last element forward, the first reversed.
         break :blk if (reverse) spaces[0] else spaces[spaces.len - 1];
     };
 
-    var buffer: [64]u8 = undefined;
-    const index_argument = std.fmt.bufPrint(&buffer, "{d}", .{neighbor.index}) catch unreachable;
+    const index_argument = try numArg(arena, neighbor.index);
     context.yabai.command(arena, &.{ "-m", "space", "--focus", index_argument }) catch |err| switch (err) {
-        // Native-fullscreen spaces refuse to be focused by yabai (and so does
-        // re-focusing the current one); the shell fell through to emulating
-        // Mission Control's shortcut, and its status was the fallback's. It is
-        // the same fallback still, pressed by kanata where skhd pressed it.
+        // Native-fullscreen spaces refuse to be focused by yabai, and so does
+        // re-focusing the current one; the fallback is Mission Control's
+        // shortcut, pressed through kanata.
         error.YabaiFailed => {
             try kanata.tapFakeKey(context, if (reverse) "ctrl-left" else "ctrl-right");
             return "";
@@ -404,7 +374,7 @@ pub fn cycleDisplays(context: *Context, args: []const []const u8) anyerror![]con
 /// list - the shape of the same failure the bar's own display query handles.
 fn displayList(arena: std.mem.Allocator, client: *yabai.Client) []yabai.Display {
     return client.displays(arena) catch |err| blk: {
-        std.debug.print("kxdesk: yabai query failed: {s}\n", .{@errorName(err)});
+        log.warn("yabai query failed: {s}", .{@errorName(err)});
         break :blk client.query([]yabai.Display, arena, &.{
             "-m", "query", "--displays", "--display",
         }) catch &.{};
@@ -412,18 +382,16 @@ fn displayList(arena: std.mem.Allocator, client: *yabai.Client) []yabai.Display 
 }
 
 /// The spaces of one display, or none when yabai will not answer for it: the
-/// caller remembers that a focus was missed, as the shell's `xargs` reported
-/// failure for the invocations that failed while running the ones that did not.
+/// caller remembers that a focus was missed rather than aborting the rest.
 fn spacesOf(arena: std.mem.Allocator, client: *yabai.Client, display: u32) []yabai.Space {
-    var buffer: [16]u8 = undefined;
-    const index = std.fmt.bufPrint(&buffer, "{d}", .{display}) catch unreachable;
+    const index = numArg(arena, display) catch return &.{};
     return client.query([]yabai.Space, arena, &.{ "-m", "query", "--spaces", "--display", index }) catch |err| blk: {
-        std.debug.print("kxdesk: yabai query failed: {s}\n", .{@errorName(err)});
+        log.warn("yabai query failed: {s}", .{@errorName(err)});
         break :blk &.{};
     };
 }
 
-/// Ascending space index, the shell's `sort_by(.index)`.
+/// Ascending space index.
 fn sort(spaces: []yabai.Space) void {
     std.mem.sort(yabai.Space, spaces, {}, lessThanIndex);
 }
@@ -438,14 +406,18 @@ fn lessThanId(_: void, a: yabai.Window, b: yabai.Window) bool {
     return a.id < b.id;
 }
 
+/// One number as the argv token yabai reads.
+fn numArg(arena: std.mem.Allocator, value: anytype) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{d}", .{value});
+}
+
 /// Focus one window by id, reporting whether yabai took it.
 ///
 /// yabai refuses an id it cannot focus, and that refusal is what lets the cycle
 /// step over an entry of the space's window list that is not focusable - a
 /// non-AX window that holds no accessibility element to raise.
 fn focusWindow(arena: std.mem.Allocator, client: *yabai.Client, id: u32) bool {
-    var buffer: [16]u8 = undefined;
-    const argument = std.fmt.bufPrint(&buffer, "{d}", .{id}) catch unreachable;
+    const argument = numArg(arena, id) catch return false;
     client.command(arena, &.{ "-m", "window", argument, "--focus" }) catch return false;
     return true;
 }
@@ -461,8 +433,7 @@ fn removeByLabel(arena: std.mem.Allocator, client: *yabai.Client, domain: []cons
 }
 
 fn focusSpace(arena: std.mem.Allocator, client: *yabai.Client, index: u32) !void {
-    var buffer: [64]u8 = undefined;
-    const argument = std.fmt.bufPrint(&buffer, "{d}", .{index}) catch unreachable;
+    const argument = try numArg(arena, index);
     try client.command(arena, &.{ "-m", "space", "--focus", argument });
 }
 
@@ -492,14 +463,6 @@ fn parseLabels(input: []const u8, arena: std.mem.Allocator) []const []const u8 {
     }
     return labels.items;
 }
-
-// -- the actions kanata's messages name -------------------------------------
-//
-// The key bindings in `~/.skhdrc.template` used to run these as shell
-// commands, one `yabai -m` per binding. They are ports of those commands, in
-// the same argv tokens: what the shell wrote as `--swap west` is `--swap` and
-// `west` here, and a `&&` between two commands is two `try`s, so the second
-// only runs when the first was taken.
 
 /// The four directions yabai's window and space commands take.
 pub const Direction = enum {
@@ -553,16 +516,14 @@ pub fn windowInsertIntoStack(context: *Context) !void {
 /// Move the focused window to display `index`.
 pub fn windowToDisplay(context: *Context, index: u8) !void {
     const arena = context.arena;
-    var buffer: [4]u8 = undefined;
-    const argument = std.fmt.bufPrint(&buffer, "{d}", .{index}) catch unreachable;
+    const argument = try numArg(arena, index);
     try context.yabai.command(arena, &.{ "-m", "window", "--display", argument });
 }
 
 /// Focus display `index`.
 pub fn displayFocus(context: *Context, index: u8) !void {
     const arena = context.arena;
-    var buffer: [4]u8 = undefined;
-    const argument = std.fmt.bufPrint(&buffer, "{d}", .{index}) catch unreachable;
+    const argument = try numArg(arena, index);
     try context.yabai.command(arena, &.{ "-m", "display", "--focus", argument });
 }
 
@@ -581,8 +542,7 @@ pub fn spaceLayout(context: *Context, layout: Layout) !void {
 /// Rotate the focused space's tree by `degrees`.
 pub fn spaceRotate(context: *Context, degrees: u16) !void {
     const arena = context.arena;
-    var buffer: [8]u8 = undefined;
-    const argument = std.fmt.bufPrint(&buffer, "{d}", .{degrees}) catch unreachable;
+    const argument = try numArg(arena, degrees);
     try context.yabai.command(arena, &.{ "-m", "space", "--rotate", argument });
 }
 
@@ -603,11 +563,10 @@ pub fn windowFocusRecent(context: *Context) !void {
 
 /// Focus the next window of the focused window's application.
 ///
-/// The shell built this by hand: the focused window is the first entry of
-/// yabai's window list, and the one wanted is the next entry carrying the same
-/// application. An application with one window has no next entry - the shell
-/// passed yabai a literal `null` there and yabai refused it - so this reports
-/// the same failure the refusal did, which the caller logs and drops.
+/// The focused window is the first entry of yabai's window list and the one
+/// wanted is the next entry carrying the same application. An application with
+/// one window has no next entry, which is reported as `error.YabaiFailed` for the
+/// caller to log and drop.
 pub fn windowFocusSameApp(context: *Context) !void {
     const arena = context.arena;
     const windows = try context.yabai.windows(arena);
@@ -637,9 +596,8 @@ pub const WindowToggle = enum {
 pub fn windowToggle(context: *Context, toggle: WindowToggle) !void {
     const arena = context.arena;
 
-    // The one that is not a single toggle is three, and the shell chained them
-    // with `&&`: the sticky state of a window that refused to float is not worth
-    // reaching for.
+    // Three toggles chained, in this order: the sticky state of a window that
+    // refused to float is not worth reaching for.
     if (toggle == .float_sticky_topmost) {
         try context.yabai.command(arena, &.{ "-m", "window", "--toggle", "float" });
         try context.yabai.command(arena, &.{ "-m", "window", "--toggle", "sticky" });
@@ -656,32 +614,28 @@ pub fn windowToggle(context: *Context, toggle: WindowToggle) !void {
     try context.yabai.command(arena, &.{ "-m", "window", "--toggle", state });
 }
 
-/// Move the focused window onto its display's frame and size it to fill it.
-///
-/// The shell asked yabai for the display holding the focused window and cut its
-/// coordinates down to whole points before using them; the casts are that cut.
+/// Move the focused window onto its display's frame and size it to fill it. The
+/// frame's coordinates are cut to whole points before use.
 pub fn windowFillDisplay(context: *Context) !void {
     const arena = context.arena;
     const display = try context.yabai.query(yabai.Display, arena, &.{
         "-m", "query", "--displays", "--window",
     });
 
-    var move: [48]u8 = undefined;
-    const position = std.fmt.bufPrint(&move, "abs:{d}:{d}", .{
+    const position = try std.fmt.allocPrint(arena, "abs:{d}:{d}", .{
         @as(i64, @intFromFloat(display.frame.x)),
         @as(i64, @intFromFloat(display.frame.y)),
-    }) catch unreachable;
+    });
     try context.yabai.command(arena, &.{ "-m", "window", "--move", position });
 
-    var size: [48]u8 = undefined;
-    const dimensions = std.fmt.bufPrint(&size, "abs:{d}:{d}", .{
+    const dimensions = try std.fmt.allocPrint(arena, "abs:{d}:{d}", .{
         @as(i64, @intFromFloat(display.frame.w)),
         @as(i64, @intFromFloat(display.frame.h)),
-    }) catch unreachable;
+    });
     try context.yabai.command(arena, &.{ "-m", "window", "--resize", dimensions });
 }
 
-/// Put yabai's own window list on the clipboard, as `pbcopy` did.
+/// Put yabai's own window list on the clipboard.
 pub fn copyWindows(context: *Context) !void {
     const arena = context.arena;
     const list = try context.yabai.rawQuery(arena, &.{ "-m", "query", "--windows" });

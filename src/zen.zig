@@ -1,14 +1,8 @@
 //! `zen` mode: collapse the bar down to the essentials and back.
 //!
-//! Replaces `plugins/zen.sh`, which spawned the `sketchybar` CLI once per item
-//! and forked `jq` to read back a single boolean. Here it is two queries and one
-//! command batch.
-//!
-//! Zen is opt-*out*: it hides every item the bar has and keeps only what this
-//! file names, rather than hiding a list of items written down here. The bar is
-//! asked what it has, so an item added to the configuration is hidden by the next
-//! toggle without anyone remembering to come back to this file - which is how
-//! the network graphs and the link icon joined the collapsed bar.
+//! Zen is opt-*out*: the bar's own item list comes from `--query bar` and every
+//! item `kept` does not name is hidden, so an item added to the configuration is
+//! covered without editing this file.
 
 const std = @import("std");
 
@@ -17,34 +11,19 @@ const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const state = @import("store.zig");
 
-/// The items zen leaves alone: the collapsed bar is the spaces, the clock, the
-/// battery and the timer, and what is not drawn on the bar at all is none of
-/// zen's business either.
-///
-/// That last part is why the popup rows and the helper item are named here: they
-/// carry `drawing = off` - or are only ever drawn inside a popup - so a zen that
-/// showed them back would put a stray divider in the bell's popup and a blank
-/// stretch on the left of the bar. Every other item the bar has is drawn when the
-/// bar is not collapsed, and is hidden and shown again by name.
+/// Items zen leaves alone: the collapsed bar's content, plus what draws nothing.
 const kept = [_][]const u8{
-    // The spaces are the bar's left side, and stay through a collapse.
     "space.",
-    // The clock's *label* stays; only its icon goes (see `apply`).
     "calendar",
     "battery.ring",
     "pomodoro",
-    // Popup rows: drawn inside a popup, and only while it is open. Named by
-    // prefix, so a row added to a provider's `rows` is covered without a second
-    // edit here.
     "github.template",
     "neuralwatt.",
     "opencode-go.",
-    // The helper item that carries yabai's events. It draws nothing.
     "system.yabai",
 };
 
-/// Whether an item is one zen leaves alone. Prefixes, so `space.` covers every
-/// space without naming them one by one.
+/// Whether an item is one zen leaves alone; an entry covers by prefix.
 pub fn isKept(item: []const u8) bool {
     for (kept) |prefix| {
         if (std.mem.startsWith(u8, item, prefix)) return true;
@@ -54,11 +33,10 @@ pub fn isKept(item: []const u8) bool {
 
 pub const Mode = enum { on, off, toggle };
 
-/// Where the collapsed bar is remembered.
+/// Where the collapsed state is remembered.
 pub const state_key = "zen";
 
-/// Apply zen mode and remember it, so a bar that is restarted comes back the way
-/// the last one was left.
+/// Apply zen mode and remember it, so a restarted bar comes back as it was left.
 pub fn set(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode, store: *state.Store, io: std.Io) !void {
     const collapsed = try apply(bar, arena, mode, store, io);
     store.setInt(io, state_key, @intFromBool(collapsed)) catch {};
@@ -71,57 +49,40 @@ pub fn restore(bar: *sb.Client, arena: std.mem.Allocator, store: *state.Store, i
     _ = try apply(bar, arena, .on, store, io);
 }
 
-/// Returns the state the bar is in afterwards - `.toggle` reads it from the bar
-/// first, so the caller can remember the answer.
+/// Returns the state the bar is in afterwards, for the caller to remember.
 pub fn apply(bar: *sb.Client, arena: std.mem.Allocator, mode: Mode, store: *state.Store, io: std.Io) !bool {
-    const zen = switch (mode) {
+    const collapsed = switch (mode) {
         .on => true,
         .off => false,
-        // Clicking the calendar flips whatever state the bar is in, which is
-        // read back from the item the shell plugin also used as its sentinel.
+        // Clicking the calendar flips whatever state the bar is in.
         .toggle => try isVisible(bar, arena),
     };
-    const drawing = if (zen) "off" else "on";
+    // A collapsed bar draws nothing, so the drawing flag is its negation.
+    const drawing = !collapsed;
 
-    // Everything the bar has, read back from the bar itself, less what zen
-    // keeps. An item this file has never heard of is hidden with the rest - and
-    // named back into place when the bar is expanded again, since an item that is
-    // drawn when the bar is not collapsed is exactly the set zen hides.
+    // Every bar item less what `kept` names: this loop hides unknown items and names them back.
     for (try items(bar, arena)) |item| {
         if (isKept(item)) continue;
-        // A provider with no token in the store is off the bar in every mode, so
-        // expanding the bar must not put it back: it would come back holding the
-        // placeholder its item was declared with.
+        // A provider with no token is off the bar in every mode, so do not restore it.
         if (!items_usage.configured(io, store, item)) continue;
 
         var props: Props = .{};
-        try props.fmt("drawing={s}", .{drawing});
+        try props.write(.{ .drawing = drawing });
         try bar.set(item, props.slice());
     }
 
-    // The clock's icon goes with the rest and its label stays, so the collapsed
-    // bar still says what time it is.
+    // The clock's icon goes; its label stays, so the collapsed bar still shows the time.
     var calendar: Props = .{};
-    try calendar.fmt("icon.drawing={s}", .{drawing});
+    try calendar.write(.{ .icon = .{ .drawing = drawing } });
     try bar.set("calendar", calendar.slice());
 
     try bar.commit();
-    return zen;
+    return collapsed;
 }
 
 /// The bar's own list of its items, from `--query bar`.
 fn items(bar: *sb.Client, arena: std.mem.Allocator) ![]const []const u8 {
-    const response = try arena.alloc(u8, 64 * 1024);
-
-    bar.clear();
-    try bar.arg("--query");
-    try bar.arg("bar");
-    const text = try bar.commitInto(response);
-
-    const parsed = try std.json.parseFromSliceLeaky(BarState, arena, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_if_needed,
-    });
+    const parsed = try bar.query(BarState, arena, "bar");
     return parsed.items;
 }
 
@@ -130,19 +91,8 @@ const BarState = struct { items: []const []const u8 = &.{} };
 const Geometry = struct { drawing: []const u8 = "on" };
 const ItemState = struct { geometry: Geometry = .{} };
 
-/// Whether the bar is currently drawn, as reported by the GitHub bell item.
+/// Whether the bar is drawn, per the bell item's `geometry.drawing`; failure means drawn.
 fn isVisible(bar: *sb.Client, arena: std.mem.Allocator) !bool {
-    const response = try arena.alloc(u8, 32 * 1024);
-
-    bar.clear();
-    try bar.arg("--query");
-    try bar.arg("github.bell");
-    const text = try bar.commitInto(response);
-
-    const parsed = std.json.parseFromSliceLeaky(ItemState, arena, text, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_if_needed,
-    }) catch return true;
-
+    const parsed = bar.query(ItemState, arena, "github.bell") catch return true;
     return std.mem.eql(u8, parsed.geometry.drawing, "on");
 }

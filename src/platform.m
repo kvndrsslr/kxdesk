@@ -38,8 +38,6 @@ extern char** environ;
 #include "sketchybar.h"
 #pragma clang diagnostic pop
 
-/* -- mach transport ------------------------------------------------------- */
-
 uint32_t kx_bootstrap_lookup(const char* name) {
   mach_port_t bs_port;
   if (task_get_special_port(mach_task_self(), TASK_BOOTSTRAP_PORT, &bs_port) != KERN_SUCCESS) {
@@ -116,13 +114,11 @@ uint32_t kx_uid(void) {
   return (uint32_t)getuid();
 }
 
-/// Receive one message, waiting at most `timeout_ms` milliseconds. Returns false
-/// when the wait elapsed instead, in which case no message was received and
-/// there is nothing to destroy.
-///
-/// This is the vendored `mach_receive_message` with a timeout the caller picks;
-/// its own timeout path is fixed at a second. The buffer is zeroed first, as
-/// there, so that a failed receive leaves `address` NULL rather than stale.
+/// Receive one message, waiting at most `timeout_ms` milliseconds; false when the
+/// wait elapsed instead, in which case no message was received and there is nothing
+/// to destroy. This is the vendored `mach_receive_message` with a caller-chosen
+/// timeout (its own is fixed at a second), and the buffer is zeroed first, as there,
+/// so a failed receive leaves `address` NULL rather than stale.
 static bool kx_server_receive(uint32_t port, struct mach_buffer* buffer,
                               uint32_t timeout_ms) {
   *buffer = (struct mach_buffer) { 0 };
@@ -145,13 +141,11 @@ static bool kx_server_receive(uint32_t port, struct mach_buffer* buffer,
 }
 
 void kx_server_serve(uint32_t port, kx_handler handler, kx_timer timer) {
-  // A receive that blocks until a message arrives, or until the timer says it
-  // has something to do. With no timer running the wait is infinite, so the idle
-  // daemon wakes for nothing at all. SketchyBar's `k` shutdown marker arrives as
-  // an ordinary 2-byte block - `env[0] == 'k'` - and is handed to the handler,
-  // which records that the bar is gone. It is not a reason to exit: this process
-  // outlives the bar and is expected to be serving again by the time the next
-  // `apply` arrives.
+  // A receive that blocks until a message arrives or the timer says it has
+  // something to do; with no timer running the wait is infinite, so an idle daemon
+  // wakes for nothing at all. SketchyBar's `k` shutdown marker arrives as an
+  // ordinary 2-byte block and is handed to the handler, which records that the bar
+  // is gone - not a reason to exit, since this process outlives the bar.
   struct mach_buffer buffer;
   for (;;) {
     // Asked before the wait rather than after it, so the timer's own work - and
@@ -286,8 +280,6 @@ int32_t kx_send(uint32_t port, const char* argv, size_t len, char* out, size_t c
   return written;
 }
 
-/* -- process execution ---------------------------------------------------- */
-
 int64_t kx_exec_capture(const char* const argv[], char* out, size_t cap) {
   if (cap == 0) return -1;
 
@@ -420,8 +412,6 @@ bool kx_env(const char* name, char* out, size_t cap) {
   return true;
 }
 
-/* -- unix sockets --------------------------------------------------------- */
-
 int64_t kx_socket_message(const char* path, const void* request, size_t request_size, char* out, size_t cap) {
   if (!path || !request || !out || cap == 0) return -1;
 
@@ -481,8 +471,6 @@ int64_t kx_socket_message(const char* path, const void* request, size_t request_
   out[(size_t)total < cap ? (size_t)total : cap - 1] = '\0';
   return total;
 }
-
-/* -- tcp sockets ---------------------------------------------------------- */
 
 int32_t kx_tcp_connect(const char* host, uint16_t port) {
   if (!host || !*host) return -1;
@@ -550,8 +538,6 @@ void kx_tcp_close(int32_t fd) {
   if (fd >= 0) close(fd);
 }
 
-/* -- fonts ---------------------------------------------------------------- */
-
 bool kx_app_font_path(char* out, size_t cap) {
   // A descriptor match, rather than CTFontCreateWithName, because the latter
   // silently substitutes a different font when the requested one is missing.
@@ -585,8 +571,6 @@ bool kx_app_font_path(char* out, size_t cap) {
   return ok;
 }
 
-/* -- battery -------------------------------------------------------------- */
-
 bool kx_battery(int32_t* percent, bool* charging) {
   CFTypeRef blob = IOPSCopyPowerSourcesInfo();
   if (!blob) return false;
@@ -619,8 +603,6 @@ bool kx_battery(int32_t* percent, bool* charging) {
   return ok;
 }
 
-/* -- clock ---------------------------------------------------------------- */
-
 void kx_clock(char* icon, size_t icon_cap, char* label, size_t label_cap) {
   static bool locale_ready = false;
   if (!locale_ready) {
@@ -635,8 +617,6 @@ void kx_clock(char* icon, size_t icon_cap, char* label, size_t label_cap) {
   strftime(icon, icon_cap, "%a %d. %b", &local);
   strftime(label, label_cap, "%H:%M", &local);
 }
-
-/* -- kernel readings ------------------------------------------------------- */
 
 double kx_cpu_load(void) {
   // Ticks are cumulative, so there is no "current" CPU usage to read: what is
@@ -673,11 +653,10 @@ double kx_cpu_load(void) {
 }
 
 double kx_gpu_load(void) {
-  // Apple's GPU driver publishes a performance dictionary, and "Device
-  // Utilization %" in it is the instantaneous figure the system's own tools
-  // show. Unlike the CPU's tick counters there is nothing to difference here:
-  // one read is the answer. Everything is IOKit, in this process - no fork, and
-  // no permission to ask for.
+  // "Device Utilization %" in the driver's performance dictionary is the
+  // instantaneous figure the system's own tools show: unlike the CPU's tick
+  // counters there is nothing to difference, one read is the answer. All IOKit, in
+  // this process - no fork, no permission to ask for.
   io_iterator_t services = 0;
   if (IOServiceGetMatchingServices(kIOMainPortDefault,
                                    IOServiceMatching("IOAccelerator"),
@@ -707,17 +686,13 @@ double kx_gpu_load(void) {
   return percent / 100.0;
 }
 
-/// Interface families whose bytes are not the user's traffic, by name prefix -
-/// macOS gives an `awdl0` and an `en0` the same flags, so there is nothing but
-/// the name to tell them apart.
-///
-/// The tunnels (`utun`, `gif`, `stf`, `ipsec`) run over a link that is counted
-/// itself; the radio's own (`awdl`, `llw`, `ap`) carry AirDrop and peer-to-peer
-/// traffic beside the same radio's `en0`, and `awdl0` reports transfers that
-/// never left the machine; the bridges (`bridge`, `vmenet`) count their member
-/// ports' bytes a second time; and `anpi`, `anri` and `nan` are the interfaces
-/// the system keeps for itself, up on every machine and carrying nothing of the
-/// user's.
+/// Interface families whose bytes are not the user's traffic, by name prefix:
+/// macOS gives an `awdl0` and an `en0` the same flags, so only the name tells them
+/// apart. The tunnels (`utun`, `gif`, `stf`, `ipsec`) run over a link that is
+/// counted itself; the radio's own (`awdl`, `llw`, `ap`) carry AirDrop beside the
+/// same radio's `en0`, and `awdl0` reports transfers that never left the machine;
+/// the bridges (`bridge`, `vmenet`) count their member ports a second time; and
+/// `anpi`, `anri` and `nan` are interfaces the system keeps for itself.
 static const char* const kx_virtual_links[] = {
     "awdl", "llw", "ap", "utun", "gif", "stf", "ipsec", "tun", "tap",
     "bridge", "vmenet", "anpi", "anri", "nan", NULL,

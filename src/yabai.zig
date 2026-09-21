@@ -1,20 +1,14 @@
-//! yabai query client.
-//!
-//! The shell configuration this replaces piped every query through `jq` and, for
-//! stacked windows, re-queried yabai once per window. Here the JSON is parsed
-//! straight into typed values, so a single `--windows` query answers every
-//! question the updater asks.
+//! yabai query client: the JSON is parsed straight into typed values, so a
+//! single `--windows` query answers every question an updater asks.
 //!
 //! Two transports, one message. The daemon listens on `/tmp/yabai_<user>.socket`
 //! and answers the framing `yabai -m` itself speaks, which is what everything
-//! here uses first; the binary is the fallback, and the difference between them
-//! is only a process spawn in front of the same message - measured, ~0.5 ms
-//! against ~5.6 ms for one query, which is a fork and a dynamic link of a client
-//! that adds nothing. yabai exposes no mach service and no library, so the
-//! binary is the only thing to fall back to.
+//! here uses first; writes and the socket's failure path go through the binary,
+//! the only way in - yabai exposes no mach service and no library.
 
 const std = @import("std");
 
+const log = @import("log.zig");
 const platform = @import("platform.zig");
 
 /// A yabai display. `id` is the `CGDirectDisplayID`, which is also what
@@ -200,7 +194,7 @@ pub const Client = struct {
             // can point straight into it instead of being copied.
             .allocate = .alloc_if_needed,
         }) catch |err| {
-            std.debug.print("kxdesk: yabai query '{s}' failed: {s}\n", .{
+            log.warn("yabai query '{s}' failed: {s}", .{
                 args[0],
                 @errorName(err),
             });
@@ -210,17 +204,16 @@ pub const Client = struct {
 
     /// One message to the yabai daemon, and its answer when one is wanted.
     ///
-    /// The daemon's own socket comes first; the binary is the fallback for a
-    /// socket that is not there or does not answer. A refusal is an answer, not
-    /// a transport failure, and so never falls back: on the socket it is the
-    /// daemon's own sentence behind the marker byte, and through the binary it
-    /// is a non-zero exit, both surfacing as `error.YabaiFailed`.
+    /// The socket comes first; the binary is the fallback for a socket that is
+    /// not there or does not answer. A refusal is an answer, not a transport
+    /// failure, and so never falls back: on the socket it is the daemon's own
+    /// sentence behind the marker byte, through the binary a non-zero exit, both
+    /// surfacing as `error.YabaiFailed`.
     ///
-    /// `want_reply` is what separates the two ways silence can be read. A
-    /// command that succeeds answers nothing; a query always answers at least
-    /// `[]`, so an empty answer to one means the socket did not carry the
-    /// message, which falls back to the binary. The reply that comes back from
-    /// a `want_reply` call is never empty.
+    /// `want_reply` separates the two ways silence can be read: a command that
+    /// succeeds answers nothing, while a query always answers at least `[]`, so
+    /// an empty answer to one means the socket did not carry the message. The
+    /// reply from a `want_reply` call is never empty.
     fn send(
         self: *Client,
         scratch: std.mem.Allocator,
@@ -249,7 +242,7 @@ pub const Client = struct {
     /// to report about it.
     fn reportSocketFailure(self: *Client, err: anyerror) void {
         if (self.socket_failure_reported.swap(true, .monotonic)) return;
-        std.debug.print("kxdesk: yabai socket unavailable ({s}), falling back to the binary\n", .{
+        log.warn("yabai socket unavailable ({s}), falling back to the binary", .{
             @errorName(err),
         });
     }
@@ -303,10 +296,8 @@ fn socketPath(buffer: *[std.fs.max_path_bytes]u8) ?[:0]const u8 {
 /// The wire message starts at the domain, not at `-m`: the binary is what strips
 /// that flag (`client_send_message(argc-1, argv+1)`), so the same argv the
 /// spawned client is given has to lose its first token here. Sending it whole
-/// gets `unknown domain '-m'` back.
-///
-/// Every error here is a transport failure and none of them is an answer, which
-/// is what the caller falls back to the binary for.
+/// gets `unknown domain '-m'` back. Every error here is a transport failure and
+/// none of them is an answer.
 fn socketRequest(scratch: std.mem.Allocator, args: []const []const u8) !Answer {
     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const path = socketPath(&path_buffer) orelse return error.SocketUnavailable;

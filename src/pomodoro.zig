@@ -1,21 +1,14 @@
 //! A pomodoro timer, and the notifications that end each interval.
 //!
-//! The timer belongs to the daemon rather than to the bar. It holds its own
-//! deadline on the awake clock and rings whether or not SketchyBar is running,
-//! and the bar item is only a view of it: the daemon pushes the countdown to the
-//! item when it changes - once a second while a phase runs, and not at all while
-//! the timer is idle - so no item carries an `update_freq`, nothing polls, and
-//! no process is forked per tick.
-//!
-//! The intervals and the wording of the two notifications are the ones from the
-//! shell `pomo` function this replaces: forty minutes of work, five of rest, and
-//! `terminal-notifier` posting through Finder. Flow used to own that clock; its
-//! timer could only be read by asking Flow over an Apple Event, which needs
-//! permission that macOS asks for again for every new binary, so the clock is
-//! this daemon's own now.
+//! The timer belongs to the daemon rather than to the bar: it holds its own
+//! deadline on the awake clock and rings whether or not SketchyBar is running, and
+//! the daemon pushes the countdown to the item only when it changes - once a
+//! second while a phase runs, never while the timer is idle - so no item carries
+//! an `update_freq` and no process is forked per tick.
 
 const std = @import("std");
 
+const log = @import("log.zig");
 const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
@@ -25,14 +18,14 @@ const theme = @import("theme.zig");
 /// The item the daemon drives.
 pub const item = "pomodoro";
 
-/// The shell function's intervals, kept as the defaults.
+/// The two interval lengths the timer starts with, in minutes.
 pub const default_work_minutes = 40;
 pub const default_rest_minutes = 5;
 
 /// A phase longer than this is a typo rather than an intention.
 pub const max_minutes = 600;
 
-/// Where the timer is remembered. Separate keys rather than one blob, so the
+/// Where the timer is remembered: separate keys rather than one blob, so the
 /// `state` commands can read a running timer a field at a time.
 const key_phase = "pomodoro.phase";
 const key_ends_at = "pomodoro.ends_at";
@@ -90,7 +83,6 @@ pub const Timer = struct {
     notifier: []const u8 = "",
 
     phase: Phase = .work,
-    /// Interval lengths in seconds.
     work_seconds: u32 = default_work_minutes * 60,
     rest_seconds: u32 = default_rest_minutes * 60,
 
@@ -110,13 +102,10 @@ pub const Timer = struct {
 
     /// The last failure reported, so a bar that stays broken is complained about
     /// once rather than once a second.
-    reported_error: ?[]const u8 = null,
+    reported_error: log.Once = .{},
 
     pub const Lengths = struct { work: u32, rest: u32 };
 
-    // -- what the timer shows -------------------------------------------------
-
-    /// Nanoseconds left in the current phase.
     fn left(self: *const Timer, io: std.Io) u64 {
         if (!self.running) return self.remaining;
         const nanos = self.deadline.nanoseconds - std.Io.Timestamp.now(io, .awake).nanoseconds;
@@ -146,16 +135,16 @@ pub const Timer = struct {
     fn appearance(self: *const Timer, io: std.Io, key: *[32]u8, label: *[8]u8) Appearance {
         const nanos = self.left(io);
 
-        // Rounded up, so a fresh interval reads as the length it started with:
-        // forty minutes is `40:00`, not `39:59`.
+        // Rounded up, so a fresh interval reads as the length it started with -
+        // `40:00`, not `39:59`.
         const seconds = nanos / std.time.ns_per_s + @intFromBool(nanos % std.time.ns_per_s != 0);
         const time = std.fmt.bufPrint(label, "{d:0>2}:{d:0>2}", .{
             seconds / 60,
             seconds % 60,
         }) catch label[0..0];
 
-        // A fresh interval with nothing running is not a countdown, it is a
-        // clock that has not started, and it shows nothing.
+        // A fresh interval with nothing running is a clock that has not started
+        // rather than a countdown, and it shows nothing.
         const waiting = !self.running and nanos == self.phaseNanos(self.phase);
         const text = if (waiting) "" else time;
         const color = if (self.running) self.phase.color() else theme.dark_grey;
@@ -169,10 +158,8 @@ pub const Timer = struct {
         return .{ .key = built, .label = text, .time = time, .color = color };
     }
 
-    /// Show the timer on its item, if what it shows has changed.
-    ///
-    /// Cheap by design: one mach message, and only when the second, the phase or
-    /// the run state moved.
+    /// Show the timer on its item, if what it shows has changed: one mach message,
+    /// and only when the second, the phase or the run state moved.
     fn renderLocked(self: *Timer, io: std.Io, bar: ?*sb.Client) void {
         const client = bar orelse return;
 
@@ -182,9 +169,11 @@ pub const Timer = struct {
         if (std.mem.eql(u8, shown.key, self.shown[0..self.shown_len])) return;
 
         var props: Props = .{};
-        props.fmt("label={s}", .{shown.label}) catch return;
-        props.color("label.color", shown.color) catch return;
-        props.color("icon.color", shown.color) catch return;
+        const color = props.argb(shown.color) catch return;
+        props.write(.{
+            .label = .{ .value = shown.label, .color = color },
+            .icon = .{ .color = color },
+        }) catch return;
 
         client.set(item, props.slice()) catch |err| return self.report(err);
         client.commit() catch |err| return self.report(err);
@@ -204,14 +193,11 @@ pub const Timer = struct {
 
     fn report(self: *Timer, err: anyerror) void {
         self.shown_len = 0;
-        if (self.reported_error) |last| {
-            if (std.mem.eql(u8, last, @errorName(err))) return;
+        const message = @errorName(err);
+        if (self.reported_error.changed(message)) {
+            log.warn("pomodoro item update failed: {s}", .{message});
         }
-        self.reported_error = @errorName(err);
-        std.debug.print("kxdesk: pomodoro item update failed: {s}\n", .{@errorName(err)});
     }
-
-    // -- what the timer does --------------------------------------------------
 
     /// Start counting down from wherever `remaining` stands.
     fn beginLocked(self: *Timer, io: std.Io) void {
@@ -367,8 +353,6 @@ pub const Timer = struct {
         });
     }
 
-    // -- remembering across restarts ------------------------------------------
-
     /// Write the timer down. Called under the lock on every change of state, and
     /// not on every tick: a running phase is fully described by the instant it
     /// ends, so a second-by-second write would say nothing new.
@@ -411,7 +395,6 @@ pub const Timer = struct {
         if (store.getInt(io, key_remaining) catch null) |nanos| {
             if (nanos >= 0) self.remaining = @intCast(nanos);
         }
-        // A phase cannot have more left than it is long.
         self.remaining = @min(self.remaining, self.phaseNanos(self.phase));
         self.running = false;
 
@@ -436,14 +419,10 @@ pub const Timer = struct {
             .addDuration(.{ .nanoseconds = @intCast(self.remaining) });
     }
 
-    // -- the notification -----------------------------------------------------
-
-    /// Post the notification for an interval that ran out.
-    ///
-    /// The flags are the shell function's - same group, so a new notification
-    /// replaces the previous one, same sound, attributed to Finder - and the
-    /// process is the one that function already uses. Nothing here asks another
-    /// application for anything, so nothing here needs a permission.
+    /// Post the notification for an interval that ran out, through
+    /// `terminal-notifier`: grouped, so a new notification replaces the previous
+    /// one. Nothing here asks another application for anything, so nothing here
+    /// needs a permission.
     fn notify(self: *Timer, finished: Phase) void {
         if (self.notifier.len == 0) return;
 
@@ -459,14 +438,12 @@ pub const Timer = struct {
         const heading = std.fmt.bufPrintZ(&title, "{s}", .{notice.title}) catch return;
         const text = std.fmt.bufPrintZ(&body, "{s}", .{notice.body}) catch return;
 
-        // The shell function also passed `-sender com.apple.Finder`, so that the
-        // notification looked like Finder's. terminal-notifier no longer
-        // supports it - overriding its bundle identifier is something the
-        // notification framework does not allow - and says so on stderr while
-        // ignoring the flag, so it is gone. Everything else is unchanged.
+        // `-sender com.apple.Finder` is gone: terminal-notifier dropped it,
+        // because the notification framework will not let it override its bundle
+        // identifier.
         const vector = [_:null]?[*:0]const u8{
-            program.ptr, "-title",    heading.ptr,
-            "-message",  text.ptr,    "-group",
+            program.ptr, "-title",     heading.ptr,
+            "-message",  text.ptr,     "-group",
             "pomo",      "-ignoreDnD", "-sound",
             "default",   null,
         };
@@ -474,7 +451,7 @@ pub const Timer = struct {
         // otherwise look like it worked, and the notification is the point.
         const status = platform.kx_exec_status(&vector);
         if (status != 0) {
-            std.debug.print("kxdesk: could not post the interval notification (status {d})\n", .{status});
+            log.warn("could not post the interval notification (status {d})", .{status});
         }
     }
 

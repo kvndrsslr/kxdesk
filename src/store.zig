@@ -1,40 +1,24 @@
 //! Durable state for the daemon: one SQLite database, owned by this process.
 //!
-//! Several things here want to remember across restarts - the pomodoro timer a
-//! `brew upgrade` interrupted, whether the bar was collapsed, which mode the
-//! spaces were in - and the previous answers were ad hoc: `/tmp/yabai-mode` for
-//! one of them, nothing at all for the others. This is the single place for that
-//! instead, and it is reachable from outside too: `kxdesk state set <key>
-//! <value>` persists whatever a key binding or a plugin wants to keep, so the
-//! state lives in one file rather than in a directory of little ones.
-//!
-//! SQLite is not in the standard library - it was removed, and only the C
-//! library is left - so the header is translated into a Zig module by the build
-//! system and linked against the copy macOS ships. That copy needs no
-//! dependency, and the one here (3.54.0, with FTS5) is newer than Homebrew's.
-//!
-//! Two rules this module keeps:
-//!
-//! * It never takes the daemon down. A database that cannot be opened leaves a
-//!   store that answers `error.Unavailable`: the daemon starts anyway and the
-//!   bar keeps working, because persistence is a convenience and not a
-//!   prerequisite.
-//! * A corrupt database is moved aside rather than repaired - renamed to
-//!   `state.db.corrupt-<timestamp>` and replaced - so a wedged file cannot wedge
-//!   the daemon for the rest of its life.
+//! * It never takes the daemon down: a database that cannot be opened leaves a
+//!   store answering `error.Unavailable`, so the bar keeps working.
+//! * A corrupt database is moved aside rather than repaired, so a wedged file
+//!   cannot wedge the daemon for the rest of its life.
+//! * The header is translated into a Zig module by the build system and linked
+//!   against the copy macOS ships; SQLite is not in the standard library.
 
 const std = @import("std");
 
 const c = @import("sqlite");
+const log = @import("log.zig");
 const platform = @import("platform.zig");
 
 /// Schema version this build produces. Bump this and add a step in `migrate`.
 pub const schema_version: c_int = 3;
 
-/// The directory is the owner's alone. The database holds whatever the bar and
-/// the tools that speak to it choose to keep, and SQLite creates its own
-/// write-ahead log and shared-memory file alongside with modes of its own - so
-/// the directory is what keeps all three private, not the file modes.
+/// The directory is the owner's alone: SQLite creates its own write-ahead log and
+/// shared-memory file alongside with modes of its own, so the directory is what
+/// keeps all three private.
 const directory_mode: std.Io.File.Permissions = @enumFromInt(0o700);
 
 /// How long a write waits for another writer before giving up. The daemon is
@@ -59,12 +43,9 @@ pub const Store = struct {
 
     pub const Error = error{ Unavailable, Query, Busy, NoSpaceLeft };
 
-    /// Where the database lives when nothing overrides it.
-    ///
-    /// `KXDESK_STATE` names another file, which is what a test or a probe uses.
-    /// The default is the per-user application data directory, so the file
-    /// survives an upgrade of the binary - unlike anything under the brew
-    /// prefix, which is replaced wholesale.
+    /// Where the database lives: `KXDESK_STATE` when set, otherwise the per-user
+    /// application data directory, so the file survives an upgrade of the binary
+    /// (anything under the brew prefix is replaced wholesale).
     pub fn defaultPath(buffer: *[std.fs.max_path_bytes]u8) []const u8 {
         var environment: [std.fs.max_path_bytes]u8 = undefined;
         if (platform.kx_env("KXDESK_STATE", &environment, environment.len)) {
@@ -87,12 +68,12 @@ pub const Store = struct {
     /// Open the database, creating it and bringing the schema up to date.
     ///
     /// Never fails: an unusable path, an unopenable file or a schema that cannot
-    /// be prepared all leave a store whose operations answer
-    /// `error.Unavailable`, with one line on stderr saying so.
+    /// be prepared all leave a store whose operations answer `error.Unavailable`,
+    /// with one line on stderr saying so.
     pub fn open(io: std.Io, path: []const u8) Store {
         var store = Store{};
         if (path.len == 0 or path.len >= store.path.len) {
-            std.debug.print("kxdesk: state path is unusable; persistence is off\n", .{});
+            log.warn("state path is unusable; persistence is off", .{});
             return store;
         }
         @memcpy(store.path[0..path.len], path);
@@ -104,29 +85,28 @@ pub const Store = struct {
             std.Io.Dir.createDirAbsolute(io, directory, directory_mode) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => {
-                    std.debug.print("kxdesk: cannot create the state directory: {s}\n", .{@errorName(err)});
+                    log.warn("cannot create the state directory: {s}", .{@errorName(err)});
                     return store;
                 },
             };
-            // Also for a directory an earlier version created with the default
-            // permissions, which is what this used to do.
+            // Also for a directory that already existed with other permissions.
             std.Io.Dir.cwd().setFilePermissions(io, directory, directory_mode, .{}) catch {};
         }
 
         var connection = store.connect() orelse {
-            std.debug.print("kxdesk: cannot open {s}; persistence is off\n", .{path});
+            log.warn("cannot open {s}; persistence is off", .{path});
             return store;
         };
 
         if (!usable(connection)) {
-            std.debug.print("kxdesk: {s} is not a usable database; starting a fresh one\n", .{path});
+            log.warn("{s} is not a usable database; starting a fresh one", .{path});
             store.setAside(io, connection) orelse return store;
             connection = store.connect() orelse return store;
         }
 
         store.db = connection;
         store.migrate() catch |err| {
-            std.debug.print("kxdesk: cannot prepare the state schema: {s}\n", .{@errorName(err)});
+            log.warn("cannot prepare the state schema: {s}", .{@errorName(err)});
             _ = c.sqlite3_close_v2(connection);
             store.db = null;
         };
@@ -142,8 +122,6 @@ pub const Store = struct {
     pub fn enabled(self: *Store) bool {
         return self.db != null;
     }
-
-    // -- what the rest of the daemon calls ------------------------------------
 
     /// Read an integer, or null when the key is absent.
     pub fn getInt(self: *Store, io: std.Io, key: []const u8) Error!?i64 {
@@ -262,8 +240,6 @@ pub const Store = struct {
         return found.toOwnedSlice(gpa) catch return error.NoSpaceLeft;
     }
 
-    // -- the pieces -----------------------------------------------------------
-
     const Value = union(enum) {
         text: []const u8,
         integer: i64,
@@ -303,8 +279,7 @@ pub const Store = struct {
 
         var handle: ?*c.sqlite3 = null;
         // `FULLMUTEX` as well as the mutex above: the connection is shared by
-        // worker tasks, and serializing inside SQLite costs nothing measurable
-        // while removing a whole class of mistake.
+        // worker tasks, and serializing inside SQLite costs nothing measurable.
         const rc = c.sqlite3_open_v2(
             self.pathPointer(),
             &handle,
@@ -346,7 +321,7 @@ pub const Store = struct {
         var aside: [std.fs.max_path_bytes]u8 = undefined;
         const name = std.fmt.bufPrintZ(&aside, "{s}.corrupt-{d}", .{ path, seconds }) catch return null;
         std.Io.Dir.renameAbsolute(path, name, io) catch |err| {
-            std.debug.print("kxdesk: cannot move the corrupt database aside: {s}\n", .{@errorName(err)});
+            log.warn("cannot move the corrupt database aside: {s}", .{@errorName(err)});
             return null;
         };
 
@@ -381,10 +356,6 @@ pub const Store = struct {
         }
 
         if (current < 2) {
-            // Cumulative spend, sampled: the first version of this kept readings
-            // of a provider's running total so that the difference between two
-            // of them could answer "the last day and the last week". Only
-            // OpenRouter needed it, only its popup showed it, and both are gone.
             try execOn(db,
                 \\CREATE TABLE usage_samples (
                 \\  provider   TEXT NOT NULL,
@@ -401,10 +372,7 @@ pub const Store = struct {
             try execOn(db, "DROP TABLE IF EXISTS usage_samples");
         }
 
-        var statement: [64]u8 = undefined;
-        const sql = std.fmt.bufPrintZ(&statement, "PRAGMA user_version={d}", .{schema_version}) catch
-            return error.Query;
-        try execOn(db, sql);
+        try execOn(db, std.fmt.comptimePrint("PRAGMA user_version={d}", .{schema_version}));
         try execOn(db, "COMMIT");
     }
 

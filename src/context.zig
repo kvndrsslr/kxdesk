@@ -1,8 +1,6 @@
-//! What a command gets to work with.
-//!
-//! Extracted from `commands.zig` so the command implementations
-//! (`yabai_ops`, `mode_indicator`) can name this type without
-//! importing the registry that points at them.
+//! The context a command runs with, kept apart from the registry so the command
+//! implementations (`yabai_ops`, `mode_indicator`) can name it without importing
+//! `commands.zig`.
 
 const std = @import("std");
 
@@ -36,16 +34,9 @@ pub const Context = struct {
     /// When this daemon started, for the uptime in `status`.
     started: std.Io.Timestamp,
 
-    /// Connect to SketchyBar, resolving its bootstrap name again first: a bar
-    /// that was restarted between two commands registers that name for a new
-    /// instance, and the send right held for the old one is dead.
-    ///
-    /// A bar that is still starting has not registered that name yet, and the one
-    /// moment this matters is when `sketchybarrc` applies this configuration: it
-    /// runs as the bar starts. A single look arriving too early used to leave a
-    /// freshly restarted bar with nothing on it, so this waits for as long as a
-    /// start takes - the same wait the control client makes for this daemon, for
-    /// the same reason.
+    /// Connect to SketchyBar, resolving its bootstrap name again first: the right
+    /// held for a replaced bar is dead. Waits out a bar that is still starting,
+    /// which is what `sketchybarrc`'s own `apply` needs.
     pub fn ensureBar(self: *Context) !void {
         var waited: u32 = 0;
         while (true) {

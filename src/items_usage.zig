@@ -1,31 +1,20 @@
 //! Provider usage: what is left on NeuralWatt and on OpenRouter, and how much of
 //! the OpenCode Go subscription is spent.
 //!
-//! These numbers change only when you spend, so they refresh on the brew item's
-//! slow cadence and never on the event path. One background task fetches all
-//! three, through the system's `curl`: a TLS stack is not worth carrying for six
-//! URLs every five minutes.
+//! One background task fetches all three through the system's `curl`, on the brew
+//! item's slow cadence: what is left changes only when you spend.
 //!
-//! A provider whose token is not in the store is not drawn at all: there is
-//! nothing to fetch and nothing to say, so its item is taken off the bar rather
-//! than left holding a placeholder - and setting the token puts it back at the next
-//! refresh.
-//!
-//! The bar shows what is left on each balance, and the share of the tightest of
-//! the Go plan's windows. What was spent in the last day, the last week and the
-//! last thirty days is on hover, from NeuralWatt's own usage summary, which takes
-//! a window as ISO 8601 and returns the charged cost for it; the same hover on the
-//! Go item shows its three windows, each against its own limit. OpenRouter has no
-//! such window to offer a normal key - the account's daily activity is behind a
-//! management key, and its per-key daily and weekly fields describe a key that has
-//! never been used - so its item shows the balance alone.
+//! A provider whose token is not in the store is not drawn at all; the bar shows
+//! each balance, the tightest Go window, and OpenRouter's balance alone.
 
 const std = @import("std");
 
 const exec = @import("exec.zig");
+const log = @import("log.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const state = @import("store.zig");
+const style = @import("style.zig");
 const theme = @import("theme.zig");
 
 /// The items this refresh owns; `dispatch.zig` routes their events by these
@@ -208,15 +197,15 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator, store: *state.Store) anyerror
     // Each provider on its own: one token that has expired must not blank the
     // other's number.
     updateNeuralwatt(io, gpa, store, &client) catch |err| {
-        std.debug.print("kxdesk: neuralwatt usage: {s}\n", .{@errorName(err)});
+        log.warn("neuralwatt usage: {s}", .{@errorName(err)});
         stale(&client, neuralwatt_item) catch {};
     };
     updateOpenrouter(io, gpa, store, &client) catch |err| {
-        std.debug.print("kxdesk: openrouter usage: {s}\n", .{@errorName(err)});
+        log.warn("openrouter usage: {s}", .{@errorName(err)});
         stale(&client, openrouter_item) catch {};
     };
     updateOpencode(io, gpa, store, &client) catch |err| {
-        std.debug.print("kxdesk: opencode-go usage: {s}\n", .{@errorName(err)});
+        log.warn("opencode-go usage: {s}", .{@errorName(err)});
         stale(&client, opencode_item) catch {};
     };
 }
@@ -297,14 +286,11 @@ fn updateOpenrouter(
     }, &.{}, null);
 }
 
-/// OpenCode Go: three shares of three limits, and no balance - the plan is a cap,
-/// and what its endpoint reports is how much of it is gone.
+/// OpenCode Go: the share of its tightest window under the mark, the month's own
+/// share on the ring, and the three windows on hover.
 ///
-/// The label carries the highest of the three, since that is the window that would
-/// stop the next request, and the ring around the mark carries the month's own
-/// share, which is what says how much of the plan is left. The hover names each
-/// window, and the moment any of them is spent the ring and the mark go red and the
-/// label goes away - there is no number left to give.
+/// A plan with no window left drops the label - there is no number left to give -
+/// and reddens the ring and the mark.
 fn updateOpencode(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -345,7 +331,7 @@ fn updateOpencode(
 
     var percent_buffer: [32]u8 = undefined;
     try publish(client, opencode_item, .{
-        .label = try percentText(&percent_buffer, reading.label),
+        .label = try shareText(&percent_buffer, reading.label),
         // A window at its limit is what the mark and its ring say, since it is the
         // state the next request runs into; the identity colour is for a plan with
         // room.
@@ -424,7 +410,7 @@ pub fn opencodeRow(
     when: i64,
 ) ![]const u8 {
     var percent_buffer: [32]u8 = undefined;
-    const spent = try percentText(&percent_buffer, percent);
+    const spent = try shareText(&percent_buffer, percent);
 
     const reset = if (resets_at) |stamp| parseInstant(stamp) else null;
     const instant = reset orelse return std.fmt.bufPrint(buffer, "{s} {s}", .{ row.label, spent });
@@ -436,7 +422,7 @@ pub fn opencodeRow(
 
 /// A share of a limit, as the endpoint reports it: whole percents, with a decimal
 /// only if it ever sends one.
-fn percentText(buffer: []u8, percent: f64) ![]const u8 {
+fn shareText(buffer: []u8, percent: f64) ![]const u8 {
     return std.fmt.bufPrint(buffer, "{d}%", .{percent});
 }
 
@@ -481,16 +467,13 @@ fn parseInstant(stamp: []const u8) ?i64 {
     }
 
     var offset: i64 = 0;
-    if (std.mem.eql(u8, rest, "Z")) {
-        // UTC: the offset this already starts from.
-    } else if (rest.len == 6 and (rest[0] == '+' or rest[0] == '-') and rest[3] == ':') {
+    if (!std.mem.eql(u8, rest, "Z")) {
+        if (rest.len != 6 or (rest[0] != '+' and rest[0] != '-') or rest[3] != ':') return null;
         const offset_hour = digits(rest[1..3]) orelse return null;
         const offset_minute = digits(rest[4..6]) orelse return null;
         if (offset_hour > 23 or offset_minute > 59) return null;
         offset = offset_hour * std.time.s_per_hour + offset_minute * std.time.s_per_min;
         if (rest[0] == '-') offset = -offset;
-    } else {
-        return null;
     }
 
     const days = daysFromCivil(year, month, day);
@@ -584,11 +567,15 @@ const Ring = struct {
     color: theme.Color,
 };
 
-/// Where a provider item's mark is drawn: on the item's own icon, or, for the item
-/// whose mark is ringed, on the glyph the ring draws inside it.
-fn markKey(item: []const u8) []const u8 {
+/// Colour a provider item's mark, which is where its state is read: the glyph the
+/// ring draws inside a ringed item, or the item's own icon.
+fn writeMark(props: *Props, item: []const u8, color: theme.Color) !void {
     const ringed = if (providerFor(item)) |provider| provider.ringed else false;
-    return if (ringed) "ring.marker.color" else "icon.color";
+    if (ringed) {
+        try props.write(.{ .ring = .{ .marker = .{ .color = try props.argb(color) } } });
+    } else {
+        try props.write(.{ .icon = .{ .color = try props.argb(color) } });
+    }
 }
 
 /// Fill in what one provider's item says on its own line: the label under its
@@ -597,15 +584,19 @@ fn markKey(item: []const u8) []const u8 {
 pub fn lineProps(props: *Props, item: []const u8, reading: Reading) !void {
     // A reading puts the item back: a provider whose token went away was taken off
     // the bar, and one whose token has just been set belongs on it.
-    props.raw("drawing=on");
-    try props.fmt("label={s}", .{reading.label});
-    try props.color(markKey(item), reading.mark_color);
+    try props.write(.{ .drawing = true, .label = reading.label });
+    // Order matters on the wire, and a node runs to its own end: the mark's colour
+    // is its own run, between the label's keys and the ring's.
+    try writeMark(props, item, reading.mark_color);
     if (reading.ring) |ring| {
-        props.raw(if (reading.label_drawn) "label.drawing=on" else "label.drawing=off");
-        // Four decimals, since a share the endpoint sends with a decimal is worth
-        // a tenth of a percent on the ring rather than a whole one.
-        try props.fmt("ring.value={d:.4}", .{ring.share});
-        try props.color("ring.color", ring.color);
+        try props.write(.{ .label = .{ .drawing = reading.label_drawn } });
+        // Four decimals: a share the endpoint sends with a decimal is worth a tenth
+        // of a percent on the ring. `ring.value` is a dotted leaf, since a field
+        // named `value` collapses to the ring's own key.
+        try props.write(.{
+            .@"ring.value" = ring.share,
+            .ring = .{ .color = try props.argb(ring.color) },
+        });
     }
 }
 
@@ -638,7 +629,7 @@ fn publish(
         const name = try std.fmt.bufPrint(&name_buffer, "{s}.{s}", .{ item, row.suffix });
 
         var row_props: Props = .{};
-        try row_props.fmt("label={s}", .{text});
+        try row_props.write(.{ .label = text });
         try client.set(name, row_props.slice());
     }
 
@@ -651,7 +642,7 @@ fn publish(
 /// moment the fetch answers instead of a placeholder.
 fn hide(client: *sb.Client, item: []const u8) !void {
     var props: Props = .{};
-    props.raw("drawing=off");
+    try props.write(.{ .drawing = false });
     try client.set(item, props.slice());
     try client.commit();
 }
@@ -667,8 +658,8 @@ fn stale(client: *sb.Client, item: []const u8) !void {
     var props: Props = .{};
     // The token is there, so the item belongs on the bar: a provider that is
     // configured but not answering says so by being dim rather than by vanishing.
-    props.raw("drawing=on");
-    try props.color(markKey(item), theme.dark_grey);
+    try props.write(.{ .drawing = true });
+    try writeMark(&props, item, style.dim);
     try client.set(item, props.slice());
     try client.commit();
 }
@@ -698,11 +689,8 @@ fn readToken(io: std.Io, buffer: []u8, store: *state.Store, key: []const u8) ?[]
 }
 
 /// Whether a provider's token is in the store, which is what says whether its item
-/// belongs on the bar at all: an item with no token has nothing to show, so it is
-/// not drawn - and anything that decides what the bar draws, `zen` included, has to
-/// ask this rather than assume.
-///
-/// Every other item answers true: this is only about the providers.
+/// belongs on the bar at all. Every other item answers true: this is only about the
+/// providers.
 pub fn configured(io: std.Io, store: *state.Store, item: []const u8) bool {
     const provider = providerFor(item) orelse return true;
 
@@ -739,35 +727,33 @@ fn fetch(io: std.Io, arena: std.mem.Allocator, url: []const u8, token: []const u
         else => false,
     };
     if (!succeeded) {
-        // Whatever the provider said, in one line: the alternative is a number
-        // that quietly stops moving.
         reportRefusal(url, std.mem.trim(u8, result.stdout, " \r\n"));
         return error.RequestRefused;
     }
 
-    clearRefusal();
+    // An answer that arrived is worth saying so: the next refusal is reported even
+    // if it is the same one as before.
+    refusal.clear();
     return result.stdout;
 }
 
-/// The last refusal reported. A token that is wrong, or a plan that has run out,
-/// would otherwise put the same line in the agent's log every five minutes for
-/// as long as it lasts.
-var last_refusal: [160]u8 = @splat(0);
-var last_refusal_len: usize = 0;
+/// The last refusal reported: a token that is wrong, or a plan that has run out,
+/// would otherwise put the same line in the log every five minutes for as long as
+/// it lasts.
+var refusal: log.Once = .{};
 
+/// The head of a refused body that is quoted; bodies are long, and their head is
+/// what says which refusal this is.
+const refusal_head = 160;
+
+/// Report a refusal with the provider's own words in one line: the alternative is a
+/// number that quietly stops moving.
 fn reportRefusal(url: []const u8, detail: []const u8) void {
-    const shown = if (detail.len > last_refusal.len) detail[0..last_refusal.len] else detail;
-    if (std.mem.eql(u8, shown, last_refusal[0..last_refusal_len])) return;
-
-    @memcpy(last_refusal[0..shown.len], shown);
-    last_refusal_len = shown.len;
-    std.debug.print("kxdesk: {s} refused the request: {s}\n", .{ url, shown });
-}
-
-/// An answer that arrived is worth saying so, since the next refusal should be
-/// reported even if it is the same one as before.
-fn clearRefusal() void {
-    last_refusal_len = 0;
+    var buffer: [512]u8 = undefined;
+    const message = std.fmt.bufPrint(&buffer, "{s} refused the request: {s}", .{
+        url, detail[0..@min(detail.len, refusal_head)],
+    }) catch return;
+    if (refusal.changed(message)) log.warn("{s}", .{message});
 }
 
 /// Seconds since the epoch.

@@ -26,8 +26,7 @@ pub const Icon = struct {
     codepoint: u21,
 };
 
-/// Rendered for applications the font does not map, matching what the shell
-/// configuration this replaces did for unknown applications.
+/// Rendered for applications the font does not map.
 pub const default_ligature = ":default:";
 
 /// The real font is ~320 KiB; anything larger is not this font.
@@ -42,8 +41,7 @@ pub const Mapping = struct {
     /// `Mapping` it was taken from and must not be created before this value
     /// has come to rest.
     exact: std.StringHashMapUnmanaged(Icon) = .empty,
-    /// Application name prefixes, in payload order. The first match wins, which
-    /// is the order the shell `case` statement this replaces matched in.
+    /// Application name prefixes, in payload order; the first match wins.
     prefixes: std.ArrayListUnmanaged(Prefix) = .empty,
     /// Yielded for anything unmapped, including when the font is unavailable.
     fallback: Icon = .{ .ligature = default_ligature, .codepoint = 0 },
@@ -86,7 +84,7 @@ pub const Mapping = struct {
     }
 
     /// The icon to render for `app`, falling back to `:default:` when the font
-    /// has no mapping - the behaviour of the shell configuration this replaces.
+    /// has no mapping.
     pub fn lookup(self: *const Mapping, app: []const u8) Icon {
         return self.find(app) orelse self.fallback;
     }
@@ -147,7 +145,7 @@ pub const Mapping = struct {
                     else => continue,
                 };
                 // A trailing `*` means "any application whose name starts with
-                // this", mirroring the shell patterns this replaced.
+                // this".
                 if (std.mem.endsWith(u8, text, "*")) {
                     try self.prefixes.append(arena, .{
                         .pattern = text[0 .. text.len - 1],

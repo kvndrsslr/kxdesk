@@ -1,27 +1,12 @@
 //! kxdesk - personal desktop daemon.
 //!
-//! One process serves two things over one mach port:
+//! One process serves two things over one mach port: SketchyBar's item events,
+//! routed here by `mach_helper=org.kdressler.kxdesk`, and the command channel
+//! `kxdesk <command> [arguments...]` clients use.
 //!
-//! * SketchyBar's item events. Items declare `mach_helper=org.kdressler.kxdesk`
-//!   and the bar routes their events here, so a click or a scheduled refresh
-//!   costs one message instead of a process.
-//! * A command channel, under a second bootstrap name on the same port, that
-//!   `kxdesk <command> [arguments...]` clients use. The bar's config script,
-//!   `~/.yabairc`, yabai signals and key bindings all speak through it.
-//!
-//! `kxdesk daemon` is the process itself and is started by launchd, so it starts
-//! before SketchyBar and outlives it: it applies the configuration on startup
-//! when the bar is already up, and otherwise waits for the bar's config script
-//! to ask. `version`, `--help`/`help` and `completions` are answered by the
-//! binary itself, so they work when nothing is listening - and a shell setting
-//! itself up has something to complete against before the agent is up. Every
-//! other spelling is a client that asks the daemon to run the command; the
-//! command line is described once, in `commands.zig`, and `cli.zig` draws both
-//! the help and the completions from it.
-//!
-//! `server-mode` is answered by the client too, and for the opposite reason: it
-//! drives `op`, whose 1Password unlock the desktop app grants only to the session
-//! that asked - which a launchd agent is not.
+//! `kxdesk daemon` is started by launchd, so it starts before SketchyBar and
+//! outlives it. `help`, `completions` and `server-mode` are answered by the binary
+//! itself; the rest is described once in `commands.zig`.
 
 const std = @import("std");
 
@@ -37,6 +22,7 @@ const dispatch = @import("dispatch.zig");
 const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
 const kanata = @import("kanata.zig");
+const log = @import("log.zig");
 const platform = @import("platform.zig");
 const pomodoro = @import("pomodoro.zig");
 const server_mode = @import("server_mode.zig");
@@ -44,13 +30,10 @@ const state = @import("store.zig");
 const sb = @import("sb.zig");
 const yabai = @import("yabai.zig");
 
-/// Bootstrap name every `mach_helper` property refers to. SketchyBar resolves it
-/// once, while parsing that property, so it has to be registered before any item
-/// is told to point at it.
+/// Bootstrap name every `mach_helper` property refers to; SketchyBar resolves it
+/// while parsing that property, so it must be registered before any item points
+/// at it.
 pub const event_service: [:0]const u8 = "org.kdressler.kxdesk";
-
-/// Buffer for SketchyBar query responses, which are only a few kilobytes.
-const response_size = 64 * 1024;
 
 /// The serve loop is a C callback with no context pointer, so the daemon is
 /// reached through this single live reference.
@@ -71,8 +54,8 @@ const Daemon = struct {
     dispatcher: dispatch.Dispatcher,
     started: std.Io.Timestamp,
 
-    /// Whether SketchyBar is known to be up. Neither state is fatal: the daemon
-    /// starts before the bar and is expected to keep serving after it is gone.
+    /// Whether SketchyBar is known to be up; neither state is fatal, since the
+    /// daemon starts before the bar and keeps serving after it is gone.
     present: std.atomic.Value(bool) = .init(false),
 
     /// One in-flight-task slot per registered command, so a command never runs
@@ -93,9 +76,8 @@ const Daemon = struct {
         };
     }
 
-    /// Run a request from a client and answer it. Owns `arena_state` - which
-    /// holds the verb, the arguments and the copied reply-port reference - and
-    /// frees all of it before returning.
+    /// Run a request from a client and answer it. Owns `arena_state`, which holds
+    /// the verb, the arguments and the copied reply-port reference.
     fn runCommand(
         self: *Daemon,
         arena_state: *std.heap.ArenaAllocator,
@@ -112,21 +94,18 @@ const Daemon = struct {
         const index = commands.find(verb) orelse
             return control.postReply(reply_port, .{ .err = "unknown command" });
 
-        // The command is checked against its own description before it runs, so a
-        // request that does not fit is answered with what was expected rather
-        // than with whatever the command makes of it. The client checks too, and
-        // this is the authority: any client can be older than the daemon.
+        // Checked against its own description first: this is the authority, since
+        // any client can be older than the daemon.
         if (try cli.validate(arena_state.allocator(), commands.all[index], args)) |problem| {
             return control.postReply(reply_port, .{ .err = problem });
         }
 
-        // A channel of this task's own: the receive loop's client must not see a
-        // batch it did not build.
+        // Its own client, never the loop's; see `context.Context.bar`.
         var bar = sb.Client.init(arena_state.allocator(), sb.sketchybar_service);
         defer bar.deinit();
 
-        // A command this binary answers itself has no daemon side; a client old
-        // enough to ask anyway is told so rather than dereferenced.
+        // A command the client answers has no daemon side; a client old enough to
+        // ask anyway is told so rather than dereferenced.
         const run = commands.all[index].run orelse
             return control.postReply(reply_port, .{ .err = "this command runs in the client" });
 
@@ -134,16 +113,14 @@ const Daemon = struct {
         if (run(&command_context, args)) |payload| {
             control.postReply(reply_port, .{ .ok = payload });
         } else |err| {
-            std.debug.print("kxdesk: command {s} failed: {s}\n", .{ verb, @errorName(err) });
+            log.warn("command {s} failed: {s}", .{ verb, @errorName(err) });
             control.postReply(reply_port, .{ .err = @errorName(err) });
         }
     }
 
-    /// Hand a request to the worker pool.
-    ///
-    /// The block belongs to the mach message, which the receive loop destroys as
-    /// soon as this returns, and the reply port goes with it - so the task gets
-    /// its own copy of both.
+    /// Hand a request to the worker pool. The block belongs to the mach message,
+    /// which the receive loop destroys as soon as this returns, so the task gets
+    /// its own copy of the block and of the reply port.
     fn startCommand(self: *Daemon, block: [*:0]const u8, reply_port: u32) void {
         const answer_port = platform.kx_port_copy(reply_port);
 
@@ -197,33 +174,24 @@ fn onBlock(block: [*:0]const u8, reply_port: u32) callconv(.c) void {
 
     if (control.isRequest(block)) return daemon.startCommand(block, reply_port);
 
-    // Any other block is proof that a bar is there, because it addressed an item
-    // whose `mach_helper` only a configuration this daemon applied could have set.
-    // If the bar had been marked gone, this is where it comes back: a bar's
-    // shutdown marker and the start of the next bar can cross, and a marker can
-    // outlive the bar it named. A daemon that stayed marked away for the rest of
-    // its life looked exactly like a bar that had stopped drawing - nothing on the
-    // bar moved again until the daemon was restarted, while the bar itself was
-    // fine.
+    // A block addressed to our `mach_helper` proves a bar is present - and can
+    // arrive after the shutdown marker of the bar it belongs to.
     if (!daemon.present.load(.monotonic)) {
         daemon.present.store(true, .monotonic);
-        // The right held for the bar that went away names a dead port; dropping
-        // it makes the next send resolve whichever bar is running now.
+        // The right held for the bar that went away names a dead port.
         daemon.dispatcher.bar.reconnect();
     }
 
     if (daemon.dispatcher.bar.trace) sb.traceBlock(block);
 
     daemon.dispatcher.handle(block) catch |err| {
-        std.debug.print("kxdesk: event failed: {s}\n", .{@errorName(err)});
+        log.warn("event failed: {s}", .{@errorName(err)});
     };
 }
 
 /// The serve loop's clock, as a C callback: end a phase that has run out, show
-/// the item, and say how long the loop may block next.
-///
-/// The loop is the only thread that runs this, and the commands take the timer's
-/// own lock to touch it from theirs.
+/// the item, and say how long the loop may block next. The loop is the only thread
+/// that runs this; the commands take the timer's own lock to touch it from theirs.
 fn onTimer() callconv(.c) u32 {
     const daemon = active_daemon orelse return 0;
 
@@ -262,11 +230,9 @@ pub fn main(init: std.process.Init) !void {
 
     const mode = arguments[1];
     if (std.mem.eql(u8, mode, "daemon")) return runDaemon(init);
-    // Answered here rather than by the daemon: the version of *this* binary is
-    // the version of the daemon it starts, and it is worth asking when nothing is
-    // answering - which is exactly when a client command cannot be used. The
-    // same goes for `--help` and the completions, which a shell asks for while it
-    // is being set up, before any daemon need be running.
+    // Answered here rather than by the daemon: this binary's version is the
+    // version of the daemon it starts, and it is worth asking when nothing is
+    // answering - which is exactly when a client command cannot be used.
     if (std.mem.eql(u8, mode, "version") or std.mem.eql(u8, mode, "--version")) {
         emit(io, .stdout, build_options.version);
         return;
@@ -278,9 +244,8 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, mode, "__complete")) return runCompletions(init, arguments[2..]);
 
     // `kxdesk <command> --help`: answered here so it works with no daemon
-    // listening, and so a command that needs arguments can be asked about without
-    // supplying any. Before the local commands below, which would otherwise
-    // refuse a `--help` as the wrong kind of argument.
+    // listening, and before the local commands below, which would refuse a
+    // `--help` as the wrong kind of argument.
     for (arguments[2..]) |argument| {
         if (std.mem.eql(u8, argument, "--help") or std.mem.eql(u8, argument, "-h")) {
             return describe(init, mode);
@@ -298,10 +263,9 @@ pub fn main(init: std.process.Init) !void {
     return runClient(init, mode, arguments[2..]);
 }
 
-/// The commands this binary answers itself: `help`, `completions` and
-/// `server-mode`. All are checked against their own description, so a wrong shell
-/// or an unknown command name is refused with the same kind of message as a
-/// daemon command.
+/// The commands this binary answers itself, each checked against its own
+/// description so a wrong shell or an unknown name is refused like a daemon
+/// command would be.
 fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8) !void {
     const arena = init.arena.allocator();
     const command = cli.find(mode) orelse return;
@@ -344,13 +308,10 @@ fn describe(init: std.process.Init, name: []const u8) !void {
 
 /// The completion protocol the generated shell functions call: optionally
 /// `--describe`, then the index of the word being completed, then the words after
-/// the program name. Hidden, because `completions` is the interface - these line
-/// breaks are not for people.
+/// the program name. Hidden, because `completions` is the interface.
 ///
-/// `--describe` is what asks for the tab and the explanation; a caller that does
-/// not pass it gets the words alone, which is what every earlier version of this
-/// protocol answered and what a script that is older than the binary still
-/// expects.
+/// `--describe` is what asks for the tab and the explanation; without it the
+/// words alone come back, which is what a script older than the binary expects.
 fn runCompletions(init: std.process.Init, args: []const []const u8) !void {
     var rest = args;
     var described = false;
@@ -389,33 +350,24 @@ fn runDaemon(init: std.process.Init) !void {
     var scratch = std.heap.ArenaAllocator.init(gpa);
     defer scratch.deinit();
 
-    const response = try gpa.alloc(u8, response_size);
-    defer gpa.free(response);
-
     var icons = app_icons.Mapping.init(gpa);
     defer icons.deinit();
     loadIcons(&icons, init.io);
 
-    // Durable state. Opened before anything that uses it, and never a reason to
-    // fail: a store that cannot be opened says so once and answers
-    // `error.Unavailable`, so the bar works with or without it.
+    // Durable state, never a reason to fail: a store that cannot be opened says so
+    // once and answers `error.Unavailable`.
     var state_path: [std.fs.max_path_bytes]u8 = undefined;
     var store = state.Store.open(init.io, state.Store.defaultPath(&state_path));
     defer store.close();
 
-    // The notifier the shell `pomo` function used. Resolved once, here: a
-    // missing notifier costs the two notifications and nothing else, and it is
-    // worth saying so once rather than discovering it silently at the end of an
-    // interval.
+    // The notifier the shell `pomo` function used: missing one costs the
+    // notifications and nothing else, so it is said once here.
     var notifier_path: [std.fs.max_path_bytes]u8 = undefined;
     var timer = pomodoro.Timer{ .store = &store, .notifier = blk: {
         if (platform.kx_which("terminal-notifier", &notifier_path, notifier_path.len)) {
             break :blk std.mem.sliceTo(&notifier_path, 0);
         }
-        std.debug.print(
-            "kxdesk: terminal-notifier is not installed; pomodoro notifications are off\n",
-            .{},
-        );
+        log.warn("terminal-notifier is not installed; pomodoro notifications are off", .{});
         break :blk "";
     } };
 
@@ -433,30 +385,26 @@ fn runDaemon(init: std.process.Init) !void {
             .helper = event_service,
             .pomodoro = &timer,
             .store = &store,
-            .yabai_items = items_yabai.Updater.init(gpa, &yabai_client, &bar, &scratch, response, &icons),
+            .yabai_items = items_yabai.Updater.init(gpa, &yabai_client, &bar, &scratch, &icons),
             .system_items = items_system.Updater.init(&bar),
         },
         .started = std.Io.Timestamp.now(init.io, .awake),
     };
     active_daemon = &daemon;
 
-    // The timer is restored whether or not the bar is up: it is the daemon's
-    // own, and a phase that ran out while this process was not running starts
-    // its successor now.
+    // The timer is restored whether or not the bar is up: a phase that ran out
+    // while this process was not running starts its successor now.
     timer.restore(init.io);
 
-    // Applied here as well as by the `apply` command, because launchd restarts
-    // this agent on its own and a restarted daemon listens on a new port: every
-    // item's `mach_helper` has to be pointed at it again. When the bar is not up
-    // yet - the agent starts at login, SketchyBar may start later - there is
-    // nothing to apply to, and the bar's config script asks instead.
+    // Applied here as well as by the `apply` command: launchd restarts this agent
+    // on its own, and a restarted daemon listens on a new port, so every item's
+    // `mach_helper` has to be pointed at it again.
     if (bar.connect()) |_| {
         daemon.present.store(true, .monotonic);
         bar_config.apply(&bar, init.io, .{ .helper = event_service }) catch |err| {
-            std.debug.print("kxdesk: startup apply failed: {s}\n", .{@errorName(err)});
+            log.warn("startup apply failed: {s}", .{@errorName(err)});
         };
-        // A bar that has just been built knows nothing about the state the last
-        // one was in; the same call the `apply` command makes.
+        // A freshly built bar knows nothing about the state the last one was in.
         {
             var restore_state_arena = std.heap.ArenaAllocator.init(gpa);
             defer restore_state_arena.deinit();
@@ -466,9 +414,8 @@ fn runDaemon(init: std.process.Init) !void {
     } else |_| {}
 
     // kanata's channel, started last because it is a client of everything above
-    // it: from its own thread it reaches the bar, yabai and the store. Losing it
-    // costs the key bindings and nothing else, so a failure is said once and the
-    // daemon carries on - the bar is what this process is for.
+    // it: losing it costs the key bindings and nothing else, so a failure is said
+    // once and the daemon carries on.
     kanata.Listener.start(gpa, .{
         .io = init.io,
         .store = &store,
@@ -478,7 +425,7 @@ fn runDaemon(init: std.process.Init) !void {
         .event_service = event_service,
         .started = daemon.started,
     }) catch |err| {
-        std.debug.print("kxdesk: kanata channel not started: {s}\n", .{@errorName(err)});
+        log.warn("kanata channel not started: {s}", .{@errorName(err)});
     };
 
     // Never returns: the process ends when launchd or a signal ends it, not when
@@ -486,11 +433,9 @@ fn runDaemon(init: std.process.Init) !void {
     platform.kx_server_serve(server_port, onBlock, onTimer);
 }
 
-/// Every other mode: ask the daemon to run one of its commands.
-///
-/// The request is checked against the command's own description first, which is
-/// what lets an incomplete one be answered without a daemon - and what keeps a
-/// misspelled verb from starting one.
+/// Every other mode: ask the daemon to run one of its commands. The request is
+/// checked against the command's own description first, so a misspelled verb is
+/// answered without a daemon being started.
 fn runClient(init: std.process.Init, verb: []const u8, args: []const []const u8) !void {
     const arena = init.arena.allocator();
     const command = cli.find(verb) orelse {
@@ -551,15 +496,14 @@ fn fail(io: std.Io, err: anyerror) noreturn {
     std.process.exit(1);
 }
 
-/// Read the application -> icon mapping out of the installed app font.
-///
-/// CoreText is asked where the font lives, so the mapping is always read from the
-/// same file the bar renders with. A missing or unreadable font is not fatal: the
-/// mapping stays empty and every application falls back to `:default:`.
+/// Read the application -> icon mapping out of the installed app font, located
+/// through CoreText so it is the file the bar renders with. A missing or unreadable
+/// font is not fatal: the mapping stays empty and every application falls back to
+/// `:default:`.
 fn loadIcons(mapping: *app_icons.Mapping, io: std.Io) void {
     var path: [std.fs.max_path_bytes]u8 = undefined;
     if (!platform.kx_app_font_path(&path, path.len)) {
-        std.debug.print("kxdesk: sketchybar-app-font is not installed; app icons fall back to {s}\n", .{
+        log.warn("sketchybar-app-font is not installed; app icons fall back to {s}", .{
             app_icons.default_ligature,
         });
         return;
@@ -567,11 +511,11 @@ fn loadIcons(mapping: *app_icons.Mapping, io: std.Io) void {
 
     const font = std.mem.sliceTo(&path, 0);
     mapping.load(io, font) catch |err| {
-        std.debug.print("kxdesk: cannot read app icons from {s}: {s}\n", .{ font, @errorName(err) });
+        log.warn("cannot read app icons from {s}: {s}", .{ font, @errorName(err) });
         return;
     };
 
-    std.debug.print("kxdesk: app icons from {s} ({d} of {d} glyphs mapped)\n", .{
+    log.warn("app icons from {s} ({d} of {d} glyphs mapped)", .{
         mapping.release,
         mapping.mapped,
         mapping.glyphs,

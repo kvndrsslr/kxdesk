@@ -44,13 +44,15 @@ pub const dim = theme.dark_grey;
 /// Font weights, spelled as SketchyBar's font spec spells them.
 pub const Weight = enum { Regular, Bold, SemiBold, ExtraBold, Italic };
 
-/// `JetBrainsMono Nerd Font:<weight>:<size>.0`, at compile time.
-pub fn mono(comptime weight: Weight, comptime size: u8) []const u8 {
+/// `JetBrainsMono Nerd Font:<weight>:<size>.0`, at compile time. `inline` so the
+/// call is comptime-known inside a `config.node` literal.
+pub inline fn mono(comptime weight: Weight, comptime size: u8) []const u8 {
     return std.fmt.comptimePrint("{s}:{s}:{d}.0", .{ theme.font, @tagName(weight), size });
 }
 
-/// `sketchybar-app-font:Regular:<size>.0`, at compile time.
-pub fn app(comptime size: u8) []const u8 {
+/// `sketchybar-app-font:Regular:<size>.0`, at compile time. `inline` for the same
+/// reason as `mono`.
+pub inline fn app(comptime size: u8) []const u8 {
     return std.fmt.comptimePrint("{s}:Regular:{d}.0", .{ theme.app_font, size });
 }
 
@@ -183,7 +185,7 @@ const readout_height = 8;
 /// say it: a badge hangs up from its slot's bounds, and an empty slot has no
 /// text to have bounds - so the top-half reading sits at the slot's midpoint
 /// and the bottom-half one is moved a reading's height down from there.
-fn graphSlot(comptime series: Graph, comptime icon: bool, comptime high: bool) Slot {
+pub fn graphSlot(comptime series: Graph, comptime icon: bool, comptime high: bool) Slot {
     const reading = series.readout and !icon;
     const air: usize = if (series.air) 1 else 0;
     return .{

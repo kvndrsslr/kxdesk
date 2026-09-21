@@ -1,10 +1,7 @@
-//! The GitHub bell's refresh.
+//! The GitHub bell's refresh: the notification count, and the popup rows under it.
 //!
-//! Replaces `plugins/github.sh`, which SketchyBar forked; the script then forked
-//! `gh` (once for the notification list, once per notification to resolve its
-//! URL), `jq`, `egrep` and `sketchybar` itself, and round-tripped every field
-//! through shell quoting that had to be `sed`-ed back off. `gh api` is a network
-//! call, so the daemon runs this as a background task; see `background.zig`.
+//! `gh api` is a network call, so the daemon runs this as a background task; see
+//! `background.zig`.
 //!
 //! A row is clicked long after the refresh that built it, and only that refresh
 //! knows where the row points, so the URLs are published for the event loop.
@@ -12,6 +9,7 @@
 const std = @import("std");
 
 const exec = @import("exec.zig");
+const log = @import("log.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const theme = @import("theme.zig");
@@ -31,6 +29,11 @@ const notification_pattern = "/github.notification\\.*/";
 
 /// Where a row points when its own URL cannot be resolved.
 const notifications_page = "https://www.github.com/notifications";
+
+/// Frames the bell's nudge animates for, and how far the badge hops: SketchyBar's
+/// `--animate tanh` with the badge moving down and back.
+const nudge_frames = 15;
+const nudge_y_offset = 5;
 
 /// URLs of the popup rows the last refresh built, index-aligned with
 /// `github.notification.N`.
@@ -102,34 +105,32 @@ pub fn rowUrl(io: std.Io, index: usize, buffer: []u8) ?[]const u8 {
     return rows.url(io, index, buffer);
 }
 
-/// Titles mentioning any of these are singled out, as the shell's `egrep -i`
-/// did.
+/// Titles mentioning any of these are singled out, case-insensitively.
 const important_markers = [_][]const u8{ "deprecat", "break", "broke" };
 
 /// Only the fields this renders.
 const Notification = struct {
-    @"repository": struct { @"name": []const u8 = "" } = .{},
-    @"subject": struct {
-        @"title": []const u8 = "",
-        @"type": []const u8 = "",
-        @"latest_comment_url": ?[]const u8 = null,
+    repository: struct { name: []const u8 = "" } = .{},
+    subject: struct {
+        title: []const u8 = "",
+        type: []const u8 = "",
+        latest_comment_url: ?[]const u8 = null,
     } = .{},
 };
 
-const HtmlUrl = struct { @"html_url": []const u8 = "" };
+const HtmlUrl = struct { html_url: []const u8 = "" };
 
 pub const Popup = enum { show, hide, toggle };
 
-/// Open, close, or flip the bell's popup. The shell did this from the plugin
-/// too - `mouse.entered`/`mouse.exited` events opening and closing it - so this
-/// costs one message and no process.
+/// Open, close, or flip the bell's popup, in one message and no process.
 pub fn setPopup(bar: *sb.Client, state: Popup) !void {
+    const drawing: []const u8 = switch (state) {
+        .show => "on",
+        .hide => "off",
+        .toggle => "toggle",
+    };
     var props: Props = .{};
-    switch (state) {
-        .show => props.raw("popup.drawing=on"),
-        .hide => props.raw("popup.drawing=off"),
-        .toggle => props.raw("popup.drawing=toggle"),
-    }
+    try props.write(.{ .popup = .{ .drawing = drawing } });
     try bar.set(bell, props.slice());
     try bar.commit();
 }
@@ -148,61 +149,58 @@ pub fn refresh(io: std.Io, gpa: std.mem.Allocator, helper: []const u8) anyerror!
     defer client.deinit();
     try client.connect();
 
-    const previous = try previousCount(&client, arena);
+    const previous = previousCount(&client, arena);
     const count = notifications.len;
 
+    // One icon for both states: the Octocat says what this item is about, and the
+    // count says whether there is something new - red, if any of them matters.
+    var important = false;
+    for (notifications) |notification| {
+        important = important or mentionsImportant(notification.subject.title);
+    }
+
     var props: Props = .{};
-    // One icon for both states: the Octocat says what this item is about, and
-    // whether there is something new is already said twice over - by the count,
-    // and by the icon turning red when a notification matters.
-    try props.fmt("icon={s}", .{theme.glyph.github});
-    try props.fmt("icon.badge={d}", .{count});
-    try props.color("icon.color", theme.blue);
+    try props.write(.{ .icon = .{
+        .value = theme.glyph.github,
+        .badge = count,
+        .color = try props.argb(if (important) theme.red else theme.blue),
+    } });
     try client.set(bell, props.slice());
 
-    // Rows are rebuilt rather than reconciled, as the shell did.
+    // Rows are rebuilt rather than reconciled.
     try client.arg("--remove");
     try client.arg(notification_pattern);
 
-    var important = false;
     var urls = std.ArrayList([]const u8).empty;
     for (notifications, 1..) |notification, index| {
         // A row that cannot be built is still numbered, so the URL list has to
         // advance with the loop: a click on row N must find N's URL, not the
         // next successfully built row's.
         var url: []const u8 = notifications_page;
-        if (row(&client, notification, index, gh, helper, arena, gpa, io, &url)) |is_important| {
-            important = important or is_important;
-        } else |err| {
-            std.debug.print("kxdesk: notification {d} skipped: {s}\n", .{ index, @errorName(err) });
-        }
+        row(&client, notification, index, gh, helper, arena, gpa, io, &url) catch |err| {
+            log.warn("notification {d} skipped: {s}", .{ index, @errorName(err) });
+        };
         try urls.append(arena, url);
     }
     rows.publish(gpa, io, urls.items);
 
-    if (important) {
-        var bell_color: Props = .{};
-        try bell_color.color("icon.color", theme.red);
-        try client.set(bell, bell_color.slice());
-    }
-
     try client.commit();
 
-    // Nudge the bell when something new arrived, as the shell did.
+    // Nudge the bell when something new arrived.
     const grew = if (previous) |before| count > before else false;
     if (grew) {
         try client.arg("--animate");
         try client.arg("tanh");
-        try client.arg("15");
+        try client.arg(std.fmt.comptimePrint("{d}", .{nudge_frames}));
         var nudge: Props = .{};
-        try nudge.num("icon.badge.y_offset", 5);
-        try nudge.num("icon.badge.y_offset", 0);
+        try nudge.write(.{ .icon = .{ .badge = .{ .y_offset = nudge_y_offset } } });
+        try nudge.write(.{ .icon = .{ .badge = .{ .y_offset = 0 } } });
         try client.set(bell, nudge.slice());
         try client.commit();
     }
 }
 
-/// Emit one popup row. Returns whether the notification was marked important.
+/// Emit one popup row from the template, and leave its URL in `url_out`.
 fn row(
     client: *sb.Client,
     notification: Notification,
@@ -213,35 +211,35 @@ fn row(
     gpa: std.mem.Allocator,
     io: std.Io,
     url_out: *[]const u8,
-) !bool {
-    const repo = if (notification.@"repository".@"name".len > 0)
-        notification.@"repository".@"name"
+) !void {
+    const repo = if (notification.repository.name.len > 0)
+        notification.repository.name
     else
         "Note";
-    const title = if (notification.@"subject".@"title".len > 0)
-        notification.@"subject".@"title"
+    const title = if (notification.subject.title.len > 0)
+        notification.subject.title
     else
         "No new notifications";
 
-    const is_important = mentionsImportant(notification.@"subject".@"title");
+    const is_important = mentionsImportant(notification.subject.title);
 
     var color: theme.Color = theme.blue;
     var icon: []const u8 = theme.glyph.bell;
     var url: []const u8 = notifications_page;
 
-    if (std.mem.eql(u8, notification.@"subject".@"type", "Issue")) {
+    if (std.mem.eql(u8, notification.subject.type, "Issue")) {
         color = theme.green;
         icon = theme.glyph.git_issue;
         url = try resolveUrl(arena, gpa, io, gh, notification);
-    } else if (std.mem.eql(u8, notification.@"subject".@"type", "PullRequest")) {
+    } else if (std.mem.eql(u8, notification.subject.type, "PullRequest")) {
         color = theme.magenta;
         icon = theme.glyph.git_pull_request;
         url = try resolveUrl(arena, gpa, io, gh, notification);
-    } else if (std.mem.eql(u8, notification.@"subject".@"type", "Commit")) {
+    } else if (std.mem.eql(u8, notification.subject.type, "Commit")) {
         color = theme.white;
         icon = theme.glyph.git_commit;
         url = try resolveUrl(arena, gpa, io, gh, notification);
-    } else if (std.mem.eql(u8, notification.@"subject".@"type", "Discussion")) {
+    } else if (std.mem.eql(u8, notification.subject.type, "Discussion")) {
         color = theme.white;
         icon = theme.glyph.git_discussion;
     }
@@ -265,23 +263,22 @@ fn row(
     try client.arg(name);
     try client.arg("mouse.clicked");
 
-    var props: Props = .{};
-    try props.text("label", title);
-    try props.fmt("icon={s} {s}:", .{ icon, repo });
-    try props.num("icon.padding_left", 0);
-    try props.num("label.padding_right", 0);
-    try props.color("icon.color", color);
-    try props.text("position", "popup.github.bell");
-    try props.color("icon.background.color", color);
-    props.raw("drawing=on");
-    // A clone inherits the event port and the update mask only as a side effect
-    // of copying its ancestor, and a row that is not routed gets no click at
-    // all, so the routing is stated per row as well as on the template.
-    try props.text("mach_helper", helper);
-    props.raw("updates=on");
-    try client.set(name, props.slice());
+    var icon_buffer: [256]u8 = undefined;
+    const icon_text = try std.fmt.bufPrint(&icon_buffer, "{s} {s}:", .{ icon, repo });
 
-    return is_important;
+    var props: Props = .{};
+    // Order matters on the wire, and a node runs to its own end: the label's and
+    // the icon's keys are written in the runs they belong to.
+    try props.write(.{ .label = title });
+    try props.write(.{ .icon = .{ .value = icon_text, .padding_left = 0 } });
+    try props.write(.{ .label = .{ .padding_right = 0 } });
+    try props.write(.{ .icon = .{ .color = try props.argb(color) } });
+    try props.write(.{ .position = "popup.github.bell" });
+    try props.write(.{ .icon = .{ .background = .{ .color = try props.argb(color) } } });
+    // A clone inherits the event port and the update mask only by copying its
+    // ancestor, and a row that is not routed gets no click at all.
+    try props.write(.{ .drawing = true, .mach_helper = helper, .updates = true });
+    try client.set(name, props.slice());
 }
 
 /// The notification's own URL, resolved through one more `gh api` call.
@@ -292,7 +289,7 @@ fn resolveUrl(
     gh: [:0]const u8,
     notification: Notification,
 ) ![]const u8 {
-    const latest = notification.@"subject".@"latest_comment_url" orelse return notifications_page;
+    const latest = notification.subject.latest_comment_url orelse return notifications_page;
 
     // A notification whose URL cannot be resolved - deleted, or not visible to
     // the token - still belongs in the popup, so it points at the inbox instead
@@ -303,7 +300,7 @@ fn resolveUrl(
         .allocate = .alloc_if_needed,
     }) catch return notifications_page;
 
-    return if (parsed.@"html_url".len > 0) parsed.@"html_url" else notifications_page;
+    return if (parsed.html_url.len > 0) parsed.html_url else notifications_page;
 }
 
 fn parseNotifications(
@@ -362,24 +359,14 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 }
 
 /// The bell's current badge, used to notice that the count grew. A badge that is
-/// not a number leaves this unknown, and then no nudge is emitted - which is what
-/// the shell's failing numeric comparison did too.
-fn previousCount(client: *sb.Client, arena: std.mem.Allocator) !?usize {
-    var response: [16 * 1024]u8 = undefined;
-
-    client.clear();
-    try client.arg("--query");
-    try client.arg(bell);
-    const body = try client.commitInto(&response);
-
+/// not a number, or a bell SketchyBar will not answer for, leaves this unknown -
+/// and then no nudge is emitted.
+fn previousCount(client: *sb.Client, arena: std.mem.Allocator) ?usize {
     const Bell = struct {
-        @"icon": struct {
-            @"badge": struct { @"value": []const u8 = "" } = .{},
+        icon: struct {
+            badge: struct { value: []const u8 = "" } = .{},
         } = .{},
     };
-    const parsed = std.json.parseFromSliceLeaky(Bell, arena, body, .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_if_needed,
-    }) catch return null;
-    return std.fmt.parseInt(usize, parsed.@"icon".@"badge".@"value", 10) catch null;
+    const parsed = client.query(Bell, arena, bell) catch return null;
+    return std.fmt.parseInt(usize, parsed.icon.badge.value, 10) catch null;
 }

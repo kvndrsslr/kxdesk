@@ -1,9 +1,8 @@
 //! Mach client for a SketchyBar instance.
 //!
-//! SketchyBar redraws once per received message, so every update is expressed as
-//! a single batch of commands. Driving the bar this way - instead of spawning the
-//! `sketchybar` CLI once per property change - is what makes kxdesk cheap: no
-//! `fork`/`exec`, no argument re-tokenisation, one redraw.
+//! SketchyBar redraws once per received message, so every update is one batch of
+//! commands rather than a `sketchybar` CLI spawn per property change: no `fork`,
+//! no argument re-tokenisation, one redraw.
 
 const std = @import("std");
 
@@ -13,9 +12,8 @@ const timeouts = @import("timeouts.zig");
 /// Bootstrap service name of the running SketchyBar instance.
 pub const sketchybar_service: [:0]const u8 = "git.felix.sketchybar";
 
-/// Bootstrap service the kxdesk daemon publishes its command channel under.
-/// Both it and `main.event_service` are names for the daemon's one receive
-/// port, so a client resolves this one and gets the daemon either way.
+/// Bootstrap service the kxdesk daemon publishes its command channel under;
+/// `main.event_service` is another name for the same receive port.
 pub const control_service: [:0]const u8 = "org.kdressler.kxdesk.control";
 
 pub const Error = error{
@@ -40,11 +38,9 @@ fn traceBatch(payload: []const u8) void {
 }
 
 /// Echo a received block's tokens to stderr, under the same `KXDESK_TRACE`
-/// switch as `traceBatch`.
-///
-/// The counterpart of the outgoing trace, and the only way to see what
-/// SketchyBar actually sent: which keys an event carries depends on the event
-/// and on the item's own env vars, so a routing bug otherwise looks like silence.
+/// switch as `traceBatch`. The only way to see what SketchyBar sent: which keys
+/// an event carries depends on the event and the item's own env vars, so a
+/// routing bug otherwise looks like silence.
 pub fn traceBlock(block: [*:0]const u8) void {
     std.debug.print("--- block\n", .{});
     var caret: usize = 0;
@@ -55,11 +51,11 @@ pub fn traceBlock(block: [*:0]const u8) void {
     }
 }
 
-/// Parsed view over the environment block that SketchyBar sends with an event.
+/// Parsed view over the environment block that SketchyBar sends with an event:
+/// a flat sequence of NUL-terminated `key`/`value` pairs closed by an empty key.
 ///
-/// The block is a flat sequence of NUL-terminated `key`/`value` pairs closed by
-/// an empty key. It is owned by the mach message and only valid for the duration
-/// of the handler call, so nothing here may be retained.
+/// The block is owned by the mach message and valid only for the duration of the
+/// handler call, so nothing here may be retained.
 pub const Env = struct {
     block: [*:0]const u8,
 
@@ -150,17 +146,22 @@ pub const Client = struct {
         try self.args.append(self.gpa, 0);
     }
 
-    /// Queue a `key=value` property with a formatted value.
-    pub fn propFmt(self: *Client, key: []const u8, comptime fmt: []const u8, values: anytype) !void {
-        var buf: [256]u8 = undefined;
-        try self.prop(key, try std.fmt.bufPrint(&buf, fmt, values));
-    }
-
     /// `--set <item> <props...>`
     pub fn set(self: *Client, item: []const u8, props: []const []const u8) !void {
         try self.arg("--set");
         try self.arg(item);
         for (props) |property| try self.arg(property);
+    }
+
+    /// Push one data point into a graph item: a bare argument, a fraction of the
+    /// graph's height, so a percentage is divided before it arrives here.
+    pub fn push(self: *Client, item: []const u8, value: f64) !void {
+        var buffer: [32]u8 = undefined;
+        const point = std.fmt.bufPrint(&buffer, "{d:.4}", .{value}) catch return error.OutOfMemory;
+
+        try self.arg("--push");
+        try self.arg(item);
+        try self.arg(point);
     }
 
     /// Send the queued batch and forget it. SketchyBar applies every command in
@@ -171,20 +172,6 @@ pub const Client = struct {
     /// fresh query, so keeping a failed one would only mix stale commands into the
     /// next update - and grow without bound, since the events that trigger an
     /// update keep arriving.
-    /// Push one data point into a graph item.
-    ///
-    /// A point is a fraction of the graph's height, so a percentage is divided
-    /// before it arrives here - and the value is a bare argument rather than a
-    /// `key=value`, which is why it is not `propFmt`.
-    pub fn push(self: *Client, item: []const u8, value: f64) !void {
-        var buffer: [32]u8 = undefined;
-        const point = std.fmt.bufPrint(&buffer, "{d:.4}", .{value}) catch return error.OutOfMemory;
-
-        try self.arg("--push");
-        try self.arg(item);
-        try self.arg(point);
-    }
-
     pub fn commit(self: *Client) !void {
         if (self.args.items.len == 0) return;
         defer self.clear();
@@ -232,13 +219,11 @@ pub const Client = struct {
         const payload = self.args.items;
         if (self.trace) traceBatch(payload);
 
-        // SketchyBar registers its bootstrap name again when it is restarted, and
-        // a send right held from before then names a dead port. Resolving a name
-        // is cheap, so a client that has no right - or whose right just failed -
-        // resolves it again rather than going silent for the rest of the
-        // process's life: the daemon's own client is built once and used by every
-        // item event, so a single stale right used to mean a bar that never drew
-        // again.
+        // A restored SketchyBar registers its bootstrap name again, so a right
+        // held from before then names a dead port. Resolving a name is cheap, so
+        // a client whose send just failed resolves again rather than going silent
+        // for the rest of the process's life; the daemon's client is built once
+        // and used by every item event.
         var attempt: u8 = 0;
         while (true) : (attempt += 1) {
             if (self.port == 0) self.port = platform.kx_bootstrap_lookup(self.service);

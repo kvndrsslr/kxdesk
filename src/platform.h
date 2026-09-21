@@ -1,16 +1,12 @@
-// Platform layer for kxdesk.
+// Platform layer for kxdesk: everything that needs C, Objective-C or Mach, so the
+// Zig side stays pure logic. The thin mach transport wraps `vendor/sketchybar.h`
+// (the upstream header from https://github.com/FelixKratz/SketchyBarHelper, whose
+// `static inline` functions are compiled into this translation unit).
 //
-// Everything that needs C, Objective-C or Mach lives here so that the Zig side
-// stays pure logic. The thin mach transport wraps `vendor/sketchybar.h`, the
-// upstream header from https://github.com/FelixKratz/SketchyBarHelper, which is
-// compiled into this translation unit (the header only defines `static inline`
-// functions, so including it here statically links it into the binary).
-//
-// The pieces not reused from that header are the server loop, which is
-// rewritten around two names on one receive port, and the one-way post the
-// daemon answers requests with. `kx_server_register()` and `kx_server_serve()`
-// split `mach_server_begin()` in two so that the `mach_helper` property can be
-// published after the service exists and before the loop starts.
+// `kx_server_register()` and `kx_server_serve()` split its `mach_server_begin()` in
+// two, so the `mach_helper` property can be published after the service exists and
+// before the loop starts; the server loop itself is rewritten around two names on
+// one receive port.
 
 #pragma once
 
@@ -35,8 +31,6 @@ typedef void (*kx_handler)(const char* block, uint32_t reply_port);
 /// with no timer running wants and what it costs when idle.
 typedef uint32_t (*kx_timer)(void);
 
-/* -- mach transport ------------------------------------------------------- */
-
 /// Resolve a bootstrap service to a send right, or 0. Each successful call
 /// vends a new right: cache it and release it with `kx_port_release()`.
 uint32_t kx_bootstrap_lookup(const char* name);
@@ -48,12 +42,11 @@ void kx_port_release(uint32_t port);
 /// Must succeed before SketchyBar is told `mach_helper=<name>`.
 uint32_t kx_server_register(const char* name);
 
-/// Blocking event loop: receive, dispatch to `handler`, repeat. Never returns.
-/// SketchyBar's `k` shutdown marker is handed to the handler like any other
-/// block: by then the bar is gone, but the daemon outlives it, so ending the
-/// process is the handler's business and not the loop's.
-/// Serve until the process ends. `timer` may be NULL, and is the only thing that
-/// ever makes this loop wake up on its own.
+/// Serve until the process ends: receive, dispatch to `handler`, repeat. Never
+/// returns; `timer` is the only thing that ever makes the loop wake up on its own.
+/// SketchyBar's `k` shutdown marker arrives as an ordinary block, and ending the
+/// process on it is the handler's business rather than the loop's - by then the
+/// bar is gone, but the daemon outlives it.
 void kx_server_serve(uint32_t port, kx_handler handler, kx_timer timer);
 
 /// Send a NUL-separated argument vector to a port, copying any response into
@@ -89,9 +82,6 @@ bool kx_server_publish(uint32_t port, const char* name);
 /// Real user id of this process, for `launchctl` domain targets.
 uint32_t kx_uid(void);
 
-
-/* -- process execution ---------------------------------------------------- */
-
 /// Run `argv` (NULL-terminated, `argv[0]` is a filesystem path) with stdout
 /// captured into `out` and stderr discarded. Returns the total number of bytes
 /// the child wrote - which may exceed `cap`, signalling truncation - or -1 if
@@ -122,8 +112,6 @@ bool kx_which(const char* name, char* out, size_t cap);
 /// is unset, empty, or longer than `cap`.
 bool kx_env(const char* name, char* out, size_t cap);
 
-/* -- unix sockets --------------------------------------------------------- */
-
 /// Send one message to a unix stream socket and read its reply.
 ///
 /// `request_size` bytes of `request` are written in full, then the write side is
@@ -142,8 +130,6 @@ int64_t kx_socket_message(
     char* out,
     size_t cap
 );
-
-/* -- tcp sockets ---------------------------------------------------------- */
 
 /// Connect to `host`:`port` over TCP and keep the descriptor, for a channel
 /// that stays open. `kx_socket_message` above is one message and gone, which is
@@ -186,8 +172,6 @@ void kx_tcp_close(int32_t fd);
 /// CoreText so it is the same file the bar renders with. Returns false when the
 /// font is not installed.
 bool kx_app_font_path(char* out, size_t cap);
-
-/* -- macOS platform services --------------------------------------------- */
 
 /// Internal battery percentage and whether the machine is drawing from AC.
 /// Returns false when there is no battery (desktop) or it cannot be read.

@@ -1,7 +1,5 @@
-//! Visual constants: palette, fonts, glyphs and spacing.
-//!
-//! This replaces `colors.sh` / `icons.sh`. Values are plain data so that item
-//! definitions in `bar.zig` read like the declarative configuration they are.
+//! Visual constants: palette, fonts, glyphs and spacing, as plain data so that
+//! item definitions read like the declarative configuration they are.
 
 /// ARGB colour, as SketchyBar spells it: `0xAARRGGBB`.
 pub const Color = u32;
@@ -19,9 +17,8 @@ pub const dark_grey: Color = 0xff7c6f64;
 pub const dark_green: Color = 0xff79740e;
 pub const aqua: Color = 0xff8ec07c;
 
-/// The chip behind a badge count: `background_2`, two shades brighter than
-/// the bar's `black`, so the badge reads as sitting on the bar rather than
-/// as loose text.
+/// The chip behind a badge count, two shades brighter than the bar's `black`, so
+/// the badge reads as sitting on the bar rather than as loose text.
 pub const badge_background: Color = background_2;
 
 pub const bar_color: Color = black;
@@ -32,33 +29,29 @@ pub const background_2: Color = 0xff3c3836;
 
 /// Space label background while the space is visible but not focused.
 pub const space_visible: Color = 0xff504945;
-/// Calendar icon colour, kept as a literal in the shell config.
+/// Calendar icon colour.
 pub const calendar_icon: Color = dark_grey;
 /// Separator icon colour.
 pub const separator_icon: Color = background_2;
 
-/// The load graphs, drawn over one another in one window: CPU in green and GPU
-/// in yellow. The network's pair sits beside them, in the cool half of the
-/// palette - what came in in blue, what went out in magenta - so that the two
-/// pairs read apart.
-///
-/// Neither pair draws a fill: a fill is what a graph draws by default, and two of
-/// them over the same pixels would only muddle each other, so what is left is two
-/// lines sharing one baseline.
+/// The load graphs, drawn over one another in one window: CPU in green, GPU in
+/// yellow, and the network's pair - down in blue, up in magenta - in the cool half
+/// of the palette so the two pairs read apart. Neither pair draws a fill: two
+/// fills over the same pixels would muddle each other.
 pub const graph_cpu: Color = green;
 pub const graph_gpu: Color = yellow;
 pub const graph_net_down: Color = blue;
 pub const graph_net_up: Color = magenta;
 pub const graph_no_fill: Color = 0x00000000;
 
-/// Bar geometry.
 pub const bar_height: u32 = 24;
 pub const padding: u32 = 3;
 
 pub const font = "JetBrainsMono Nerd Font";
 pub const app_font = "sketchybar-app-font";
 
-/// Glyphs, named after the shell variables they replace.
+/// Glyphs the bar's items draw; the ones that were not obvious carry a note on how
+/// their codepoint was chosen.
 pub const glyph = struct {
     pub const loading = "\u{100587}";
     pub const bell = "\u{1002da}";
@@ -93,18 +86,15 @@ pub const glyph = struct {
     pub const yabai_grid = "\u{100933}";
 
     /// The link icon: the two ways the machine is connected to the internet, and
-    /// the mark for when it is not. All three are Material Design's, so they are
-    /// drawn in one weight - the ethernet jack in particular is a port rather
-    /// than a cable, which is what the link is at. Checked by rendering them:
-    /// the first plausible codepoints are not always the ones that draw.
+    /// the mark for when it is not. All three are Material Design's, drawn in one
+    /// weight; rendered before use, since plausible codepoints are not always the
+    /// ones that draw.
     pub const wifi = "\u{f05a9}";
     pub const ethernet = "\u{f0200}";
     pub const disconnected = "\u{f05e9}";
 
-    /// The server-mode item: this machine serving its ssh keys and its git
-    /// signing to whoever connects. One glyph is enough - the state it is in is
-    /// what the colour says, and the loading symbol above is what a change in
-    /// flight says - so this is a plain rack. Present in the bar's own font:
-    /// checked against its `cmap`, so the bar needs no fallback to draw it.
+    /// The server-mode item: this machine serving its ssh keys and its git signing
+    /// to whoever connects. Present in the bar's own font, checked against its
+    /// `cmap`, so the bar needs no fallback to draw it.
     pub const server = "\u{f233}";
 };
