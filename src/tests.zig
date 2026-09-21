@@ -10,8 +10,11 @@ const config = @import("config.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const kanata = @import("kanata.zig");
+const log = @import("log.zig");
 const Props = @import("props.zig").Props;
+const sb = @import("sb.zig");
 const store = @import("store.zig");
+const style = @import("style.zig");
 const theme = @import("theme.zig");
 const zen = @import("zen.zig");
 
@@ -545,4 +548,218 @@ test "the mode indicator follows the layer kanata reports" {
     // A layer nobody colours is not an error: the config may define layers of
     // its own, and the highlight simply stays as it was.
     try std.testing.expect(kanata.indicatorFor("nav") == null);
+}
+
+// Pinned spellings of every leaf kind `props.write` flattens, in field order.
+test "props.write spells every leaf kind the way the bar reads it" {
+    var props: Props = .{};
+    const green = try props.argb(theme.green);
+    const cleared: ?[]const u8 = null;
+    const width: ?u32 = 30;
+    const anchor: config.Anchors = .bottom_center;
+    const share: f64 = 0.85;
+    try props.write(.{
+        .text = "hello",
+        .drawing = true,
+        .count = 42,
+        .share = share,
+        .anchor = anchor,
+        .bare = null,
+        .cleared = cleared,
+        .width = width,
+        .nested = .{ .inner = "x" },
+        .label = .{ .value = "hey" },
+        .color = green,
+    });
+
+    const expected = [_][]const u8{
+        "text=hello",
+        "drawing=on",
+        "count=42",
+        "share=0.8500",
+        "anchor=bottom_center",
+        "bare=",
+        "cleared=",
+        "width=30",
+        "nested.inner=x",
+        "label=hey",
+        "color=0xffb8bb27",
+    };
+    try std.testing.expectEqual(expected.len, props.slice().len);
+    for (expected, props.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+// The runtime and the comptime flatteners produce the same args for one node.
+test "props.write and config.node flatten one node to the same args" {
+    const runtime_node = .{
+        .drawing = true,
+        .count = 7,
+        .text = "hi",
+        .anchor = config.Anchors.center,
+        .clear = null,
+        .icon = .{ .value = "v", .badge = .{ .x_offset = 1, .y_offset = -1 } },
+    };
+    const compiled_node = .{
+        .drawing = true,
+        .count = 7,
+        .text = "hi",
+        .anchor = config.Anchors.center,
+        .clear = null,
+        .icon = .{ .value = "v", .badge = .{ .x_offset = 1, .y_offset = -1 } },
+    };
+
+    var runtime: Props = .{};
+    try runtime.write(runtime_node);
+    const compiled = config.node(compiled_node);
+
+    const expected = [_][]const u8{
+        "drawing=on",
+        "count=7",
+        "text=hi",
+        "anchor=center",
+        "clear=",
+        "icon=v",
+        "icon.badge.x_offset=1",
+        "icon.badge.y_offset=-1",
+    };
+    try std.testing.expectEqual(expected.len, runtime.slice().len);
+    for (expected, runtime.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+    try expectArgs(compiled.args, &expected);
+}
+
+// `config.add` spells `--add <kind> <name> <position> [<width>]`, and an event
+// takes neither position nor width.
+test "config.add spells --add per kind" {
+    var client = sb.Client.init(std.testing.allocator, sb.sketchybar_service);
+    defer client.deinit();
+
+    try config.add(&client, .item, "brew", "right", null);
+    try config.add(&client, .graph, "net.down", "left", 60);
+    try config.add(&client, .ring, "battery.ring", "right", 20);
+    // Position and width are spelled anyway, but an event carries neither.
+    try config.add(&client, .event, "yabai_update", "right", 99);
+
+    const expected = [_][]const u8{
+        "--add",        "item",  "brew",     "right",
+        "--add",        "graph", "net.down", "left",
+        "60",           "--add", "ring",     "battery.ring",
+        "right",        "20",    "--add",    "event",
+        "yabai_update",
+    };
+    try expectArgs(client.args.items, &expected);
+}
+
+// `config.subscribe` queues one `--subscribe <name> <events...>`, and an empty
+// list queues nothing at all.
+test "config.subscribe queues one --subscribe, or nothing when no events" {
+    var client = sb.Client.init(std.testing.allocator, sb.sketchybar_service);
+    defer client.deinit();
+
+    try config.subscribe(&client, "brew", &.{});
+    try std.testing.expectEqual(@as(usize, 0), client.args.items.len);
+
+    try config.subscribe(&client, "brew", &.{ .@"mouse.clicked", .brew_update });
+    const expected = [_][]const u8{ "--subscribe", "brew", "mouse.clicked", "brew_update" };
+    try expectArgs(client.args.items, &expected);
+}
+
+// `config.move` spells `--move <item> before <anchor>`; `config.remove` spells
+// `--remove <pattern>`.
+test "config.move and config.remove spell their commands" {
+    var client = sb.Client.init(std.testing.allocator, sb.sketchybar_service);
+    defer client.deinit();
+
+    try config.move(&client, "space.7", "space.3");
+    try config.remove(&client, "space.*");
+
+    const expected = [_][]const u8{ "--move", "space.7", "before", "space.3", "--remove", "space.*" };
+    try expectArgs(client.args.items, &expected);
+}
+
+// A full `config.declare` item: the `script=`/`click_script=` clears coming
+// before the node's own args is the reload-leak invariant, pinned.
+test "config.declare queues add, set with the clears, helper, click script, subscribe" {
+    var client = sb.Client.init(std.testing.allocator, sb.sketchybar_service);
+    defer client.deinit();
+
+    try config.declare(&client, .{
+        .kind = .item,
+        .name = "brew",
+        .position = "right",
+        .props = config.node(.{ .drawing = true, .icon = .{ .value = "B" } }),
+        .helper = true,
+        .click_script = "echo clicked",
+        .events = &.{ .@"mouse.clicked", .brew_update },
+    }, "org.kdressler.kxdesk.item.brew");
+
+    const expected = [_][]const u8{
+        "--add",       "item",   "brew",                                       "right",
+        "--set",       "brew",   "script=",                                    "click_script=",
+        "drawing=on",  "icon=B", "mach_helper=org.kdressler.kxdesk.item.brew", "click_script=echo clicked",
+        "--subscribe", "brew",   "mouse.clicked",                              "brew_update",
+    };
+    try expectArgs(client.args.items, &expected);
+}
+
+// A `.event` declaration is exactly the bare `--add event <name>`.
+test "config.declare for an event kind is only the --add" {
+    var client = sb.Client.init(std.testing.allocator, sb.sketchybar_service);
+    defer client.deinit();
+
+    try config.declare(&client, .{ .kind = .event, .name = "yabai_update" }, "org.kdressler.kxdesk");
+
+    const expected = [_][]const u8{ "--add", "event", "yabai_update" };
+    try expectArgs(client.args.items, &expected);
+}
+
+// `style.badge` flattens to the one badge chip, and the font helpers spell
+// SketchyBar's font specs.
+test "style.badge flattens to the pinned badge chip args" {
+    const cfg = config.node(.{ .icon = .{ .badge = style.badge } });
+    const expected = [_][]const u8{
+        "icon.badge.font=JetBrainsMono Nerd Font:Bold:9.0",
+        "icon.badge.anchor=bottom_right",
+        "icon.badge.x_offset=2",
+        "icon.badge.y_offset=-1",
+        "icon.badge.background.drawing=on",
+        "icon.badge.background.color=0xff3c3836",
+        "icon.badge.background.width=dynamic",
+        "icon.badge.background.height=0",
+        "icon.badge.background.corner_radius=6",
+        "icon.badge.background.padding_left=1",
+        "icon.badge.background.padding_right=1",
+    };
+    try expectArgs(cfg.args, &expected);
+
+    try std.testing.expectEqualStrings("JetBrainsMono Nerd Font:Bold:9.0", style.mono(.Bold, 9));
+    try std.testing.expectEqualStrings("sketchybar-app-font:Regular:14.0", style.app(14));
+    try std.testing.expectEqual(@as(u32, 25), style.space_chip_height);
+}
+
+// `log.Once.changed` is true only for a message that differs within the 160
+// bytes it remembers.
+test "log.Once reports only a changed message, remembering 160 bytes" {
+    var once = log.Once{};
+
+    try std.testing.expect(once.changed("yabai unreachable"));
+    try std.testing.expect(!once.changed("yabai unreachable"));
+    try std.testing.expect(once.changed("yabai refused"));
+
+    once.clear();
+    try std.testing.expect(once.changed("yabai refused"));
+
+    var first: [200]u8 = undefined;
+    @memset(&first, 'a');
+    var again: [200]u8 = undefined;
+    @memset(&again, 'a');
+    var differs_late: [200]u8 = undefined;
+    @memset(&differs_late, 'a');
+    differs_late[170] = 'z';
+
+    // The first 160 bytes are all that is remembered, so a repeat of an
+    // over-long message is not a change, and neither is one that differs only
+    // past byte 160.
+    try std.testing.expect(once.changed(&first));
+    try std.testing.expect(!once.changed(&again));
+    try std.testing.expect(!once.changed(&differs_late));
 }

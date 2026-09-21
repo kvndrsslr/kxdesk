@@ -27,6 +27,9 @@ pub const Error = error{
     OutOfMemory,
 };
 
+/// Response buffer for `query`; far above any answer a `--query` returns.
+const response_bytes = 64 * 1024;
+
 fn traceBatch(payload: []const u8) void {
     std.debug.print("--- batch\n", .{});
     var arguments = std.mem.splitScalar(u8, payload, 0);
@@ -198,6 +201,25 @@ pub const Client = struct {
         const length = try self.transmit(out);
         if (length > out.len) return Error.ResponseTooLong;
         return out[0..length];
+    }
+
+    /// `--query <item>`, parsed as `T`, in one batch. The response buffer is
+    /// allocated from `arena`, so `T` may point into it.
+    pub fn query(self: *Client, comptime T: type, arena: std.mem.Allocator, item: []const u8) !T {
+        // The answer describes the whole batch, so nothing else may be queued.
+        self.clear();
+        try self.arg("--query");
+        try self.arg(item);
+
+        const buffer = try arena.alloc(u8, response_bytes);
+        const response = try self.commitInto(buffer);
+
+        return std.json.parseFromSliceLeaky(T, arena, response, .{
+            .ignore_unknown_fields = true,
+            // The buffer outlives the parsed value (both live in the arena), so
+            // strings can point into it instead of being copied.
+            .allocate = .alloc_if_needed,
+        });
     }
 
     /// Send the queued batch, discarding the response. Returns its length.
