@@ -129,7 +129,7 @@ fn dispatch(context: *Context, name: []const u8) anyerror!void {
     const command = commands.all[index];
     if (command.run == null) return error.UnknownAction;
 
-    if (try cli.validate(context.arena, command, words[1..count])) |problem| {
+    if (try cli.validate(context.arena, context.io, command, words[1..count])) |problem| {
         log.warn("kanata message '{s}' refused: {s}", .{ name, problem });
         return error.Refused;
     }

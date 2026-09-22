@@ -237,8 +237,16 @@ fn frontAppItems(c: *sb.Client, config_input: Config) !void {
     }
 }
 
-/// Declare one pair of the graph items `style.Graph` describes.
-fn graphPair(c: *sb.Client, comptime pair: [2]style.Graph) !void {
+/// Declare one pair of the graph items `style.Graph` describes. `load` is the
+/// pair the load is read in: its click shows or hides the terminal that reads the
+/// same numbers, and it is the pair that carries the helper, so the click reaches
+/// the daemon rather than the bar.
+fn graphPair(
+    c: *sb.Client,
+    helper: []const u8,
+    comptime pair: [2]style.Graph,
+    comptime load: bool,
+) !void {
     @setEvalBranchQuota(1_000_000);
     inline for (pair, 0..) |series, index| {
         const icon_slot = comptime style.graphSlot(series, true, series.top);
@@ -247,6 +255,8 @@ fn graphPair(c: *sb.Client, comptime pair: [2]style.Graph) !void {
             .kind = .graph,
             .name = series.name,
             .width = style.graph_width,
+            .helper = load,
+            .events = if (load) &.{.@"mouse.clicked"} else &.{},
             .props = config.node(.{
                 .padding_left = style.item_padding,
                 .padding_right = style.item_padding,
@@ -265,7 +275,7 @@ fn graphPair(c: *sb.Client, comptime pair: [2]style.Graph) !void {
                     .line_width = style.graph_line_width,
                 },
             }),
-        }, "");
+        }, helper);
         // The first of a pair takes no room of its own, so the second begins at
         // the same x.
         if (index == 0) try c.prop("width", "0");
@@ -281,14 +291,15 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try config.move(c, items_system.ring_item, "calendar");
 
     // The two graph pairs, the load pair first, since it is the nearer the clock.
-    try graphPair(c, .{
+    // The load pair is the one whose click shows the terminal btop reads in.
+    try graphPair(c, config_input.helper, .{
         .{ .name = items_system.cpu_item, .color = theme.graph_cpu, .readout = true, .top = true, .air = false },
         .{ .name = items_system.gpu_item, .color = theme.graph_gpu, .readout = true, .air = false },
-    });
-    try graphPair(c, .{
+    }, true);
+    try graphPair(c, config_input.helper, .{
         .{ .name = items_system.net_down_item, .color = theme.graph_net_down, .readout = true },
         .{ .name = items_system.net_up_item, .color = theme.graph_net_up, .readout = true, .top = true },
-    });
+    }, false);
 
     try linkItem(c);
 

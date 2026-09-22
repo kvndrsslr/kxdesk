@@ -13,6 +13,7 @@ const Context = @import("context.zig").Context;
 const exec = @import("exec.zig");
 const items_usage = @import("items_usage.zig");
 const kanata = @import("kanata.zig");
+const kitty = @import("kitty.zig");
 const log = @import("log.zig");
 const mode_indicator = @import("mode_indicator.zig");
 const pomodoro = @import("pomodoro.zig");
@@ -65,6 +66,8 @@ pub const Source = enum {
     state_keys,
     /// Every space label yabai knows.
     space_labels,
+    /// Every quick access terminal configured in kitty.
+    terminals,
 };
 
 /// One positional argument.
@@ -415,6 +418,24 @@ pub const all = [_]Command{
             },
         },
         .run = stateCommand,
+    },
+
+    .{
+        .name = "term",
+        .summary = "show or hide a kitty quick access terminal",
+        .subcommands = &.{
+            .{
+                .name = "toggle",
+                .summary = "show the named terminal, or hide it again",
+                .default = true,
+                .args = &.{.{
+                    .name = "<terminal>",
+                    .summary = "a terminal in ~/.config/kitty/quick-access-terminals",
+                    .source = .terminals,
+                }},
+            },
+        },
+        .run = kitty.toggle,
     },
 
     // The one command with no `run`: it drives `op`, whose 1Password unlock is

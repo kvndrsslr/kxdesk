@@ -95,7 +95,7 @@ const Daemon = struct {
 
         // Checked against its own description first: this is the authority, since
         // any client can be older than the daemon.
-        if (try cli.validate(arena_state.allocator(), commands.all[index], args)) |problem| {
+        if (try cli.validate(arena_state.allocator(), self.io, commands.all[index], args)) |problem| {
             return control.postReply(reply_port, .{ .err = problem });
         }
 
@@ -269,7 +269,7 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
     const arena = init.arena.allocator();
     const command = cli.find(mode) orelse return;
 
-    if (try cli.validate(arena, command, args)) |problem| {
+    if (try cli.validate(arena, init.io, command, args)) |problem| {
         emit(init.io, .stderr, problem);
         std.process.exit(1);
     }
@@ -321,7 +321,7 @@ fn runCompletions(init: std.process.Init, args: []const []const u8) !void {
     if (rest.len == 0) return;
 
     const cword = std.fmt.parseInt(usize, rest[0], 10) catch return;
-    const text = try cli.complete(init.arena.allocator(), described, cword, rest[1..]);
+    const text = try cli.complete(init.arena.allocator(), init.io, described, cword, rest[1..]);
     if (text.len > 0) writeText(init.io, .stdout, text);
 }
 
@@ -446,7 +446,7 @@ fn runClient(init: std.process.Init, verb: []const u8, args: []const []const u8)
         emit(init.io, .stderr, message);
         std.process.exit(1);
     };
-    if (try cli.validate(arena, command, args)) |problem| {
+    if (try cli.validate(arena, init.io, command, args)) |problem| {
         emit(init.io, .stderr, problem);
         std.process.exit(1);
     }

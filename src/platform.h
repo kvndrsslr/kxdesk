@@ -131,6 +131,31 @@ int64_t kx_socket_message(
     size_t cap
 );
 
+/// Send one message to a unix stream socket and read the reply up to a
+/// terminator, for a peer that answers and stays connected.
+///
+/// `request_size` bytes of `request` are written in full, then the reply is read
+/// into `out` until the `terminator_size` bytes of `terminator` have arrived, or
+/// `timeout_ms` has gone by, or the peer closed first. `out` is always
+/// NUL-terminated. This is `kx_socket_message` above for the peer that does not
+/// close after answering - kitty keeps its remote control connection open, so
+/// waiting for end of file would wait for a close that never comes.
+///
+/// Returns the number of reply bytes, which is 0 for a peer that answered
+/// nothing, or -1 when the socket could not be opened, connected, written to or
+/// read, or when nothing arrived before the timeout. Exactly `cap` bytes means
+/// the reply did not fit and was cut, which is a reply this cannot use.
+int64_t kx_unix_reply(
+    const char* path,
+    const void* request,
+    size_t request_size,
+    const void* terminator,
+    size_t terminator_size,
+    char* out,
+    size_t cap,
+    uint32_t timeout_ms
+);
+
 /// Connect to `host`:`port` over TCP and keep the descriptor, for a channel
 /// that stays open. `kx_socket_message` above is one message and gone, which is
 /// what yabai wants and the opposite of what kanata's server is: it broadcasts

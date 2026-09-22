@@ -3,7 +3,8 @@
 //! mirror the items in `bar.zig` that declare the helper.
 //!
 //! Nothing on this path forks a process, and every event is handled inline except
-//! the two whose refresh reaches the network: those run as `std.Io.async` tasks so
+//! the ones whose work is slow: a refresh that reaches the network, and the load
+//! graphs' click, which starts a terminal. Those run as `std.Io.async` tasks so
 //! the receive loop keeps running while they work - see `background.zig`.
 
 const std = @import("std");
@@ -14,6 +15,7 @@ const items_github = @import("items_github.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const items_yabai = @import("items_yabai.zig");
+const kitty = @import("kitty.zig");
 const log = @import("log.zig");
 const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
@@ -21,6 +23,22 @@ const pomodoro = @import("pomodoro.zig");
 const state = @import("store.zig");
 const sb = @import("sb.zig");
 const zen = @import("zen.zig");
+
+/// The quick access terminal the load graphs toggle: the name of a file in the
+/// kitty configuration directory's `quick-access-terminals`, which is where the
+/// numbers these two graphs draw are read in full.
+const load_terminal = "btop";
+
+/// Show or hide it. It runs as a background task because a toggle talks to a
+/// socket and, when the terminal is not running, starts a whole kitty process -
+/// and the receive loop has to keep running while that happens. A failure is a
+/// line in the log, like every other background task's.
+fn toggleLoadTerminal(io: std.Io, gpa: std.mem.Allocator) background.Result {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+
+    return kitty.toggleNamed(io, arena_state.allocator(), load_terminal);
+}
 
 /// The popup rows under an item are shown and hidden, never toggled: what a
 /// hover means is unambiguous.
@@ -56,6 +74,9 @@ pub const Dispatcher = struct {
     brew: background.Slot = .{},
     github: background.Slot = .{},
     usage: background.Slot = .{},
+    /// The load graphs' terminal toggle, at most one in flight: a click that
+    /// arrives while one runs waits for it rather than racing it.
+    terminal: background.Slot = .{},
     /// A refresh asked for while one ran too recently to repeat. The receive
     /// loop's timer drains it through `pollYabai` once the interval closes.
     yabai_pending: bool = false,
@@ -170,6 +191,14 @@ pub const Dispatcher = struct {
     fn click(self: *Dispatcher, name: []const u8, env: sb.Env) !void {
         if (std.mem.eql(u8, name, "calendar")) return self.toggleZen();
         if (std.mem.eql(u8, name, pomodoro.item)) return self.clickPomodoro(env);
+        // The load graphs draw what the terminal shows in full, so a click on
+        // either of them brings it up - and the next click puts it away again.
+        if (std.mem.eql(u8, name, items_system.cpu_item) or
+            std.mem.eql(u8, name, items_system.gpu_item))
+        {
+            self.terminal.request(self.io, toggleLoadTerminal, .{ self.io, self.gpa });
+            return;
+        }
         // A provider's number opens that provider's usage page.
         if (items_usage.providerFor(name)) |provider| return openPage(provider.url);
         if (std.mem.eql(u8, name, items_github.bell)) {

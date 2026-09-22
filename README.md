@@ -72,8 +72,8 @@ The bindings themselves live in kanata, in
 `~/Library/Application Support/kanata/kanata.kbd`. What they *run* does not: each
 binding pushes a message, and the message is a `kxdesk` argv line with the binary
 name left off — `wm window-swap west`, `wm cycle-displays --reverse`,
-`app open kitty` — which this daemon receives, checks against the same command
-description a request from a shell is checked against, and runs.
+`app open kitty`, `term toggle btop` — which this daemon receives, checks against
+the same command description a request from a shell is checked against, and runs.
 
 That is the whole vocabulary: every window, space and display verb is a
 subcommand of `kxdesk wm`, together with yabai's provisioning (`wm apply-settings`,
@@ -136,6 +136,46 @@ To move the two ends apart, `kxdesk state set kanata.port <port>` (and
 argument in the launcher the `kxkanata` formula installs, which is what
 `brew services` starts (`/opt/homebrew/bin/kxkanata`, `brew services info
 kxkanata`).
+
+## Quick access terminals: `kxdesk term toggle`
+
+`kxdesk term toggle <name>` shows the named kitty quick access terminal, or hides
+it again — the same words from a key binding and from a shell:
+
+```sh
+kxdesk term toggle btop
+```
+
+The bar's load graphs are wired to the same thing: the pair the CPU and GPU
+readings share toggles `btop` — the terminal those numbers are read in full — on
+a click, so the two instruments are one click apart. That click runs as a
+background task, like the refreshes that reach the network: it may start a whole
+kitty process, and the receive loop must keep serving the bar while it does.
+
+A terminal is two files under the kitty configuration directory:
+`quick-access-terminals/<name>.conf`, the terminal's own, and
+`quick-access-terminal-base.conf`, which every one of them inherits. kxdesk passes
+the base first and the terminal's own file after it, so anything the base sets is
+overridden there. What a terminal runs is its own file's business —
+`kitty_override shell=/opt/homebrew/bin/btop` — and the program is spelled in
+full, because the window is started by a daemon under launchd, whose `PATH` has no
+Homebrew in it. The word in a binding is the file's name, and one that nothing
+configures is refused before anything runs: an error on a shell, a line in the
+log when a binding pushed it.
+
+Hiding and showing a terminal that is already running is a message rather than a
+process. Each one is started with a socket of its own —
+`listen_on unix:/tmp/kxdesk-qat-<uid>/<name>`, with remote control scoped to that
+socket alone — and asked to toggle its own visibility over kitty's remote control
+protocol, which is the interface kitty documents for controlling a panel from
+outside, and which kitty keeps open rather than closing per command. A terminal
+that is not running is the only thing that costs a process, and then it is
+kitty's own `kitten quick_access_terminal` that draws the window: started hidden
+and shown once it answers, so a key press never shows a window half-drawn. A
+terminal that is hidden keeps running, which is what makes the second press
+instant — and the one thing that cannot be asked for over remote control is what
+kitty's own `--move-to-active-monitor` does, so a terminal reappears where it was
+hidden rather than following the mouse to another monitor.
 
 ## Installing: currently from HEAD, temporarily
 

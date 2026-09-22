@@ -412,8 +412,11 @@ bool kx_env(const char* name, char* out, size_t cap) {
   return true;
 }
 
-int64_t kx_socket_message(const char* path, const void* request, size_t request_size, char* out, size_t cap) {
-  if (!path || !request || !out || cap == 0) return -1;
+/* Connect to `path` and write `request` whole, for the two calls below that
+ * differ only in what they read back. Returns the connected descriptor, or -1
+ * at the first failure; the caller closes it. */
+static int kx_unix_connect(const char* path, const void* request, size_t request_size) {
+  if (!path || !request) return -1;
 
   struct sockaddr_un address;
   memset(&address, 0, sizeof(address));
@@ -447,6 +450,15 @@ int64_t kx_socket_message(const char* path, const void* request, size_t request_
     sent += (size_t)n;
   }
 
+  return fd;
+}
+
+int64_t kx_socket_message(const char* path, const void* request, size_t request_size, char* out, size_t cap) {
+  if (!out || cap == 0) return -1;
+
+  int fd = kx_unix_connect(path, request, request_size);
+  if (fd == -1) return -1;
+
   /* The peer reads the length it was given and stops there, so this is only for
    * one that reads on: the write side ends, exactly as yabai's own client ends
    * it. */
@@ -465,6 +477,50 @@ int64_t kx_socket_message(const char* path, const void* request, size_t request_
     if (n == 0) break;
 
     total += n;
+  }
+  close(fd);
+
+  out[(size_t)total < cap ? (size_t)total : cap - 1] = '\0';
+  return total;
+}
+
+int64_t kx_unix_reply(const char* path, const void* request, size_t request_size,
+                      const void* terminator, size_t terminator_size,
+                      char* out, size_t cap, uint32_t timeout_ms) {
+  if (!out || cap == 0 || !terminator || terminator_size == 0) return -1;
+
+  int fd = kx_unix_connect(path, request, request_size);
+  if (fd == -1) return -1;
+
+  /* Bounded, so a peer that accepts and then says nothing costs the caller a
+   * wait instead of the daemon: without this the read would sit on a connection
+   * the peer has no reason to close. */
+  struct timeval timeout = {
+      .tv_sec = (time_t)(timeout_ms / 1000),
+      .tv_usec = (suseconds_t)((timeout_ms % 1000) * 1000),
+  };
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+  const char* end = (const char*)terminator;
+  int64_t total = 0;
+  for (;;) {
+    if ((size_t)total >= cap) break;
+
+    ssize_t n = recv(fd, out + total, cap - (size_t)total, 0);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      close(fd);
+      return -1;
+    }
+    if (n == 0) break;
+
+    total += n;
+    /* Every reply this is for ends with the terminator, so the read stops at the
+     * end of the message rather than at the end of the connection. */
+    if ((size_t)total >= terminator_size &&
+        memcmp(out + total - terminator_size, end, terminator_size) == 0) {
+      break;
+    }
   }
   close(fd);
 

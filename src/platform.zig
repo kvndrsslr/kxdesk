@@ -45,6 +45,21 @@ pub extern "c" fn kx_socket_message(
     cap: usize,
 ) i64;
 
+/// One message to a unix stream socket, read until `terminator` has arrived
+/// rather than to end of file: the reply's length, or -1 when nothing connected,
+/// nothing was sent, or nothing arrived within `timeout_ms`. Exactly `cap` bytes
+/// means the reply did not fit and was cut.
+pub extern "c" fn kx_unix_reply(
+    path: [*:0]const u8,
+    request: [*]const u8,
+    request_size: usize,
+    terminator: [*]const u8,
+    terminator_size: usize,
+    out: [*]u8,
+    cap: usize,
+    timeout_ms: u32,
+) i64;
+
 pub extern "c" fn kx_spawn_detached(argv: [*]const ?[*:0]const u8) i32;
 
 pub extern "c" fn kx_which(name: [*:0]const u8, out: [*]u8, cap: usize) bool;

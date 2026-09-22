@@ -1,7 +1,8 @@
 //! Unit tests for the platform-free logic: the store and the `KXDESK_STATE`
-//! seam, cli validation, the `config`/`props`/`style` assembly layer, and the
-//! usage/system formatting. A dedicated root rather than `main.zig`, which pulls
-//! in `build_options` and the daemon; the platform seam is linked in, and the
+//! seam, cli validation, the `config`/`props`/`style` assembly layer, the
+//! usage/system formatting, and the quick access terminals' names and socket
+//! answers. A dedicated root rather than `main.zig`, which pulls in
+//! `build_options` and the daemon; the platform seam is linked in, and the
 //! tests stay off it apart from `store`'s file I/O.
 
 const std = @import("std");
@@ -11,6 +12,7 @@ const config = @import("config.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const kanata = @import("kanata.zig");
+const kitty = @import("kitty.zig");
 const log = @import("log.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
@@ -57,10 +59,10 @@ test "cli.validate rejects malformed" {
     defer arena.deinit();
 
     const command = cli.find("state") orelse return error.TestUnexpectedResult;
-    const unknown = try cli.validate(arena.allocator(), command, &.{"bogus-sub"});
+    const unknown = try cli.validate(arena.allocator(), std.testing.io, command, &.{"bogus-sub"});
     try std.testing.expect(unknown != null);
 
-    const missing = try cli.validate(arena.allocator(), command, &.{"get"});
+    const missing = try cli.validate(arena.allocator(), std.testing.io, command, &.{"get"});
     try std.testing.expect(missing != null);
 }
 
@@ -387,30 +389,30 @@ test "wm is validated by the registry's own description of it" {
 
     // A verb with its argument, a verb with a number argument, and a flag: each
     // is what the subcommand's own entry says it takes.
-    try std.testing.expect((try cli.validate(arena, wm, &.{ "window-swap", "west" })) == null);
-    try std.testing.expect((try cli.validate(arena, wm, &.{ "display-focus", "4" })) == null);
-    try std.testing.expect((try cli.validate(arena, wm, &.{ "cycle-displays", "--reverse" })) == null);
+    try std.testing.expect((try cli.validate(arena, std.testing.io, wm, &.{ "window-swap", "west" })) == null);
+    try std.testing.expect((try cli.validate(arena, std.testing.io, wm, &.{ "display-focus", "4" })) == null);
+    try std.testing.expect((try cli.validate(arena, std.testing.io, wm, &.{ "cycle-displays", "--reverse" })) == null);
 
     // The argument left out, one outside the words the verb takes, a flag no
     // verb declares, and no verb at all. Each names what was expected, which is
     // what the bound-in-`kanata.kbd` spelling is refused with.
-    const missing = (try cli.validate(arena, wm, &.{"window-swap"})).?;
+    const missing = (try cli.validate(arena, std.testing.io, wm, &.{"window-swap"})).?;
     try std.testing.expect(std.mem.indexOf(u8, missing, "missing <direction>") != null);
 
-    const sideways = (try cli.validate(arena, wm, &.{ "window-swap", "sideways" })).?;
+    const sideways = (try cli.validate(arena, std.testing.io, wm, &.{ "window-swap", "sideways" })).?;
     try std.testing.expect(std.mem.indexOf(
         u8,
         sideways,
         "<direction> is not one of: west, south, north, east",
     ) != null);
 
-    const fifth = (try cli.validate(arena, wm, &.{ "display-focus", "5" })).?;
+    const fifth = (try cli.validate(arena, std.testing.io, wm, &.{ "display-focus", "5" })).?;
     try std.testing.expect(std.mem.indexOf(u8, fifth, "<display> is not one of: 1, 2, 3, 4") != null);
 
-    const unknown = (try cli.validate(arena, wm, &.{ "cycle-displays", "--sideways" })).?;
+    const unknown = (try cli.validate(arena, std.testing.io, wm, &.{ "cycle-displays", "--sideways" })).?;
     try std.testing.expect(std.mem.indexOf(u8, unknown, "unknown flag '--sideways'") != null);
 
-    const bare = (try cli.validate(arena, wm, &.{})).?;
+    const bare = (try cli.validate(arena, std.testing.io, wm, &.{})).?;
     try std.testing.expect(std.mem.indexOf(u8, bare, "a subcommand is required") != null);
 }
 
@@ -420,9 +422,9 @@ test "app open takes the applications the bindings open, and nothing else" {
     const arena = arena_state.allocator();
 
     const app = cli.find("app") orelse return error.TestUnexpectedResult;
-    try std.testing.expect((try cli.validate(arena, app, &.{ "open", "arc-debug" })) == null);
+    try std.testing.expect((try cli.validate(arena, std.testing.io, app, &.{ "open", "arc-debug" })) == null);
 
-    const chrome = (try cli.validate(arena, app, &.{ "open", "chrome" })).?;
+    const chrome = (try cli.validate(arena, std.testing.io, app, &.{ "open", "chrome" })).?;
     try std.testing.expect(std.mem.indexOf(u8, chrome, "<app> is not one of: code, kitty, arc-debug") != null);
 }
 
@@ -840,4 +842,111 @@ test "props.write spells a two-level key whose last segment is value" {
     const expected = [_][]const u8{ "drawing=on", "ring.value=0.8500", "ring.color=0xfffa4934" };
     try std.testing.expectEqual(expected.len, props.slice().len);
     for (expected, props.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+/// One level of directory, for a test that is the only thing making it: a
+/// second run of it finds the first run's still there.
+fn makeTestDir(io: std.Io, path: []const u8) !void {
+    std.Io.Dir.createDirAbsolute(io, path, @enumFromInt(0o700)) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+}
+
+// kitty appends the process id to the socket path it is given, so a terminal's
+// socket is its name and that suffix - and a name that is a prefix of another's
+// must not answer for it, or a key bound to `bt` would toggle `btop`.
+test "a terminal's socket is its name and kitty's process id, and nobody else's" {
+    try std.testing.expect(kitty.isSocketOf("btop-1234", "btop"));
+    try std.testing.expect(kitty.isSocketOf("my term-42", "my term"));
+
+    // A socket with no process id, or with anything after the digits, is not one
+    // kitty made.
+    try std.testing.expect(!kitty.isSocketOf("btop", "btop"));
+    try std.testing.expect(!kitty.isSocketOf("btop-", "btop"));
+    try std.testing.expect(!kitty.isSocketOf("btop-12a", "btop"));
+    try std.testing.expect(!kitty.isSocketOf("btop-1234.bak", "btop"));
+
+    try std.testing.expect(!kitty.isSocketOf("btop-1234", "bt"));
+    try std.testing.expect(!kitty.isSocketOf("bt-1234", "btop"));
+    try std.testing.expect(!kitty.isSocketOf("my term-42", "my"));
+}
+
+// An answer arrives between the two escape sequences kitty frames it in, and
+// anything else is not an answer at all - which is how a socket belonging to
+// something other than a terminal is told apart from one.
+test "a reply is unwrapped from its framing and the rest is not a reply" {
+    try std.testing.expectEqualStrings(
+        "{\"ok\": true}",
+        kitty.replyPayload("\x1bP@kitty-cmd{\"ok\": true}\x1b\\").?,
+    );
+
+    // The framing around nothing is an empty payload rather than a missing one;
+    // parsing it is what refuses it, and that is the caller's step.
+    try std.testing.expectEqualStrings("", kitty.replyPayload("\x1bP@kitty-cmd\x1b\\").?);
+
+    for ([_][]const u8{
+        "{\"ok\": true}",
+        "\x1bP@kitty-cmd{\"ok\": true}",
+        "{\"ok\": true}\x1b\\",
+        "hello",
+        "",
+    }) |not_an_answer| {
+        try std.testing.expect(kitty.replyPayload(not_an_answer) == null);
+    }
+}
+
+// The terminals directory is read the same way by the completion that offers the
+// names and by the check that refuses a name nothing configures: a terminal's
+// name is its file's name.
+test "the configured terminals are the conf files in the terminals directory" {
+    const io = std.testing.io;
+    const root = "/tmp/kxdesk-tests-kitty";
+    const terminals = root ++ "/quick-access-terminals";
+
+    if (std.Io.Dir.openDirAbsolute(io, root, .{})) |opened| {
+        var stale = opened;
+        defer stale.close(io);
+        stale.deleteTree(io, "quick-access-terminals") catch {};
+    } else |_| {}
+
+    try makeTestDir(io, root);
+    try makeTestDir(io, terminals);
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    for ([_][]const u8{ "btop.conf", "alpha.conf", "notes.txt" }) |file| {
+        const path = try std.fmt.bufPrint(&path_buffer, "{s}/{s}", .{ terminals, file });
+        var created = try std.Io.Dir.createFileAbsolute(io, path, .{});
+        created.close(io);
+    }
+    // A directory that happens to end in the suffix is not a terminal either.
+    try makeTestDir(io, terminals ++ "/nested.conf");
+
+    try std.testing.expectEqual(@as(c_int, 0), setenv("KITTY_CONFIG_DIRECTORY", root, 1));
+    defer _ = setenv("KITTY_CONFIG_DIRECTORY", "", 1);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const names = kitty.names(io, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 2), names.len);
+    try std.testing.expectEqualStrings("alpha", names[0]);
+    try std.testing.expectEqualStrings("btop", names[1]);
+
+    try std.testing.expect(kitty.configured(io, "btop"));
+    try std.testing.expect(kitty.configured(io, "alpha"));
+    try std.testing.expect(!kitty.configured(io, "notes"));
+    try std.testing.expect(!kitty.configured(io, "nested"));
+    // A name that is not a file's name names no terminal, whether or not
+    // something answers to it: it could not be a socket address either.
+    try std.testing.expect(!kitty.configured(io, ""));
+    try std.testing.expect(!kitty.configured(io, "quick-access-terminals/btop"));
+    try std.testing.expect(!kitty.configured(io, "btop\n"));
+
+    // The name a client spells is refused against the same reading of the
+    // directory, which is what a typo in a binding is caught by.
+    const command = cli.find("term") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(try cli.validate(arena.allocator(), io, command, &.{ "toggle", "btop" }) == null);
+
+    const problem = (try cli.validate(arena.allocator(), io, command, &.{ "toggle", "bto" })).?;
+    try std.testing.expect(std.mem.indexOf(u8, problem, "configured: alpha, btop") != null);
 }

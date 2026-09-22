@@ -11,6 +11,7 @@ const std = @import("std");
 
 const commands = @import("commands.zig");
 const control = @import("control.zig");
+const kitty = @import("kitty.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -323,7 +324,12 @@ fn pad(out: *ArrayList(u8), arena: Allocator, count: usize) Allocator.Error!void
 /// Only `--`-prefixed words are flags, so a value may begin with one dash -
 /// `state set level -5`, `set_mode_indicator -` - and flags are refused before
 /// arguments, which a command reads by position.
-pub fn validate(arena: Allocator, command: Command, args: []const []const u8) Allocator.Error!?[]const u8 {
+pub fn validate(
+    arena: Allocator,
+    io: std.Io,
+    command: Command,
+    args: []const []const u8,
+) Allocator.Error!?[]const u8 {
     var rest = args;
     var spec = specOf(command, null);
 
@@ -388,6 +394,18 @@ pub fn validate(arena: Allocator, command: Command, args: []const []const u8) Al
             },
             .commands => if (find(value) == null) {
                 const detail = try std.fmt.allocPrint(arena, "no such command '{s}'", .{value});
+                return try problem(arena, command, spec, detail);
+            },
+            .terminals => if (!kitty.configured(io, value)) {
+                const names = kitty.names(io, arena);
+                const detail = if (names.len == 0)
+                    try std.fmt.allocPrint(arena, "no quick access terminal named '{s}'", .{value})
+                else
+                    try std.fmt.allocPrint(
+                        arena,
+                        "no quick access terminal named '{s}'; configured: {s}",
+                        .{ value, try std.mem.join(arena, ", ", names) },
+                    );
                 return try problem(arena, command, spec, detail);
             },
             .free, .state_keys, .space_labels => {},
@@ -457,11 +475,12 @@ fn declares(flags: []const commands.Flag, name: []const u8) bool {
 /// in a space may or may not hand over the empty word.
 pub fn complete(
     arena: Allocator,
+    io: std.Io,
     described: bool,
     cword: usize,
     words: []const []const u8,
 ) Allocator.Error![]const u8 {
-    const text = try candidates(arena, cword, words);
+    const text = try candidates(arena, io, cword, words);
     if (described) return text;
 
     // In place, because the descriptions are already written and only the tail
@@ -470,7 +489,12 @@ pub fn complete(
 }
 
 /// Every candidate, each with what it does after a tab.
-fn candidates(arena: Allocator, cword: usize, words: []const []const u8) Allocator.Error![]u8 {
+fn candidates(
+    arena: Allocator,
+    io: std.Io,
+    cword: usize,
+    words: []const []const u8,
+) Allocator.Error![]u8 {
     var out = ArrayList(u8).empty;
     errdefer out.deinit(arena);
 
@@ -509,7 +533,7 @@ fn candidates(arena: Allocator, cword: usize, words: []const []const u8) Allocat
         position += 1;
     }
 
-    if (position < spec.args.len) try offerValues(&out, arena, partial, spec.args[position]);
+    if (position < spec.args.len) try offerValues(&out, arena, io, partial, spec.args[position]);
     try offerFlags(&out, arena, partial, spec.flags, rest);
 
     return out.toOwnedSlice(arena);
@@ -519,6 +543,7 @@ fn candidates(arena: Allocator, cword: usize, words: []const []const u8) Allocat
 fn offerValues(
     out: *ArrayList(u8),
     arena: Allocator,
+    io: std.Io,
     partial: []const u8,
     argument: commands.Arg,
 ) Allocator.Error!void {
@@ -527,6 +552,9 @@ fn offerValues(
         .fixed => for (argument.values) |value| try offer(out, arena, partial, value, ""),
         .commands => for (registry) |command| {
             try offer(out, arena, partial, command.name, command.summary);
+        },
+        .terminals => for (kitty.names(io, arena)) |name| {
+            try offer(out, arena, partial, name, "");
         },
         .state_keys => {
             const keys = askDaemon(arena, "state", &.{"list"}) orelse return;
