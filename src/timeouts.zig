@@ -12,7 +12,7 @@
 pub const query_timeout_ms: u32 = 1000;
 
 /// How long a client waits for the daemon to answer. A provisioning command
-/// such as `refresh_signals` runs a dozen yabai commands, so this is
+/// such as `wm refresh-signals` runs a dozen yabai commands, so this is
 /// generous; it only elapses when the daemon is wedged.
 pub const reply_timeout_ms: u32 = 30_000;
 

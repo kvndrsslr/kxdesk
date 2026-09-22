@@ -42,10 +42,10 @@ which answers from the same description, so a command that is added or changed i
 completed correctly without regenerating anything. That call answers with the
 words alone; zsh passes `--describe` to also get what each candidate does, and
 shows it beside the match. A value that only exists at runtime is completed too:
-`state get` offers the keys that are actually in the store, and `switch_workspace`
-offers the labels yabai is actually carrying (see `kxdesk space_labels`). Those
-come from the running daemon and are simply absent when there is not one;
-pressing TAB never starts it.
+`state get` offers the keys that are actually in the store, and `wm
+switch-workspace` offers the labels yabai is actually carrying (see `kxdesk wm
+space-labels`). Those come from the running daemon and are simply absent when
+there is not one; pressing TAB never starts it.
 
 The script and the binary are installable separately and can therefore be out of
 step, so the protocol is written to survive it: the words alone are what every
@@ -70,17 +70,24 @@ untested.
 
 The bindings themselves live in kanata, in
 `~/Library/Application Support/kanata/kanata.kbd`. What they *run* does not: each
-binding pushes a message naming an action — `yabai:window-swap:west`,
-`kxdesk:cycle-displays:reverse`, `app:open:kitty` — and this daemon receives it
-and runs it.
+binding pushes a message, and the message is a `kxdesk` argv line with the binary
+name left off — `wm window-swap west`, `wm cycle-displays --reverse`,
+`app open kitty` — which this daemon receives, checks against the same command
+description a request from a shell is checked against, and runs.
 
-That split is both forced and deliberate. kanata's own `cmd` action is compiled
-out of the Homebrew bottle, and on macOS kanata has to run as root to seize the
-keyboard through the Karabiner driver — so a config file, which is the user's to
-write, would be able to run anything as root. Upstream ships `cmd` in a separate
-binary for exactly that reason. A pushed name cannot execute anything: the
-vocabulary is a closed list of verbs, every argument is checked before anything
-runs, and the action is carried out here, as the user, in the user's session.
+That is the whole vocabulary: every window, space and display verb is a
+subcommand of `kxdesk wm`, together with yabai's provisioning (`wm apply-settings`,
+`wm refresh-rules`, `wm refresh-signals`), so a binding and the command a script
+writes are the same words — `~/.yabairc` calls `kxdesk wm apply-settings`.
+
+The split between the bindings and the commands they run is both forced and
+deliberate. kanata's own `cmd` action is compiled out of the Homebrew bottle, and
+on macOS kanata has to run as root to seize the keyboard through the Karabiner
+driver — so a config file, which is the user's to write, would be able to run
+anything as root. Upstream ships `cmd` in a separate binary for exactly that
+reason. A pushed name cannot execute anything: the vocabulary is the command
+registry and nothing else, every argument is checked before anything runs, and the
+command is carried out here, as the user, in the user's session.
 
 It is cheaper too. kanata's documentation puts `cmd` at around 100 ms per
 keypress against sub-millisecond for a pushed message: one forks a process, the
@@ -91,24 +98,25 @@ guess at — the launchd job passes it to kanata with `-p` and this daemon reads
 same default:
 
 ```sh
-kxdesk kanata status                          # is the channel up, and what has it carried
-kxdesk kanata inject yabai:window-swap:west   # run an action as if a key had pushed it
+kxdesk kanata status                              # is the channel up, and what has it carried
+kxdesk kanata inject "wm window-swap west"        # run a command as if a key had pushed it
 ```
 
-`inject` takes an action name or a raw JSON line, which is what makes a binding
-testable without pressing its keys — and the channel testable with kanata not
-running at all, since the parsing and the action are the same code the socket
-path runs.
+`inject` takes an argv line (one quoted argument containing its spaces) or a raw
+JSON line, which is what makes a binding testable without pressing its keys — and
+the channel testable with kanata not running at all, since the lookup, the check
+and the run are the same code the socket path runs.
 
 Three kinds of message are acted on, out of the several kanata sends:
 
 - **`MessagePush`** — a binding. kanata sends the name inside a one-element JSON
-  array (`{"message":["yabai:window-swap:west"]}`), because it converts the
+  array (`{"message":["wm window-swap west"]}`), because it converts the
   action's arguments with `simple_sexpr_to_json_array`; a bare string is read
   too, since the field is a `serde_json::Value` on kanata's side. The name is
-  parsed as `namespace:verb[:argument]` and refused with the reason when it is
-  not one of the verbs in `src/kanata.zig`, so a typo in the config is a line in
-  the log rather than a key that does nothing.
+  split on spaces, looked up in the registry in `src/commands.zig` and validated
+  by `src/cli.zig`, exactly as a client's request is, and refused with the reason
+  when it does not fit — so a typo in the config is a line in the log rather than
+  a key that does nothing.
 - **`LayerChange`** — kanata switched layer, which is what colours the bar's
   space icons. `op`, `wmode` and `smode` are the indices the skhd config used to
   pass to `set_mode_indicator` on entering each mode, and `default` clears them.

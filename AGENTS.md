@@ -12,6 +12,7 @@ Single binary, single long-lived process (`src/main.zig:Daemon`).
 - Framing: bar events are NUL-separated `key\0value\0…`; control requests are `CMD\0<verb>\0<args>…` (`src/control.zig`). Replies `OK\0<payload>` / `ERR\0<message>` to request reply port; bar sends are one-way.
 - Routing: `isRequest` → control path, else `src/dispatch.zig:Dispatcher` looks up `NAME`/`SENDER` (names mirror `mach_helper` items declared in `src/bar.zig`). No forks on this path; clicks are events.
 - Commands: run as worker tasks on `commands.Context` (own arena freed on return, own `sb.Client`, shared `yabai.Client`, `pomodoro.Timer`, `store.Store`). One `background.Slot` per command in `Daemon.slots` — never run twice, never block loop.
+- One vocabulary for window management: every window/space/display verb and yabai's provisioning is a subcommand of `kxdesk wm` (`src/yabai_ops.zig:wm_verbs`), and a kanata binding pushes that same argv line minus the binary name — `src/kanata.zig:dispatch` looks it up in the registry and runs it through `cli.validate`, the check a client's request gets.
 - Slow refreshes (`brew`, `gh`, usage APIs): `background.Slot.request` → `std.Io.async` pool; task awaits prior `Future` off-loop, applies own bar updates on finish (`src/background.zig:Slot`, `src/dispatch.zig`, `src/items_github.zig`, `src/items_usage.zig`).
 - Bar writes: batched `--set` via `sb.Client`; `bar.zig` emits whole config in one batch (single redraw). Commands calling bar use `Context.ensureBar` with reconnect+retry (`src/context.zig:ensureBar`).
 - Platform seam: all Mach/ObjC/libc contact through `src/platform.zig` (`extern "c"`) → `src/platform.m`/`src/platform.h`. Everything else is platform-free logic.
@@ -52,7 +53,7 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 - Concurrency: receive-loop handlers run one at a time and share `Daemon.bar`; background/command tasks build their own `sb.Client`. Shared mutable item state (e.g. github URL registry) under mutex.
 - Error handling: named errors (`error.NotInstalled`, `error.OnePasswordUnavailable`, `error.Unavailable`); failures log through `src/log.zig` (`log.warn`; `log.Once` reports a repeating failure once) and never take the loop down.
 - Bounded static sizes: `control.max_arguments = 8`, `Props` 64 items, `path` buffers. Overflow = bug, assert it.
-- External tools resolved to absolute paths via `src/exec.zig:path` — launchd `PATH` lacks Homebrew; never shell out by bare name, never use a shell.
+- External tools resolved to absolute paths via `src/exec.zig:path` — launchd `PATH` lacks Homebrew; never shell out by bare name, never use a shell. `exec.openApp`/`exec.spawn` launch detached applications (`kxdesk app open`), never waited for.
 - Store rules (`src/store.zig`): never take daemon down; corrupt DB renamed to `state.db.corrupt-<timestamp>` and replaced, never repaired in place; `schema_version` bump + `migrate` step together.
 - Bar reload leaks: `Script.apply` clears `script=`/`click_script=` on every item it configures, so only `drawing` is restated by an item's own props; retiring an item = removing it + listing it in `retired_items` (`src/bar.zig:21`).
 
@@ -62,7 +63,7 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 - CLI surface: `src/commands.zig` (registry + every `run`), `src/cli.zig` (help/completions/validation).
 - Transport: `src/control.zig` (CMD/OK/ERR), `src/platform.zig`/`.m`/`.h`, `src/sb.zig` (bar client).
 - Config/render: `src/config.zig` (the SketchyBar command layer), `src/style.zig` (shared fonts, chips, ring/graph look and geometry), `src/props.zig` (runtime property bridge), `src/log.zig`, `src/bar.zig`, `src/theme.zig`, `src/items_yabai.zig`, `src/items_system.zig`, `src/items_usage.zig`, `src/items_github.zig`, `src/items_brew.zig`.
-- Subsystems: `src/store.zig` (SQLite), `src/yabai.zig` + `src/yabai_ops.zig`, `src/pomodoro.zig`, `src/zen.zig`, `src/mode_indicator.zig`, `src/server_mode.zig`, `src/background.zig`, `src/exec.zig`, `src/app_icons.zig`.
+- Subsystems: `src/store.zig` (SQLite), `src/yabai.zig` + `src/yabai_ops.zig` (yabai queries, and the `wm` verb table), `src/pomodoro.zig`, `src/zen.zig`, `src/mode_indicator.zig`, `src/server_mode.zig`, `src/background.zig`, `src/exec.zig`, `src/app_icons.zig`.
 - Build/version/docs: `build.zig`, `build.zig.zon` (version `0.1.24`), `README.md` (only doc), `.gitignore` (only `zig-out/`, `.zig-cache/`).
 
 ## Runtime/Tooling Preferences

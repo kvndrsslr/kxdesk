@@ -17,6 +17,7 @@ const sb = @import("sb.zig");
 const store = @import("store.zig");
 const style = @import("style.zig");
 const theme = @import("theme.zig");
+const yabai_ops = @import("yabai_ops.zig");
 const zen = @import("zen.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
@@ -377,87 +378,100 @@ test "zen keeps the collapsed bar's furniture and hides the rest" {
     try std.testing.expect(!zen.isKept("opencode-go"));
 }
 
-test "kanata names parse into the actions they spell" {
-    // One case per shape the vocabulary uses: a direction, a number, one of a
-    // few words, a flag that is only there when it is spelled, and a verb with
-    // nothing after it.
-    try std.testing.expectEqual(
-        kanata.Action{ .window_swap = .west },
-        try kanata.parseAction("yabai:window-swap:west"),
-    );
-    try std.testing.expectEqual(
-        kanata.Action{ .window_to_display = 3 },
-        try kanata.parseAction("yabai:window-to-display:3"),
-    );
-    try std.testing.expectEqual(
-        kanata.Action{ .space_layout = .float },
-        try kanata.parseAction("yabai:space-layout:float"),
-    );
-    try std.testing.expectEqual(
-        kanata.Action{ .window_focus = .same_app },
-        try kanata.parseAction("yabai:window-focus:same-app"),
-    );
-    try std.testing.expectEqual(
-        kanata.Action{ .window_toggle = .float_sticky_topmost },
-        try kanata.parseAction("yabai:window-toggle:float-sticky-topmost"),
-    );
-    try std.testing.expectEqual(
-        kanata.Action{ .cycle_displays = .reverse },
-        try kanata.parseAction("kxdesk:cycle-displays:reverse"),
-    );
-    // The bindings that run forwards spell nothing, which is the whole reason
-    // `reverse` is the word that is written and not the other one.
-    try std.testing.expectEqual(
-        kanata.Action{ .cycle_displays = .forward },
-        try kanata.parseAction("kxdesk:cycle-displays"),
-    );
-    try std.testing.expectEqual(
-        kanata.Action{ .open_app = .arc_debug },
-        try kanata.parseAction("app:open:arc-debug"),
-    );
-    try std.testing.expectEqual(
-        kanata.Action.dump_path,
-        try kanata.parseAction("debug:dump-path"),
-    );
+test "wm is validated by the registry's own description of it" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const wm = cli.find("wm") orelse return error.TestUnexpectedResult;
+
+    // A verb with its argument, a verb with a number argument, and a flag: each
+    // is what the subcommand's own entry says it takes.
+    try std.testing.expect((try cli.validate(arena, wm, &.{ "window-swap", "west" })) == null);
+    try std.testing.expect((try cli.validate(arena, wm, &.{ "display-focus", "4" })) == null);
+    try std.testing.expect((try cli.validate(arena, wm, &.{ "cycle-displays", "--reverse" })) == null);
+
+    // The argument left out, one outside the words the verb takes, a flag no
+    // verb declares, and no verb at all. Each names what was expected, which is
+    // what the bound-in-`kanata.kbd` spelling is refused with.
+    const missing = (try cli.validate(arena, wm, &.{"window-swap"})).?;
+    try std.testing.expect(std.mem.indexOf(u8, missing, "missing <direction>") != null);
+
+    const sideways = (try cli.validate(arena, wm, &.{ "window-swap", "sideways" })).?;
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        sideways,
+        "<direction> is not one of: west, south, north, east",
+    ) != null);
+
+    const fifth = (try cli.validate(arena, wm, &.{ "display-focus", "5" })).?;
+    try std.testing.expect(std.mem.indexOf(u8, fifth, "<display> is not one of: 1, 2, 3, 4") != null);
+
+    const unknown = (try cli.validate(arena, wm, &.{ "cycle-displays", "--sideways" })).?;
+    try std.testing.expect(std.mem.indexOf(u8, unknown, "unknown flag '--sideways'") != null);
+
+    const bare = (try cli.validate(arena, wm, &.{})).?;
+    try std.testing.expect(std.mem.indexOf(u8, bare, "a subcommand is required") != null);
 }
 
-test "kanata refuses a name it cannot carry out" {
-    // A mistyped binding is a key that does nothing, so the channel refuses the
-    // name and says why rather than passing it to yabai to refuse in its own
-    // words. Each case names the error that reason is.
-    const refused = [_]struct { name: []const u8, expected: kanata.ParseError }{
-        // The argument the verb needs, missing or not one it knows.
-        .{ .name = "yabai:window-swap", .expected = error.MissingArgument },
-        .{ .name = "yabai:window-swap:sideways", .expected = error.BadArgument },
-        .{ .name = "yabai:window-swap:west:now", .expected = error.UnknownAction },
-        .{ .name = "yabai:window-to-display:two", .expected = error.BadArgument },
-        .{ .name = "yabai:space-rotate:sideways", .expected = error.BadArgument },
-        .{ .name = "yabai:space-toggle:show-dock", .expected = error.BadArgument },
-        .{ .name = "kxdesk:cycle-displays:backwards", .expected = error.BadArgument },
-        .{ .name = "app:open", .expected = error.MissingArgument },
-        // A verb that takes nothing, given something.
-        .{ .name = "screen:capture:now", .expected = error.BadArgument },
-        .{ .name = "debug:dump-path:now", .expected = error.BadArgument },
-        // Names that are not verbs at all: a flat name from before the
-        // vocabulary was structured, an unknown namespace, and the empty string.
-        .{ .name = "yabai:window-swap-west", .expected = error.UnknownAction },
-        .{ .name = "yabai:window-insert-stack-space:west", .expected = error.BadArgument },
-        .{ .name = "windows:swap:west", .expected = error.UnknownAction },
-        .{ .name = "yabai", .expected = error.UnknownAction },
-        .{ .name = "", .expected = error.UnknownAction },
-    };
-    for (refused) |case| {
-        try std.testing.expectError(case.expected, kanata.parseAction(case.name));
-    }
+test "app open takes the applications the bindings open, and nothing else" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
 
-    // The display bound is the one argument with a range, because the bindings
-    // spell 1 to 4 and a fifth would be a config that meant something else.
+    const app = cli.find("app") orelse return error.TestUnexpectedResult;
+    try std.testing.expect((try cli.validate(arena, app, &.{ "open", "arc-debug" })) == null);
+
+    const chrome = (try cli.validate(arena, app, &.{ "open", "chrome" })).?;
+    try std.testing.expect(std.mem.indexOf(u8, chrome, "<app> is not one of: code, kitty, arc-debug") != null);
+}
+
+test "a CLI word names its enum tag whichever way it is spelled" {
+    // The tags that carry an underscore are reached by the hyphenated word the
+    // CLI spells, and the ones that carry none by themselves.
     try std.testing.expectEqual(
-        kanata.Action{ .display_focus = 4 },
-        try kanata.parseAction("yabai:display-focus:4"),
+        yabai_ops.WindowToggle.float_sticky_topmost,
+        yabai_ops.wordToEnum(yabai_ops.WindowToggle, "float-sticky-topmost").?,
     );
-    try std.testing.expectError(error.BadArgument, kanata.parseAction("yabai:display-focus:5"));
-    try std.testing.expectError(error.BadArgument, kanata.parseAction("yabai:display-focus:0"));
+    try std.testing.expectEqual(
+        yabai_ops.WindowToggle.expose,
+        yabai_ops.wordToEnum(yabai_ops.WindowToggle, "expose").?,
+    );
+    try std.testing.expectEqual(
+        yabai_ops.FocusTarget.same_app,
+        yabai_ops.wordToEnum(yabai_ops.FocusTarget, "same-app").?,
+    );
+    try std.testing.expectEqual(
+        yabai_ops.Direction.west,
+        yabai_ops.wordToEnum(yabai_ops.Direction, "west").?,
+    );
+
+    // A word that names no tag is nobody's tag, however close it looks.
+    try std.testing.expect(yabai_ops.wordToEnum(yabai_ops.WindowToggle, "sideways") == null);
+    try std.testing.expect(yabai_ops.wordToEnum(yabai_ops.Direction, "south-west") == null);
+    try std.testing.expect(yabai_ops.wordToEnum(yabai_ops.WindowToggle, "exposed") == null);
+}
+
+test "the wm verb table and the registry's subcommands are the same list" {
+    // The names exist twice - `Sub` carries no run function - so this is what
+    // fails if either list gains, loses or renames an entry.
+    const wm = cli.find("wm") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(yabai_ops.wm_verbs.len, wm.subcommands.len);
+
+    for (wm.subcommands) |sub| {
+        var found = false;
+        for (yabai_ops.wm_verbs) |verb| {
+            if (std.mem.eql(u8, verb.name, sub.name)) found = true;
+        }
+        try std.testing.expect(found);
+    }
+    for (yabai_ops.wm_verbs) |verb| {
+        var found = false;
+        for (wm.subcommands) |sub| {
+            if (std.mem.eql(u8, verb.name, sub.name)) found = true;
+        }
+        try std.testing.expect(found);
+    }
 }
 
 test "a pushed message is read in the shape kanata sends, and in the documented one" {
@@ -470,9 +484,9 @@ test "a pushed message is read in the shape kanata sends, and in the documented 
     const arena = arena_state.allocator();
 
     const cases = [_]struct { payload: []const u8, name: ?[]const u8 }{
-        .{ .payload = "[\"debug:dump-path\"]", .name = "debug:dump-path" },
-        .{ .payload = "\"debug:dump-path\"", .name = "debug:dump-path" },
-        .{ .payload = "[\"yabai:window-swap:west\"]", .name = "yabai:window-swap:west" },
+        .{ .payload = "[\"wm window-swap west\"]", .name = "wm window-swap west" },
+        .{ .payload = "\"wm cycle-displays --reverse\"", .name = "wm cycle-displays --reverse" },
+        .{ .payload = "[\"app open kitty\"]", .name = "app open kitty" },
         .{ .payload = "[\"a\",\"b\"]", .name = null },
         .{ .payload = "[[\"a\"]]", .name = null },
         .{ .payload = "[]", .name = null },
@@ -496,10 +510,10 @@ test "kanata framing keeps messages apart across read boundaries" {
     // reads, and two lines in one. This is both, in order.
     framer.feed("{\"MessagePush\":{\"mess");
     try std.testing.expect(framer.next() == null);
-    framer.feed("age\":[\"debug:dump-path\"]}}\n{\"LayerChange\":{\"new\":\"op\"}}\n");
+    framer.feed("age\":[\"wm window-swap west\"]}}\n{\"LayerChange\":{\"new\":\"op\"}}\n");
 
     try std.testing.expectEqualStrings(
-        "{\"MessagePush\":{\"message\":[\"debug:dump-path\"]}}",
+        "{\"MessagePush\":{\"message\":[\"wm window-swap west\"]}}",
         framer.next().?,
     );
     try std.testing.expectEqualStrings("{\"LayerChange\":{\"new\":\"op\"}}", framer.next().?);

@@ -10,6 +10,7 @@ const std = @import("std");
 
 const bar_config = @import("bar.zig");
 const Context = @import("context.zig").Context;
+const exec = @import("exec.zig");
 const items_usage = @import("items_usage.zig");
 const kanata = @import("kanata.zig");
 const log = @import("log.zig");
@@ -95,6 +96,58 @@ const mode_indices = derive: {
     break :derive indices;
 };
 
+// The fixed word lists `wm`'s verbs take, each derived from the enum that parses
+// it so the values offered and the values accepted are the same list. The
+// display numbers are the one exception: their bound is the registry's, not the
+// parser's, which reads any u8.
+const directions = yabai_ops.hyphenTags(yabai_ops.Direction);
+const layouts = yabai_ops.hyphenTags(yabai_ops.Layout);
+const focus_targets = yabai_ops.hyphenTags(yabai_ops.FocusTarget);
+const window_toggles = yabai_ops.hyphenTags(yabai_ops.WindowToggle);
+const applications = yabai_ops.hyphenTags(exec.App);
+const display_indices = [_][]const u8{ "1", "2", "3", "4" };
+const show_desktop_words = [_][]const u8{"show-desktop"};
+
+// One argument per word list, shared by the verbs that take it.
+const direction_argument = Arg{
+    .name = "<direction>",
+    .summary = "west, south, north or east",
+    .source = .fixed,
+    .values = &directions,
+};
+const display_argument = Arg{
+    .name = "<display>",
+    .summary = "the display's number, 1 to 4",
+    .source = .fixed,
+    .values = &display_indices,
+};
+const layout_argument = Arg{
+    .name = "<layout>",
+    .summary = "bsp, stack or float",
+    .source = .fixed,
+    .values = &layouts,
+};
+const focus_argument = Arg{
+    .name = "<target>",
+    .summary = "recent or same-app",
+    .source = .fixed,
+    .values = &focus_targets,
+};
+const toggle_argument = Arg{
+    .name = "<toggle>",
+    .summary = "zoom-fullscreen, native-fullscreen, expose or float-sticky-topmost",
+    .source = .fixed,
+    .values = &window_toggles,
+};
+// `<state>` rather than `<toggle>`, which the window states already own: the help
+// describes an argument name once, so two different ones must not share a name.
+const show_desktop_argument = Arg{
+    .name = "<state>",
+    .summary = "show-desktop, the one state this verb takes",
+    .source = .fixed,
+    .values = &show_desktop_words,
+};
+
 pub const all = [_]Command{
     .{
         .name = "apply",
@@ -119,7 +172,7 @@ pub const all = [_]Command{
                 .args = &.{
                     .{
                         .name = "<message>",
-                        .summary = "an action name like yabai:window-swap:west, or a raw JSON line",
+                        .summary = "an argv line like 'wm window-swap west', or a raw JSON line",
                     },
                 },
             },
@@ -136,70 +189,149 @@ pub const all = [_]Command{
         },
         .run = zenMode,
     },
-
-    // Navigation, reached from the bindings in `kanata.kbd`.
     .{
-        .name = "cycle_space_windows",
-        .summary = "focus the next window of the current space",
-        .flags = &.{
-            .{ .name = "--reverse", .summary = "go the other way around" },
-        },
-        .run = yabai_ops.cycleSpaceWindows,
-    },
-    .{
-        .name = "cycle_display_spaces",
-        .summary = "focus the neighbouring space on the current display",
-        .flags = &.{
-            .{ .name = "--reverse", .summary = "go to the previous space instead" },
-        },
-        .run = yabai_ops.cycleDisplaySpaces,
-    },
-    .{
-        .name = "cycle_displays",
-        .summary = "focus the neighbouring display",
-        .flags = &.{
-            .{ .name = "--reverse", .summary = "go to the previous display instead" },
-        },
-        .run = yabai_ops.cycleDisplays,
-    },
-    .{
-        .name = "switch_workspace",
-        .summary = "focus the spaces whose labels are listed",
-        .args = &.{
+        .name = "app",
+        .summary = "open an application the way the bindings open it",
+        .subcommands = &.{
             .{
-                .name = "<labels>",
-                .summary = "comma-separated space labels; focus lands on one of their display",
-                .source = .space_labels,
+                .name = "open",
+                .summary = "open the named application",
+                .args = &.{.{
+                    .name = "<app>",
+                    .summary = "code, kitty or arc-debug",
+                    .source = .fixed,
+                    .values = &applications,
+                }},
             },
         },
-        .run = yabai_ops.switchWorkspace,
-    },
-    .{
-        .name = "space_labels",
-        .summary = "print the label of every labelled space, one per line",
-        .run = yabai_ops.spaceLabels,
+        .run = appCommand,
     },
 
-    // Reached from `~/.yabairc` and from the bindings that reload rules and signals.
+    // Every window, space and display verb, and yabai's provisioning: the one
+    // vocabulary a client types and a key binding in `kanata.kbd` pushes.
     .{
-        .name = "apply_settings",
-        .summary = "assert every setting, rule and signal kxdesk manages on yabai",
-        .run = yabai_ops.applySettings,
-    },
-    .{
-        .name = "refresh_rules",
-        .summary = "re-provision the yabai rules",
-        .run = yabai_ops.refreshRules,
-    },
-    .{
-        .name = "refresh_signals",
-        .summary = "re-provision the yabai signals",
-        .run = yabai_ops.refreshSignals,
-    },
-    .{
-        .name = "clear_signals",
-        .summary = "drop every configured yabai signal",
-        .run = yabai_ops.clearSignals,
+        .name = "wm",
+        .summary = "the window, space and display verbs, and yabai's provisioning",
+        .subcommands = &.{
+            .{
+                .name = "cycle-space-windows",
+                .summary = "focus the next window of the current space",
+                .flags = &.{
+                    .{ .name = "--reverse", .summary = "go the other way around" },
+                },
+            },
+            .{
+                .name = "cycle-display-spaces",
+                .summary = "focus the neighbouring space on the current display",
+                .flags = &.{
+                    .{ .name = "--reverse", .summary = "go to the previous space instead" },
+                },
+            },
+            .{
+                .name = "cycle-displays",
+                .summary = "focus the neighbouring display",
+                .flags = &.{
+                    .{ .name = "--reverse", .summary = "go to the previous display instead" },
+                },
+            },
+            .{
+                .name = "switch-workspace",
+                .summary = "focus the spaces whose labels are listed",
+                .args = &.{
+                    .{
+                        .name = "<labels>",
+                        .summary = "comma-separated space labels; focus lands on one of their display",
+                        .source = .space_labels,
+                    },
+                },
+            },
+            .{
+                .name = "space-labels",
+                .summary = "print the label of every labelled space, one per line",
+            },
+            .{
+                .name = "apply-settings",
+                .summary = "assert every setting, rule and signal kxdesk manages on yabai",
+            },
+            .{ .name = "refresh-rules", .summary = "re-provision the yabai rules" },
+            .{ .name = "refresh-signals", .summary = "re-provision the yabai signals" },
+            .{ .name = "clear-signals", .summary = "drop every configured yabai signal" },
+            .{ .name = "refresh-yabai", .summary = "re-provision the yabai rules and signals" },
+            .{
+                .name = "window-swap",
+                .summary = "swap the focused window with its neighbour",
+                .args = &.{direction_argument},
+            },
+            .{
+                .name = "window-warp",
+                .summary = "send the focused window past its neighbour, tree and all",
+                .args = &.{direction_argument},
+            },
+            .{
+                .name = "window-insert",
+                .summary = "insert the focused window beside the one under the mouse",
+                .args = &.{direction_argument},
+            },
+            .{
+                .name = "window-insert-space",
+                .summary = "insert it there and follow it onto that space",
+                .args = &.{direction_argument},
+            },
+            .{
+                .name = "window-insert-stack-space",
+                .summary = "insert it into the stack under the mouse, and follow it",
+            },
+            .{
+                .name = "window-to-display",
+                .summary = "move the focused window to a display",
+                .args = &.{display_argument},
+            },
+            .{
+                .name = "display-focus",
+                .summary = "focus a display",
+                .args = &.{display_argument},
+            },
+            .{
+                .name = "space-to-display",
+                .summary = "move the focused space to the display a direction names",
+                .args = &.{direction_argument},
+            },
+            .{
+                .name = "space-layout",
+                .summary = "set the focused space's layout",
+                .args = &.{layout_argument},
+            },
+            .{
+                .name = "space-rotate",
+                .summary = "rotate the focused space's tree",
+                .args = &.{.{
+                    .name = "<degrees>",
+                    .summary = "how far round to turn it",
+                }},
+            },
+            .{ .name = "space-balance", .summary = "even out the focused space's tree" },
+            .{
+                .name = "space-toggle",
+                .summary = "hide every window of the focused space, leaving the space up",
+                .args = &.{show_desktop_argument},
+            },
+            .{
+                .name = "window-focus",
+                .summary = "focus the previous window, or the next of the same application",
+                .args = &.{focus_argument},
+            },
+            .{
+                .name = "window-toggle",
+                .summary = "toggle a window state",
+                .args = &.{toggle_argument},
+            },
+            .{
+                .name = "window-fill-display",
+                .summary = "move and size the focused window to fill its display",
+            },
+            .{ .name = "copy-windows", .summary = "put yabai's window list on the clipboard" },
+        },
+        .run = yabai_ops.wmRun,
     },
     .{
         .name = "set_mode_indicator",
@@ -457,8 +589,9 @@ fn status(context: *Context, _: []const []const u8) ![]const u8 {
 }
 
 /// Report on the kanata channel, or act on a message as if kanata had pushed it:
-/// the injection runs the same parsing and the same action the socket path does,
-/// which is what makes a binding testable without pressing its keys.
+/// the injection runs the same lookup, the same check and the same command the
+/// socket path does, which is what makes a binding testable without pressing its
+/// keys.
 fn kanataCommand(context: *Context, args: []const []const u8) ![]const u8 {
     const verb = if (args.len > 0) args[0] else return kanata.status(context.arena);
     const values = if (args.len > 0) args[1..] else args;
@@ -469,6 +602,14 @@ fn kanataCommand(context: *Context, args: []const []const u8) ![]const u8 {
         return kanata.inject(context, values[0]);
     }
     return error.UnknownArgument;
+}
+
+/// Open one of the applications the bindings open.
+fn appCommand(context: *Context, args: []const []const u8) ![]const u8 {
+    if (args.len < 2) return error.MissingArgument;
+    const application = yabai_ops.wordToEnum(exec.App, args[1]) orelse return error.InvalidValue;
+    try exec.openApp(context.arena, application);
+    return "";
 }
 
 /// Collapse the bar down to the essentials, or restore it. The calendar's click

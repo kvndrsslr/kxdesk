@@ -1,8 +1,11 @@
-//! The yabai commands kxdesk manages: settings, rules, signals, and the
-//! workspace and window actions the key bindings name.
+//! The yabai commands kxdesk manages: settings, rules, signals, and every window,
+//! space and display verb `kxdesk wm` runs.
 //!
 //! Every command is an exact argv, one `yabai -m` per call; a `&&` between two
-//! commands is two `try`s, so the second only runs when the first was taken.
+//! commands is two `try`s, so the second only runs when the first was taken. A
+//! verb reads its own word from `args[0]` and its arguments from `args[1..]`, the
+//! shape the daemon hands every command's `run` - so the CLI and a pushed key
+//! binding reach the same code with the same words.
 
 const std = @import("std");
 
@@ -329,7 +332,7 @@ pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror!
 
 /// Every labelled space, one label per line, in index order.
 ///
-/// This is what a completion offers for `switch_workspace`, and it is worth
+/// This is what a completion offers for `wm switch-workspace`, and it is worth
 /// having on its own: the labels are what a binding passes, and they exist
 /// nowhere but in yabai's answer.
 pub fn spaceLabels(context: *Context, args: []const []const u8) anyerror![]const u8 {
@@ -481,84 +484,200 @@ pub const Direction = enum {
 /// The layouts `yabai -m space --layout` takes.
 pub const Layout = enum { bsp, stack, float };
 
-/// Swap the focused window with its neighbour in `direction`.
-pub fn windowSwap(context: *Context, direction: Direction) !void {
+/// What `window-focus` focuses: the window that held focus before this one, or
+/// the next window of the focused window's application.
+pub const FocusTarget = enum { recent, same_app };
+
+/// One of the window states `window-toggle` toggles.
+pub const WindowToggle = enum {
+    /// Grow the window to its display, staying in the space's layout.
+    zoom_fullscreen,
+    /// macOS's own fullscreen.
+    native_fullscreen,
+    /// Mission Control's window overview.
+    expose,
+    /// Float, stick and raise at once - three toggles, in this order.
+    float_sticky_topmost,
+};
+
+/// A CLI word as the enum tag it names, `-` and `_` spelling the same word: the
+/// CLI spells `same-app`, and the tag it names is `same_app`.
+pub fn wordToEnum(comptime T: type, word: []const u8) ?T {
+    inline for (std.meta.fields(T)) |field| {
+        if (eqlLoose(field.name, word)) return @enumFromInt(field.value);
+    }
+    return null;
+}
+
+/// A tag name with `_` spelled as the CLI's `-`, at compile time: the fixed
+/// values a verb's argument accepts, derived from the enum that parses them, so
+/// what the registry offers and what the verb reads cannot drift apart.
+pub fn hyphenTags(comptime T: type) [std.meta.fields(T).len][]const u8 {
+    const tags = comptime blk: {
+        var names: [std.meta.fields(T).len][]const u8 = undefined;
+        for (std.meta.fields(T), 0..) |field, position| {
+            names[position] = hyphenated(field.name);
+        }
+        break :blk names;
+    };
+    return tags;
+}
+
+/// One tag's name, hyphenated, as a compile-time string.
+fn hyphenated(comptime name: []const u8) []const u8 {
+    const frozen = comptime blk: {
+        var out: [name.len]u8 = undefined;
+        for (name, 0..) |character, position| {
+            out[position] = if (character == '_') '-' else character;
+        }
+        break :blk out;
+    };
+    return &frozen;
+}
+
+/// Whether two words are the same but for `-` against `_`.
+fn eqlLoose(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (spelled(left) != spelled(right)) return false;
+    }
+    return true;
+}
+
+fn spelled(character: u8) u8 {
+    return if (character == '-') '_' else character;
+}
+
+/// The word at `args[arg_index]`, as the enum tag it names.
+fn wordArg(comptime T: type, args: []const []const u8, arg_index: usize) !T {
+    if (arg_index >= args.len) return error.MissingArgument;
+    return wordToEnum(T, args[arg_index]) orelse error.InvalidValue;
+}
+
+/// The number at `args[arg_index]`, in the width its verb takes. No range is
+/// asserted here: a verb whose numbers are bounded has its bound among the fixed
+/// values the registry refuses anything else by.
+fn numberArg(comptime T: type, args: []const []const u8, arg_index: usize) !T {
+    if (arg_index >= args.len) return error.MissingArgument;
+    return std.fmt.parseInt(T, args[arg_index], 10) catch error.InvalidValue;
+}
+
+// Every verb below reads its own word from `args[0]` and its arguments from
+// `args[1..]`: the shape a command's `run` gets, from the daemon and from a
+// pushed key binding alike.
+
+/// Swap the focused window with its neighbour in the direction named.
+pub fn windowSwap(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    const direction = try wordArg(Direction, args, 1);
     try context.yabai.command(context.arena, &.{ "-m", "window", "--swap", direction.name() });
+    return "";
 }
 
-/// Send the focused window past its neighbour in `direction`, carrying the rest
-/// of the tree along instead of changing places with it.
-pub fn windowWarp(context: *Context, direction: Direction) !void {
+/// Send the focused window past its neighbour in the direction named, carrying
+/// the rest of the tree along instead of changing places with it.
+pub fn windowWarp(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    const direction = try wordArg(Direction, args, 1);
     try context.yabai.command(context.arena, &.{ "-m", "window", "--warp", direction.name() });
+    return "";
 }
 
-/// Insert the focused window into the tree beside the window under the mouse,
-/// on the side `direction` names.
-pub fn windowInsert(context: *Context, direction: Direction) !void {
+/// Insert the focused window into the tree beside the window under the mouse, on
+/// the side the direction names.
+pub fn windowInsert(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    const direction = try wordArg(Direction, args, 1);
     try context.yabai.command(context.arena, &.{
         "-m", "window", "mouse", "--insert", direction.name(),
     });
+    return "";
 }
 
 /// The same insert, then follow the window onto the space the mouse is on.
-pub fn windowInsertIntoSpace(context: *Context, direction: Direction) !void {
+pub fn windowInsertIntoSpace(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
+    const direction = try wordArg(Direction, args, 1);
     try context.yabai.command(arena, &.{ "-m", "window", "mouse", "--insert", direction.name() });
     try context.yabai.command(arena, &.{ "-m", "window", "--space", "mouse" });
+    return "";
 }
 
 /// Insert the focused window into the stack under the mouse, and follow it.
-pub fn windowInsertIntoStack(context: *Context) !void {
+pub fn windowInsertIntoStack(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
     const arena = context.arena;
     try context.yabai.command(arena, &.{ "-m", "window", "mouse", "--insert", "stack" });
     try context.yabai.command(arena, &.{ "-m", "window", "--space", "mouse" });
+    return "";
 }
 
-/// Move the focused window to display `index`.
-pub fn windowToDisplay(context: *Context, index: u8) !void {
+/// Move the focused window to the display numbered.
+pub fn windowToDisplay(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
-    const argument = try numArg(arena, index);
+    const argument = try numArg(arena, try numberArg(u8, args, 1));
     try context.yabai.command(arena, &.{ "-m", "window", "--display", argument });
+    return "";
 }
 
-/// Focus display `index`.
-pub fn displayFocus(context: *Context, index: u8) !void {
+/// Focus the display numbered.
+pub fn displayFocus(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
-    const argument = try numArg(arena, index);
+    const argument = try numArg(arena, try numberArg(u8, args, 1));
     try context.yabai.command(arena, &.{ "-m", "display", "--focus", argument });
+    return "";
 }
 
-/// Move the focused space to the display `direction` names.
-pub fn spaceToDisplay(context: *Context, direction: Direction) !void {
+/// Move the focused space to the display the direction names.
+pub fn spaceToDisplay(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    const direction = try wordArg(Direction, args, 1);
     try context.yabai.command(context.arena, &.{
         "-m", "space", "--display", direction.name(),
     });
+    return "";
 }
 
 /// Set the focused space's layout.
-pub fn spaceLayout(context: *Context, layout: Layout) !void {
+pub fn spaceLayout(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    const layout = try wordArg(Layout, args, 1);
     try context.yabai.command(context.arena, &.{ "-m", "space", "--layout", @tagName(layout) });
+    return "";
 }
 
-/// Rotate the focused space's tree by `degrees`.
-pub fn spaceRotate(context: *Context, degrees: u16) !void {
+/// Rotate the focused space's tree by the degrees given. Any u16 is taken, as it
+/// always was, and yabai answers for the rest.
+pub fn spaceRotate(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
-    const argument = try numArg(arena, degrees);
+    const argument = try numArg(arena, try numberArg(u16, args, 1));
     try context.yabai.command(arena, &.{ "-m", "space", "--rotate", argument });
+    return "";
 }
 
 /// Even out the focused space's tree.
-pub fn spaceBalance(context: *Context) !void {
+pub fn spaceBalance(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
     try context.yabai.command(context.arena, &.{ "-m", "space", "--balance" });
+    return "";
 }
 
-/// Hide every window of the focused space, leaving the space itself up.
-pub fn spaceToggleShowDesktop(context: *Context) !void {
+/// Hide every window of the focused space, leaving the space itself up. The one
+/// word the verb takes is `show-desktop`, which the registry holds as a fixed
+/// value.
+pub fn spaceToggleShowDesktop(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    if (args.len < 2 or !std.mem.eql(u8, args[1], "show-desktop")) return error.InvalidValue;
     try context.yabai.command(context.arena, &.{ "-m", "space", "--toggle", "show-desktop" });
+    return "";
+}
+
+/// Focus the window the target names: the previous one, or the next of the
+/// focused window's own application.
+pub fn windowFocus(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    switch (try wordArg(FocusTarget, args, 1)) {
+        .recent => try windowFocusRecent(context),
+        .same_app => try windowFocusSameApp(context),
+    }
+    return "";
 }
 
 /// Focus the window that had focus before this one.
-pub fn windowFocusRecent(context: *Context) !void {
+fn windowFocusRecent(context: *Context) !void {
     try context.yabai.command(context.arena, &.{ "-m", "window", "--focus", "recent" });
 }
 
@@ -568,7 +687,7 @@ pub fn windowFocusRecent(context: *Context) !void {
 /// wanted is the next entry carrying the same application. An application with
 /// one window has no next entry, which is reported as `error.YabaiFailed` for the
 /// caller to log and drop.
-pub fn windowFocusSameApp(context: *Context) !void {
+fn windowFocusSameApp(context: *Context) !void {
     const arena = context.arena;
     const windows = try context.yabai.windows(arena);
     if (windows.len == 0) return error.YabaiFailed;
@@ -582,20 +701,10 @@ pub fn windowFocusSameApp(context: *Context) !void {
     return error.YabaiFailed;
 }
 
-/// One of the window states the bindings toggle.
-pub const WindowToggle = enum {
-    /// Grow the window to its display, staying in the space's layout.
-    zoom_fullscreen,
-    /// macOS's own fullscreen.
-    native_fullscreen,
-    /// Mission Control's window overview.
-    expose,
-    /// Float, stick and raise at once - three toggles, in this order.
-    float_sticky_topmost,
-};
-
-pub fn windowToggle(context: *Context, toggle: WindowToggle) !void {
+/// Toggle the window state named.
+pub fn windowToggle(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
+    const toggle = try wordArg(WindowToggle, args, 1);
 
     // Three toggles chained, in this order: the sticky state of a window that
     // refused to float is not worth reaching for.
@@ -603,7 +712,7 @@ pub fn windowToggle(context: *Context, toggle: WindowToggle) !void {
         try context.yabai.command(arena, &.{ "-m", "window", "--toggle", "float" });
         try context.yabai.command(arena, &.{ "-m", "window", "--toggle", "sticky" });
         try context.yabai.command(arena, &.{ "-m", "window", "--toggle", "topmost" });
-        return;
+        return "";
     }
 
     const state: []const u8 = switch (toggle) {
@@ -613,11 +722,13 @@ pub fn windowToggle(context: *Context, toggle: WindowToggle) !void {
         .float_sticky_topmost => unreachable,
     };
     try context.yabai.command(arena, &.{ "-m", "window", "--toggle", state });
+    return "";
 }
 
 /// Move the focused window onto its display's frame and size it to fill it. The
 /// frame's coordinates are cut to whole points before use.
-pub fn windowFillDisplay(context: *Context) !void {
+pub fn windowFillDisplay(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
     const arena = context.arena;
     const display = try context.yabai.query(yabai.Display, arena, &.{
         "-m", "query", "--displays", "--window",
@@ -634,12 +745,70 @@ pub fn windowFillDisplay(context: *Context) !void {
         @as(i64, @intFromFloat(display.frame.h)),
     });
     try context.yabai.command(arena, &.{ "-m", "window", "--resize", dimensions });
+    return "";
 }
 
 /// Put yabai's own window list on the clipboard.
-pub fn copyWindows(context: *Context) !void {
+pub fn copyWindows(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
     const arena = context.arena;
     const list = try context.yabai.rawQuery(arena, &.{ "-m", "query", "--windows" });
     const text = try arena.dupeZ(u8, list);
     if (!platform.kx_clipboard_set(text.ptr)) return error.ClipboardUnavailable;
+    return "";
+}
+
+/// One `wm` verb: the word a client types after `wm`, and the run over its argv.
+pub const WmVerb = struct {
+    name: []const u8,
+    run: *const fn (*Context, []const []const u8) anyerror![]const u8,
+};
+
+/// Every verb of `kxdesk wm`, in the order the help lists them. `Sub` carries no
+/// run function, so the registry spells these names a second time and a test
+/// pins the two lists against each other.
+pub const wm_verbs = [_]WmVerb{
+    .{ .name = "cycle-space-windows", .run = cycleSpaceWindows },
+    .{ .name = "cycle-display-spaces", .run = cycleDisplaySpaces },
+    .{ .name = "cycle-displays", .run = cycleDisplays },
+    .{ .name = "switch-workspace", .run = switchWorkspace },
+    .{ .name = "space-labels", .run = spaceLabels },
+    .{ .name = "apply-settings", .run = applySettings },
+    .{ .name = "refresh-rules", .run = refreshRules },
+    .{ .name = "refresh-signals", .run = refreshSignals },
+    .{ .name = "clear-signals", .run = clearSignals },
+    .{ .name = "refresh-yabai", .run = refreshYabai },
+    .{ .name = "window-swap", .run = windowSwap },
+    .{ .name = "window-warp", .run = windowWarp },
+    .{ .name = "window-insert", .run = windowInsert },
+    .{ .name = "window-insert-space", .run = windowInsertIntoSpace },
+    .{ .name = "window-insert-stack-space", .run = windowInsertIntoStack },
+    .{ .name = "window-to-display", .run = windowToDisplay },
+    .{ .name = "display-focus", .run = displayFocus },
+    .{ .name = "space-to-display", .run = spaceToDisplay },
+    .{ .name = "space-layout", .run = spaceLayout },
+    .{ .name = "space-rotate", .run = spaceRotate },
+    .{ .name = "space-balance", .run = spaceBalance },
+    .{ .name = "space-toggle", .run = spaceToggleShowDesktop },
+    .{ .name = "window-focus", .run = windowFocus },
+    .{ .name = "window-toggle", .run = windowToggle },
+    .{ .name = "window-fill-display", .run = windowFillDisplay },
+    .{ .name = "copy-windows", .run = copyWindows },
+};
+
+/// `kxdesk wm <verb> …`: run the verb the first word names.
+pub fn wmRun(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    if (args.len == 0) return error.MissingArgument;
+    for (wm_verbs) |verb| {
+        if (std.mem.eql(u8, verb.name, args[0])) return verb.run(context, args);
+    }
+    return error.UnknownArgument;
+}
+
+/// Re-provision everything kxdesk manages on yabai: the rules, then the signals.
+/// A failed rules refresh stops the signal refresh, as it always has.
+fn refreshYabai(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = try refreshRules(context, args);
+    _ = try refreshSignals(context, args);
+    return "";
 }

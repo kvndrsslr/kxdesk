@@ -539,7 +539,7 @@ fn offerValues(
             const field_start = if (std.mem.lastIndexOfScalar(u8, partial, ',')) |comma| comma + 1 else 0;
             const already_typed = partial[0..field_start];
 
-            const labels = askDaemon(arena, "space_labels", &.{}) orelse return;
+            const labels = askDaemon(arena, "wm", &.{"space-labels"}) orelse return;
             var lines = std.mem.splitScalar(u8, labels, '\n');
             while (lines.next()) |label| {
                 if (label.len == 0) continue;
