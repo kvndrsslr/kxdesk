@@ -153,22 +153,24 @@ worked through. Those clicks run as background tasks, like the refreshes that
 reach the network: one may start a whole kitty process, and the receive loop must
 keep serving the bar while it does.
 
-A terminal is one window. The shared base unbinds the shortcuts that would open a
-tab, a split or another OS window — kitty's defaults and the `ctrl+f>` leader
-`kitty.conf` adds — and hides the tab bar that carries the button which opens one,
-so a quick access terminal cannot grow into a session. Closing stays mapped:
-`ctrl`+`d`, or the window's own close button, is how one is dismissed.
+A terminal is one window. The shared kitty rules — `quick-access-terminal-base.kitty.conf`,
+which the base hands to kitty after the normal `kitty.conf` — unbind the shortcuts
+that would open a tab, a split or another OS window (kitty's defaults and the
+`ctrl+f>` leader `kitty.conf` adds), hide the tab bar that carries the button
+which opens one, and set the `PATH` its programs run with. That last one matters
+because a terminal is started by a daemon under launchd, whose own `PATH` is
+`/usr/bin:/bin:/usr/sbin:/sbin`: what runs inside a terminal looks programs up by
+name, and `ghr`'s `gh` is the case that bites. Closing stays mapped: `ctrl`+`d`,
+or the window's own close button, is how one is dismissed.
 
 A terminal is two files under the kitty configuration directory:
 `quick-access-terminals/<name>.conf`, the terminal's own, and
 `quick-access-terminal-base.conf`, which every one of them inherits. kxdesk passes
 the base first and the terminal's own file after it, so anything the base sets is
 overridden there. What a terminal runs is its own file's business —
-`kitty_override shell=/opt/homebrew/bin/btop` — and the program is spelled in
-full, because the window is started by a daemon under launchd, whose `PATH` has no
-Homebrew in it. The word in a binding is the file's name, and one that nothing
-configures is refused before anything runs: an error on a shell, a line in the
-log when a binding pushed it.
+`kitty_override shell=/opt/homebrew/bin/btop` — and the word in a binding is the
+file's name, and one that nothing configures is refused before anything runs: an
+error on a shell, a line in the log when a binding pushed it.
 
 Hiding and showing a terminal that is already running is a message rather than a
 process. Each one is started with a socket of its own —
