@@ -182,6 +182,57 @@ test "formatRate keeps a reading inside three digits and a unit" {
     }
 }
 
+test "the battery ring's colour steps with the level glyph's bands" {
+    // The thresholds are the glyph switch's own, so a charge the ring calls
+    // yellow is one the marker draws with a level to match.
+    const cases = [_]struct { percent: i32, color: theme.Color }{
+        .{ .percent = 100, .color = theme.green },
+        .{ .percent = 60, .color = theme.green },
+        .{ .percent = 59, .color = theme.yellow },
+        .{ .percent = 30, .color = theme.yellow },
+        .{ .percent = 29, .color = theme.orange },
+        .{ .percent = 10, .color = theme.orange },
+        .{ .percent = 9, .color = theme.red },
+        .{ .percent = 0, .color = theme.red },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.color, items_system.batteryColor(case.percent));
+    }
+}
+
+test "the battery ring and its glyph publish one colour, and the bolt wears green" {
+    var props: Props = .{};
+    try items_system.batteryProps(&props, 20, false);
+    const level = [_][]const u8{
+        "drawing=on",
+        "ring.value=0.2000",
+        // The band the charge falls in dresses the ring and the glyph inside it.
+        "ring.color=0xfffe8019",
+        "ring.marker=\u{f243}",
+        "ring.marker.color=0xfffe8019",
+        "ring.marker.x_offset=-2",
+    };
+    try std.testing.expectEqual(level.len, props.slice().len);
+    for (level, props.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+
+    // Charging swaps in the bolt and drops the ring's nudge, and the ring keeps
+    // the charge's band: it is the bolt that says what is happening, and green is
+    // what says it.
+    var charging: Props = .{};
+    try items_system.batteryProps(&charging, 8, true);
+    const bolt = [_][]const u8{
+        "drawing=on",
+        "ring.value=0.0800",
+        "ring.color=0xfffa4934",
+        "ring.marker=\u{f0e7}",
+        "ring.marker.color=0xffb8bb27",
+        "ring.marker.x_offset=0",
+    };
+    try std.testing.expectEqual(bolt.len, charging.slice().len);
+    for (bolt, charging.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
 test "an unreadable reset instant costs a Go row its countdown, not its number" {
     var buffer: [64]u8 = undefined;
     const rolling = items_usage.opencode_rows[0];

@@ -89,8 +89,51 @@ pub fn formatRate(bytes_per_second: f64, buffer: *[8]u8) ![]const u8 {
 }
 
 /// The battery's charge, and its only readout on the bar: a ring whose value is
-/// the charge and whose marker is the battery's own level glyph.
+/// the charge and whose colour is the band that charge falls in, worn by the level
+/// glyph inside it too - a green bolt instead, while charging.
 pub const ring_item = "battery.ring";
+
+/// The colour the ring wears at `percent` of charge: green from sixty, yellow
+/// from thirty, orange from ten, and red below it - the level glyph's own bands,
+/// so the glyph steps with the ring, and the charge reads at a glance.
+pub fn batteryColor(percent: i32) theme.Color {
+    if (percent >= 60) return theme.green;
+    if (percent >= 30) return theme.yellow;
+    if (percent >= 10) return theme.orange;
+    return theme.red;
+}
+
+/// What the ring publishes for one reading: the charge as its value, and the band
+/// that charge falls in as the colour of the ring and of the glyph inside it - the
+/// level glyph, or the bolt while charging, which stays green whatever the charge.
+///
+/// `ring.value` is a dotted leaf, since a field named `value` collapses to the
+/// marker's own key.
+pub fn batteryProps(props: *Props, percent: i32, charging: bool) !void {
+    const icon = if (charging) theme.glyph.battery_charging else switch (percent) {
+        90...100 => theme.glyph.battery_full,
+        60...89 => theme.glyph.battery_3,
+        30...59 => theme.glyph.battery_2,
+        10...29 => theme.glyph.battery_1,
+        else => theme.glyph.battery_empty,
+    };
+    // The ring wears the charge's band; the bolt says what is happening to it
+    // rather than how much is left, so it wears green either way.
+    const band = try props.argb(batteryColor(percent));
+    const glyph_color = if (charging) try props.argb(theme.green) else band;
+    // The bolt is centred as it comes; the level glyphs lean right of that centre
+    // in the patched font and take the ring's nudge.
+    const nudge = if (charging) 0 else style.battery_marker_nudge;
+
+    try props.write(.{
+        .drawing = true,
+        .@"ring.value" = @as(f64, @floatFromInt(percent)) / 100.0,
+        .ring = .{
+            .color = band,
+            .marker = .{ .value = icon, .color = glyph_color, .x_offset = nudge },
+        },
+    });
+}
 
 /// The battery, calendar, graph and link readings, over the daemon's bar client.
 pub const Updater = struct {
@@ -117,26 +160,8 @@ pub const Updater = struct {
         // A machine without a battery simply has no reading to publish.
         if (!platform.kx_battery(&percent, &charging)) return;
 
-        const icon = if (charging) theme.glyph.battery_charging else switch (percent) {
-            90...100 => theme.glyph.battery_full,
-            60...89 => theme.glyph.battery_3,
-            30...59 => theme.glyph.battery_2,
-            10...29 => theme.glyph.battery_1,
-            else => theme.glyph.battery_empty,
-        };
-        // The bolt the charging marker draws is centred as it comes, so only the
-        // level glyphs take the ring's nudge.
-        const nudge = if (charging) 0 else style.battery_marker_nudge;
-
-        // The ring is the battery's whole readout: the charge as its value, the
-        // level glyph inside it as the marker. `ring.value` is spelled out because
-        // the `.value` collapse is for a key that is the item's own (`label`).
         var ring: Props = .{};
-        try ring.write(.{
-            .drawing = true,
-            .@"ring.value" = @as(f64, @floatFromInt(percent)) / 100.0,
-            .ring = .{ .marker = .{ .value = icon, .x_offset = nudge } },
-        });
+        try batteryProps(&ring, percent, charging);
         try self.bar.set(ring_item, ring.slice());
 
         try self.bar.commit();

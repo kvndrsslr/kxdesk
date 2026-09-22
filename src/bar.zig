@@ -324,8 +324,12 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try pomodoroItem(c, config_input);
 }
 
-/// The battery as one ring: the charge is its value, the level glyph its marker.
+/// The battery as one ring: the charge is its value, the level glyph its marker,
+/// and the charge's own band the colour the ring and its glyph wear, which the
+/// daemon republishes.
 fn batteryRing(c: *sb.Client, config_input: Config) !void {
+    // Green until the daemon publishes the charge's own band.
+    const baseline = config.color(theme.green);
     try config.declare(c, .{
         .kind = .ring,
         .name = items_system.ring_item,
@@ -336,7 +340,7 @@ fn batteryRing(c: *sb.Client, config_input: Config) !void {
             .padding_left = 0,
             .padding_right = style.item_padding,
             .ring = .{
-                .color = config.color(theme.green),
+                .color = baseline,
                 .track_color = style.ring_track,
                 // The diameter is given to `--add` and set here as well: that
                 // argument only lands when the item is created.
@@ -345,6 +349,7 @@ fn batteryRing(c: *sb.Client, config_input: Config) !void {
                 .marker = .{
                     .position = "center",
                     .font = style.mono(.Bold, 12),
+                    .color = baseline,
                     .x_offset = style.battery_marker_nudge,
                 },
             },
