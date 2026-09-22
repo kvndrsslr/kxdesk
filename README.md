@@ -148,9 +148,16 @@ kxdesk term toggle btop
 
 The bar's load graphs are wired to the same thing: the pair the CPU and GPU
 readings share toggles `btop` — the terminal those numbers are read in full — on
-a click, so the two instruments are one click apart. That click runs as a
-background task, like the refreshes that reach the network: it may start a whole
-kitty process, and the receive loop must keep serving the bar while it does.
+a click, and the GitHub bell toggles `ghr`, the dashboard the notifications can be
+worked through. Those clicks run as background tasks, like the refreshes that
+reach the network: one may start a whole kitty process, and the receive loop must
+keep serving the bar while it does.
+
+A terminal is one window. The shared base unbinds the shortcuts that would open a
+tab, a split or another OS window — kitty's defaults and the `ctrl+f>` leader
+`kitty.conf` adds — and hides the tab bar that carries the button which opens one,
+so a quick access terminal cannot grow into a session. Closing stays mapped:
+`ctrl`+`d`, or the window's own close button, is how one is dismissed.
 
 A terminal is two files under the kitty configuration directory:
 `quick-access-terminals/<name>.conf`, the terminal's own, and

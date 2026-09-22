@@ -24,20 +24,21 @@ const state = @import("store.zig");
 const sb = @import("sb.zig");
 const zen = @import("zen.zig");
 
-/// The quick access terminal the load graphs toggle: the name of a file in the
-/// kitty configuration directory's `quick-access-terminals`, which is where the
-/// numbers these two graphs draw are read in full.
+/// The quick access terminals a click brings up, named as the files in the kitty
+/// configuration directory's `quick-access-terminals` are: the load graphs show
+/// what btop shows in full, and the GitHub bell what ghr shows in full.
 const load_terminal = "btop";
+const github_terminal = "ghr";
 
-/// Show or hide it. It runs as a background task because a toggle talks to a
-/// socket and, when the terminal is not running, starts a whole kitty process -
-/// and the receive loop has to keep running while that happens. A failure is a
-/// line in the log, like every other background task's.
-fn toggleLoadTerminal(io: std.Io, gpa: std.mem.Allocator) background.Result {
+/// Show or hide one of them. It runs as a background task because a toggle talks
+/// to a socket and, when the terminal is not running, starts a whole kitty
+/// process - and the receive loop has to keep running while that happens. A
+/// failure is a line in the log, like every other background task's.
+fn toggleTerminal(io: std.Io, gpa: std.mem.Allocator, name: []const u8) background.Result {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
 
-    return kitty.toggleNamed(io, arena_state.allocator(), load_terminal);
+    return kitty.toggleNamed(io, arena_state.allocator(), name);
 }
 
 /// The popup rows under an item are shown and hidden, never toggled: what a
@@ -196,13 +197,16 @@ pub const Dispatcher = struct {
         if (std.mem.eql(u8, name, items_system.cpu_item) or
             std.mem.eql(u8, name, items_system.gpu_item))
         {
-            self.terminal.request(self.io, toggleLoadTerminal, .{ self.io, self.gpa });
+            self.terminal.request(self.io, toggleTerminal, .{ self.io, self.gpa, load_terminal });
             return;
         }
         // A provider's number opens that provider's usage page.
         if (items_usage.providerFor(name)) |provider| return openPage(provider.url);
         if (std.mem.eql(u8, name, items_github.bell)) {
-            return items_github.setPopup(self.bar, .toggle);
+            // The popup is the hover's business, in `handle`; the click is the
+            // dashboard, which is where the notifications are worked through.
+            self.terminal.request(self.io, toggleTerminal, .{ self.io, self.gpa, github_terminal });
+            return;
         }
 
         if (std.mem.startsWith(u8, name, items_github.notification_row)) {
