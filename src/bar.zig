@@ -345,6 +345,7 @@ fn batteryRing(c: *sb.Client, config_input: Config) !void {
                 .marker = .{
                     .position = "center",
                     .font = style.mono(.Bold, 12),
+                    .x_offset = style.battery_marker_nudge,
                 },
             },
             // A battery that is not changing sends nothing, so the level is re-read on the item's own clock.

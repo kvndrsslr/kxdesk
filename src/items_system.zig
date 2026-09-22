@@ -10,6 +10,7 @@ const std = @import("std");
 const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
+const style = @import("style.zig");
 const theme = @import("theme.zig");
 
 /// The graph items, one point pushed into each per tick: the load pair - CPU and
@@ -123,6 +124,9 @@ pub const Updater = struct {
             10...29 => theme.glyph.battery_1,
             else => theme.glyph.battery_empty,
         };
+        // The bolt the charging marker draws is centred as it comes, so only the
+        // level glyphs take the ring's nudge.
+        const nudge = if (charging) 0 else style.battery_marker_nudge;
 
         // The ring is the battery's whole readout: the charge as its value, the
         // level glyph inside it as the marker. `ring.value` is spelled out because
@@ -131,7 +135,7 @@ pub const Updater = struct {
         try ring.write(.{
             .drawing = true,
             .@"ring.value" = @as(f64, @floatFromInt(percent)) / 100.0,
-            .ring = .{ .marker = icon },
+            .ring = .{ .marker = .{ .value = icon, .x_offset = nudge } },
         });
         try self.bar.set(ring_item, ring.slice());
 

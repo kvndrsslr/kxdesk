@@ -32,6 +32,13 @@ pub const ring_line_width = 2;
 /// The colour a ring's unfilled track is drawn in.
 pub const ring_track = config.color(theme.dark_grey);
 
+/// The nudge a battery level glyph needs to sit centred in the ring, in points:
+/// a marker centres a glyph's cell, not its ink, and in the patched font the
+/// Font Awesome battery outlines lean right of that centre. The charging bolt
+/// is centred as it comes, so `items_system` nudges a charging marker by
+/// nothing.
+pub const battery_marker_nudge: i32 = -2;
+
 /// A graph's fill, which is transparent: two graphs share one window, and a
 /// fill on either would muddle the two lines.
 pub const graph_fill = config.color(theme.graph_no_fill);
