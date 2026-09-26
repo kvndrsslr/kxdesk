@@ -205,7 +205,16 @@ pub const Dispatcher = struct {
         if (std.mem.eql(u8, name, items_github.bell)) {
             // The popup is the hover's business, in `handle`; the click is the
             // dashboard, which is where the notifications are worked through.
+            // The count follows the click rather than its own three-minute
+            // schedule: what the dashboard reads is what the item renders, and
+            // waiting that out would leave the badge showing notifications that
+            // were just worked through.
             self.terminal.request(self.io, toggleTerminal, .{ self.io, self.gpa, github_terminal });
+            self.github.request(
+                self.io,
+                items_github.refresh,
+                .{ self.io, self.gpa, self.helper },
+            );
             return;
         }
 

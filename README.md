@@ -151,7 +151,9 @@ readings share toggles `btop` — the terminal those numbers are read in full �
 a click, and the GitHub bell toggles `ghr`, the dashboard the notifications can be
 worked through. Those clicks run as background tasks, like the refreshes that
 reach the network: one may start a whole kitty process, and the receive loop must
-keep serving the bar while it does.
+keep serving the bar while it does. The bell's click refreshes the count along with
+it: what is worked through in the dashboard is what the item counts, and the item's
+own schedule is three minutes long.
 
 A terminal is one window. The shared kitty rules — `quick-access-terminal-base.kitty.conf`,
 which the base hands to kitty after the normal `kitty.conf` — unbind the shortcuts
