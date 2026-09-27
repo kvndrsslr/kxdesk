@@ -276,6 +276,25 @@ clicks alone.
 given. It is the port of the standalone `kxb-server-mode` script, which it
 replaces along with that script's own state directory.
 
+A machine that must not serve at all — a compliance one — turns the mode off
+wholesale with one key, so that nothing here can enter it:
+
+```sh
+kxdesk state set server-mode.disabled 1   # every verb refuses from now on
+kxdesk apply                              # and the bar drops the item
+kxdesk state unset server-mode.disabled   # the way back
+```
+
+With the key set, every `server-mode` verb answers
+`kxdesk: server mode is disabled on this machine`, nothing materializes a key or
+touches ssh, git or `launchctl`, and the next `kxdesk apply` — or a restarted
+daemon — leaves the `server` item off the bar. Only an explicit false leaves the
+mode available: `0`, `false`, `no`, `off`, whitespace and an empty value, a
+`--null` write included. A value that means nothing, a typo included, therefore
+turns the mode off, which is the direction the key exists for. A store that cannot
+be read at all leaves the mode as it was, available: the key is the only thing
+that could have said otherwise.
+
 The bar says which state the mode is in: a `server` item beside the date, grey
 when the mode is off, green when it is on, and an hourglass while a change is in
 flight. Clicking it toggles the mode — `server-mode toggle` — and the click's

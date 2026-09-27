@@ -400,7 +400,7 @@ fn runDaemon(init: std.process.Init) !void {
     // `mach_helper` has to be pointed at it again.
     if (bar.connect()) |_| {
         daemon.present.store(true, .monotonic);
-        bar_config.apply(&bar, init.io, .{ .helper = event_service }) catch |err| {
+        bar_config.apply(&bar, init.io, .{ .helper = event_service, .store = &store }) catch |err| {
             log.warn("startup apply failed: {s}", .{@errorName(err)});
         };
         // A freshly built bar knows nothing about the state the last one was in.
@@ -490,6 +490,10 @@ fn fail(io: std.Io, err: anyerror) noreturn {
         // the same way, and a client cannot tell them apart from a distance.
         error.DaemonUnavailable => "kxdesk: no daemon answered - brew services start kxdesk",
         error.MalformedReply => "kxdesk: daemon sent a malformed reply",
+        // The store switch that takes server mode off a machine wholesale; see
+        // `server_mode.disabled`. Naming the key is the whole answer, since the
+        // person running this is the one who set it.
+        error.ServerModeDisabled => "kxdesk: server mode is disabled on this machine (state: server-mode.disabled)",
         else => @errorName(err),
     });
     std.process.exit(1);

@@ -15,6 +15,7 @@ const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const pomodoro = @import("pomodoro.zig");
 const server_mode = @import("server_mode.zig");
+const state = @import("store.zig");
 const theme = @import("theme.zig");
 
 /// Items an earlier configuration declared and this one does not; SketchyBar
@@ -45,6 +46,10 @@ pub const Config = struct {
     /// Bootstrap name this daemon is registered under - the value SketchyBar
     /// needs in an item's `mach_helper` property to route events here.
     helper: []const u8,
+    /// The daemon's store, for the one decision in it that changes what the bar
+    /// holds: whether this machine may serve at all. No store leaves the item on
+    /// the bar, which is what every machine but a compliance one wants.
+    store: ?*state.Store = null,
 };
 
 /// Emit the complete configuration.
@@ -290,10 +295,22 @@ fn graphPair(
     }
 }
 
+/// Whether this bar carries the server-mode item. A machine whose store says it
+/// must not serve gets none: the mode is off wholesale, and an item whose click
+/// could only be refused is worse than no item at all.
+fn serving(io: std.Io, config_input: Config) bool {
+    const store = config_input.store orelse return true;
+    return !server_mode.disabled(io, store);
+}
+
 fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
+    const server_item = serving(io, config_input);
+
     try batteryRing(c, config_input);
     try calendarItem(c, config_input);
-    try serverItem(c, io, config_input);
+    // Nothing to declare where the store forbids the mode, and an item an earlier
+    // configuration left on the bar comes off here.
+    if (server_item) try serverItem(c, io, config_input) else try config.remove(c, server_mode.bar_item_pattern);
 
     // The ring belongs against the calendar: an item created again lands at the end of the list.
     try config.move(c, items_system.ring_item, "calendar");
@@ -320,7 +337,7 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try config.move(c, items_system.gpu_item, items_system.net_down_item);
     try config.move(c, items_system.cpu_item, items_system.gpu_item);
     // Server mode sits against the date, on the far side of the graphs; moved after them.
-    try config.move(c, server_mode.bar_item, items_system.cpu_item);
+    if (server_item) try config.move(c, server_mode.bar_item, items_system.cpu_item);
 
     try brewItem(c, config_input);
     try githubBell(c, config_input);

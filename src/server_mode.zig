@@ -6,6 +6,10 @@
 //!
 //! Client-run, not daemon-run: `op`'s unlock is the desktop app's to grant in the
 //! session that asked, and the bar item's `click_script` runs this same command.
+//!
+//! A machine that must not have the mode at all - a compliance one - says so once
+//! in the store (`disabled_key`): every verb then refuses and the bar declares no
+//! item.
 
 const std = @import("std");
 
@@ -15,6 +19,7 @@ const log = @import("log.zig");
 const platform = @import("platform.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
+const state = @import("store.zig");
 const style = @import("style.zig");
 const theme = @import("theme.zig");
 
@@ -28,6 +33,16 @@ const caffeinate_label = "local.caffeinate.ac";
 /// The bar item that says whether this machine is serving; its click runs this
 /// command, and `restore` puts it back after a bar reload from the cookie.
 pub const bar_item = "server";
+
+/// That item as a `--remove` pattern, in the form `retired_items` uses. An item
+/// outlives the configuration that made it, so a bar the store forbids to serve
+/// has to take off the one an earlier configuration added; see `bar.zig`.
+pub const bar_item_pattern = "/^server$/";
+
+/// The store key that takes the mode off this machine wholesale, for a machine
+/// that must not serve at all: with it set, every verb refuses and the bar
+/// declares no item. See `disabled`.
+pub const disabled_key = "server-mode.disabled";
 
 /// Names another state directory. A probe uses it to run against a throwaway
 /// one; nothing else should.
@@ -91,6 +106,16 @@ pub fn serverMode(arena: std.mem.Allocator, io: std.Io, args: []const []const u8
     const verb = if (args.len > 0) args[0] else "status";
     if (args.len > 1) return error.UnknownArgument;
 
+    // Before anything else, and for every verb including `status`: a machine the
+    // store has switched off has no mode to enter, leave or ask about, and this
+    // is the one place that decides it for a shell. The store is opened here
+    // rather than handed in because this command never talks to the daemon - see
+    // the module comment - so nothing else in this process has one.
+    var store_path: [std.fs.max_path_bytes]u8 = undefined;
+    var store = state.Store.openForReading(state.Store.defaultPath(&store_path));
+    defer store.close();
+    if (disabled(io, &store)) return error.ServerModeDisabled;
+
     const paths = try Paths.derive(arena);
 
     if (std.mem.eql(u8, verb, "enter")) return transition(arena, io, paths, .enter);
@@ -104,6 +129,29 @@ pub fn serverMode(arena: std.mem.Allocator, io: std.Io, args: []const []const u8
         return report(arena, io, paths);
     }
     return error.UnknownArgument;
+}
+
+/// Whether the store forbids this machine to serve at all.
+///
+/// The key is a switch a person writes, so only an explicit false leaves the mode
+/// available - `0`, `false`, `no`, `off`, or a value that is only whitespace -
+/// and everything else, a misspelling included, takes the mode away. A store that
+/// cannot be read answers no as well: it holds no such key, which is what a
+/// machine that never set one looks like.
+pub fn disabled(io: std.Io, store: *state.Store) bool {
+    var buffer: [32]u8 = undefined;
+    const text = (store.getText(io, disabled_key, &buffer) catch null) orelse return false;
+    return readsDisabled(text);
+}
+
+/// The reading above, from the stored text alone.
+fn readsDisabled(text: []const u8) bool {
+    const value = std.mem.trim(u8, text, " \t\r\n");
+    if (value.len == 0) return false;
+    for ([_][]const u8{ "0", "false", "no", "off" }) |word| {
+        if (std.ascii.eqlIgnoreCase(value, word)) return false;
+    }
+    return true;
 }
 
 /// A change to the mode that the bar is told about, from the first `op` round
@@ -246,6 +294,10 @@ fn setIndicator(client: *sb.Client, indicator: Indicator) !void {
 /// nothing else there can know what the mode was: the daemon did not run the
 /// command that changed it.
 pub fn restore(context: *Context) void {
+    // A machine the store forbids to serve has no item to put back: the bar it
+    // is applied to just left that item off.
+    if (disabled(context.io, context.store)) return;
+
     const paths = Paths.derive(context.arena) catch return;
     // The `apply` this runs from has already connected, but a bar that went away
     // between the two is not worth failing over.

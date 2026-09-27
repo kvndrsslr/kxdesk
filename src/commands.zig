@@ -571,7 +571,10 @@ fn stateCommand(context: *Context, args: []const []const u8) ![]const u8 {
 /// this process serves.
 fn apply(context: *Context, _: []const []const u8) ![]const u8 {
     try context.ensureBar();
-    try bar_config.apply(context.bar, context.io, .{ .helper = context.event_service });
+    try bar_config.apply(context.bar, context.io, .{
+        .helper = context.event_service,
+        .store = context.store,
+    });
     // A freshly built bar knows nothing about the state the last one was in, and
     // the provider items have just been given placeholder labels.
     restoreState(context);

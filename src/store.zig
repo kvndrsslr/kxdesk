@@ -93,7 +93,7 @@ pub const Store = struct {
             std.Io.Dir.cwd().setFilePermissions(io, directory, directory_mode, .{}) catch {};
         }
 
-        var connection = store.connect() orelse {
+        var connection = store.connect(true) orelse {
             log.warn("cannot open {s}; persistence is off", .{path});
             return store;
         };
@@ -101,7 +101,7 @@ pub const Store = struct {
         if (!usable(connection)) {
             log.warn("{s} is not a usable database; starting a fresh one", .{path});
             store.setAside(io, connection) orelse return store;
-            connection = store.connect() orelse return store;
+            connection = store.connect(true) orelse return store;
         }
 
         store.db = connection;
@@ -110,6 +110,24 @@ pub const Store = struct {
             _ = c.sqlite3_close_v2(connection);
             store.db = null;
         };
+        return store;
+    }
+
+    /// Open a database that is already there, for a process that owns nothing:
+    /// the client runs `server-mode` and reads one setting out of it. Nothing is
+    /// created, migrated or moved aside - a file that is not there leaves a
+    /// store answering `error.Unavailable` rather than a new database beside it.
+    ///
+    /// Read-write rather than read-only, which is about the file's write-ahead
+    /// log and not about the queries: a WAL database needs its shared-memory
+    /// file created or recovered, and a read-only connection cannot do that once
+    /// the daemon that made it has exited.
+    pub fn openForReading(path: []const u8) Store {
+        var store = Store{};
+        if (path.len == 0 or path.len >= store.path.len) return store;
+        @memcpy(store.path[0..path.len], path);
+        store.path_len = path.len;
+        store.db = store.connect(false);
         return store;
     }
 
@@ -274,16 +292,20 @@ pub const Store = struct {
     }
 
     /// The connection, with the pragmas that decide how it behaves.
-    fn connect(self: *Store) ?*c.sqlite3 {
+    ///
+    /// `create` adds the file when it is absent; a connection made without it
+    /// skips the pragmas below, which are about writes this one never makes.
+    fn connect(self: *Store, create: bool) ?*c.sqlite3 {
         if (self.path_len == 0) return null;
 
         var handle: ?*c.sqlite3 = null;
         // `FULLMUTEX` as well as the mutex above: the connection is shared by
         // worker tasks, and serializing inside SQLite costs nothing measurable.
+        const create_flag: c_int = if (create) c.SQLITE_OPEN_CREATE else 0;
         const rc = c.sqlite3_open_v2(
             self.pathPointer(),
             &handle,
-            c.SQLITE_OPEN_READWRITE | c.SQLITE_OPEN_CREATE | c.SQLITE_OPEN_FULLMUTEX,
+            c.SQLITE_OPEN_READWRITE | create_flag | c.SQLITE_OPEN_FULLMUTEX,
             null,
         );
         if (rc != c.SQLITE_OK) {
@@ -292,6 +314,8 @@ pub const Store = struct {
         }
 
         _ = c.sqlite3_busy_timeout(handle.?, busy_timeout_ms);
+        if (!create) return handle;
+
         // WAL, so a reader never blocks the writer and a crash costs at most the
         // last transaction; `NORMAL` is the right trade for state this cheap to
         // lose - a timer's remaining seconds, not a ledger.

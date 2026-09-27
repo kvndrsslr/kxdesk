@@ -17,6 +17,7 @@ const kitty = @import("kitty.zig");
 const log = @import("log.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
+const server_mode = @import("server_mode.zig");
 const store = @import("store.zig");
 const style = @import("style.zig");
 const theme = @import("theme.zig");
@@ -44,6 +45,43 @@ test "store get/set roundtrip" {
     const got = try db.getText(io, "greeting", &out);
     try std.testing.expect(got != null);
     try std.testing.expectEqualStrings("hello", got.?);
+}
+
+test "server mode is off when the store says so, and only an explicit false says otherwise" {
+    const io = std.testing.io;
+    const path = "/tmp/kxdesk-tests-server-mode.db";
+    std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    defer {
+        std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+        std.Io.Dir.deleteFileAbsolute(io, path ++ "-wal") catch {};
+        std.Io.Dir.deleteFileAbsolute(io, path ++ "-shm") catch {};
+    }
+
+    var db = store.Store.open(io, path);
+    defer db.close();
+
+    // No key at all: the machine may serve, which is every machine but one that
+    // asked not to.
+    try std.testing.expect(!server_mode.disabled(io, &db));
+
+    // Any value a person writes takes the mode away, a typo included: the
+    // failure this key exists to prevent is a machine that serves because the
+    // value was not the one a parser expected.
+    for ([_][]const u8{ "1", "true", "yes", "off?", "disable", " server " }) |value| {
+        try db.setText(io, server_mode.disabled_key, value);
+        try std.testing.expect(server_mode.disabled(io, &db));
+    }
+
+    // The explicit falses, whitespace and case aside, leave it available; an
+    // empty value is a key that was cleared, not one that was set.
+    for ([_][]const u8{ "0", "false", "FALSE", "no", "OFF", " " }) |value| {
+        try db.setText(io, server_mode.disabled_key, value);
+        try std.testing.expect(!server_mode.disabled(io, &db));
+    }
+
+    try db.setText(io, server_mode.disabled_key, "1");
+    try db.unset(io, server_mode.disabled_key);
+    try std.testing.expect(!server_mode.disabled(io, &db));
 }
 
 test "KXDESK_STATE seam" {
@@ -743,8 +781,8 @@ test "config.move and config.remove spell their commands" {
     try config.remove(&client, "space.*");
 
     const expected = [_][]const u8{
-        "--move", "space.7", "before", "space.3",
-        "--move", "herdr",   "after",  "opencode-go",
+        "--move",   "space.7", "before", "space.3",
+        "--move",   "herdr",   "after",  "opencode-go",
         "--remove", "space.*",
     };
     try expectArgs(client.args.items, &expected);
