@@ -446,7 +446,9 @@ fn linkItem(c: *sb.Client) !void {
     }, "");
 }
 
-/// Homebrew's outdated count; `brew outdated` is slow, so the daemon runs it off the event path.
+/// Homebrew's outdated count and the click that upgrades: `brew outdated` and
+/// `brew upgrade` are both far too slow for the event path, so the daemon runs
+/// them off it and this only asks for the work; see `items_brew.zig`.
 fn brewItem(c: *sb.Client, config_input: Config) !void {
     try config.declare(c, .{ .kind = .event, .name = "brew_update" }, config_input.helper);
     try config.declare(c, .{
@@ -467,7 +469,7 @@ fn brewItem(c: *sb.Client, config_input: Config) !void {
             .drawing = true,
         }),
         .helper = true,
-        .events = &.{.brew_update},
+        .events = &.{ .@"mouse.clicked", .brew_update },
     }, config_input.helper);
 }
 

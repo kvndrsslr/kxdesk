@@ -10,6 +10,12 @@
 //! names itself - so a key press costs a message rather than a process. Only a
 //! terminal that is not running needs one, and then it is kitty's own
 //! `kitten quick_access_terminal` that draws the window.
+//!
+//! `showText` is the same window with none of the user's configuration: one the
+//! daemon names itself, whose text it writes itself and whose window prints that
+//! text and hands over a login shell. That is what a bar item with something long
+//! to say - a failed command's output - opens, since the bar's badge cannot carry
+//! it and a terminal can scroll.
 
 const std = @import("std");
 
@@ -61,8 +67,27 @@ const toggle_request =
 const show_request =
     "\x1bP@kitty-cmd{\"cmd\":\"resize-os-window\",\"version\":[0,42,0]," ++
     "\"payload\":{\"match\":\"all\",\"action\":\"show\"}}\x1b\\";
+
+/// The third command: the one the window's own close button runs. A window
+/// prints its text once, and kitty answers a second start of an instance group
+/// that is already running by showing the window that is there - so a terminal
+/// with newer text to show has to close the older one first.
+const close_request =
+    "\x1bP@kitty-cmd{\"cmd\":\"close-window\",\"version\":[0,42,0]," ++
+    "\"payload\":{\"match\":\"all\"}}\x1b\\";
 const reply_prefix = "\x1bP@kitty-cmd";
 const reply_terminator = "\x1b\\";
+
+/// The suffix of the file one terminal's text is written to, beside its socket,
+/// in the directory that is already the owner's alone.
+const text_suffix = ".txt";
+
+/// What a text terminal's window runs, with the file to print in `$1`: the text,
+/// and then the user's own login shell. The shell is what keeps the window up -
+/// a command that exits leaves a panel of finished output - and it is the shell
+/// the configuration would otherwise start, so the window behaves like any other
+/// terminal once the text has been read.
+const print_then_shell = "cat \"$1\"; exec \"${SHELL:-/bin/zsh}\" -l";
 
 /// An answer is a small object, and anything longer than this is not one: the
 /// bound is what keeps a socket belonging to something else from making this
@@ -80,14 +105,62 @@ pub fn toggleNamed(io: std.Io, arena: std.mem.Allocator, name: []const u8) !void
 
     if (try ask(io, arena, name, toggle_request)) return;
 
-    try start(io, arena, name);
+    var terminal_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const terminal = terminalFile(&terminal_buffer, name) orelse return error.NotConfigured;
+    try start(io, arena, name, .{ .config = terminal });
+    return showWhenReady(io, arena, name);
+}
 
-    // The window comes up hidden - kitty draws and lays it out before it is seen
-    // - so the ask that follows is what shows it, and it is the same ask the next
-    // key press makes.
+/// Show `text` in a terminal of the given name: the text is written to a file
+/// beside the sockets, the window prints it, and a login shell is handed over on
+/// top of it. Nothing of the user's is involved - the name is the daemon's, and
+/// so is the file - which is what lets an item of the bar open a terminal that is
+/// not one of the configured ones.
+///
+/// A terminal of the same name that is already up is closed first: the window
+/// keeps what it printed, and the text of this call is not the older one.
+pub fn showText(io: std.Io, arena: std.mem.Allocator, name: []const u8, text: []const u8) !void {
+    var directory_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const directory = try socketDirectoryPath(io, &directory_buffer);
+
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, "{s}/{s}" ++ text_suffix, .{ directory, name }) catch
+        return error.PathTooLong;
+    {
+        // Closed before the terminal is started, so that what the window prints
+        // is the whole text rather than the prefix of it that was written.
+        var file = try std.Io.Dir.createFileAbsolute(io, path, .{ .truncate = true });
+        defer file.close(io);
+        try file.writeStreamingAll(io, text);
+    }
+
+    // A panel that refuses to close is the next start's problem rather than this
+    // call's: the log line says why, and the wait below gives it its moment to go
+    // whether it answered or not.
+    _ = ask(io, arena, name, close_request) catch |err| log.warn(
+        "quick access terminal {s} did not close: {s}",
+        .{ name, @errorName(err) },
+    );
+    awaitClosed(io, name);
+
+    try start(io, arena, name, .{
+        .command = &.{ "/bin/sh", "-c", print_then_shell, name, path },
+    });
+    return showWhenReady(io, arena, name);
+}
+
+/// Ask the terminal to show itself until it answers. A terminal is started hidden
+/// and its window is drawn before it is seen, so the ask that follows is what
+/// shows it rather than a toggle: "is it up yet" cannot be answered by hiding it.
+///
+/// A refusal is not the end of the wait: a terminal that has bound its socket but
+/// has not drawn its window yet answers exactly that, and the next ask - a moment
+/// later - is answered by the window that is there by then. The reason is in the
+/// log either way, and a terminal that never comes up ends the wait below.
+fn showWhenReady(io: std.Io, arena: std.mem.Allocator, name: []const u8) !void {
     var waited: u32 = 0;
     while (waited < timeouts.terminal_timeout_ms) : (waited += timeouts.start_poll_ms) {
-        if (try ask(io, arena, name, show_request)) return;
+        if (ask(io, arena, name, show_request) catch false) return;
         std.Io.sleep(
             io,
             std.Io.Duration.fromMilliseconds(timeouts.start_poll_ms),
@@ -97,6 +170,36 @@ pub fn toggleNamed(io: std.Io, arena: std.mem.Allocator, name: []const u8) !void
 
     log.warn("quick access terminal {s} did not answer on its socket", .{name});
     return error.TerminalNotStarted;
+}
+
+/// Whether a terminal of this name has a socket yet: the lookup `ask` makes,
+/// without asking anything.
+fn running(io: std.Io, name: []const u8) bool {
+    var directory_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const directory = socketDirectory(&directory_buffer) orelse return false;
+
+    var opened = std.Io.Dir.openDirAbsolute(io, directory, .{ .iterate = true }) catch
+        return false;
+    defer opened.close(io);
+
+    var entries = opened.iterate();
+    while (entries.next(io) catch return false) |entry| {
+        if (isSocketOf(entry.name, name)) return true;
+    }
+    return false;
+}
+
+/// Wait for a terminal that was asked to close to be gone. The panel stops a
+/// moment after it answers, and its socket outlives it by that moment: starting
+/// the next one while it is still there would reach a window on its way out,
+/// since kitty answers a second start of a running instance group by showing the
+/// window it already has.
+fn awaitClosed(io: std.Io, name: []const u8) void {
+    var waited: u32 = 0;
+    while (waited < timeouts.terminal_timeout_ms) : (waited += timeouts.start_poll_ms) {
+        if (!running(io, name)) return;
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(timeouts.start_poll_ms), .awake) catch {};
+    }
 }
 
 /// The `term toggle` command: the word names the terminal, and the toggle itself
@@ -222,24 +325,25 @@ fn send(arena: std.mem.Allocator, path: [:0]const u8, request: []const u8) ?Repl
     }) catch null;
 }
 
+/// How a terminal is started: the configuration of its own to merge over the
+/// base, when it has one, and what its window runs, when that is not the shell
+/// the configuration names.
+const Launch = struct {
+    config: ?[]const u8 = null,
+    command: []const []const u8 = &.{},
+};
+
 /// Start a terminal: the QAT kitten, which is the only thing that can make the
 /// window, with this terminal's configurations and the socket the next key press
 /// reaches it on.
-fn start(io: std.Io, arena: std.mem.Allocator, name: []const u8) !void {
+fn start(io: std.Io, arena: std.mem.Allocator, name: []const u8, launch: Launch) !void {
     // The kitten binary, not `kitty +kitten`: the quick access terminal is a Go
     // kitten, and only `kitten` dispatches to it - the `+kitten` route reaches
     // the Python modules, where this one is a stub that says to use the other.
     const kitten = try exec.path(arena, "kitten");
 
     var directory_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const directory = socketDirectory(&directory_buffer) orelse return error.PathTooLong;
-    // kitty binds into the directory and does not make it, and nothing else makes
-    // it either: `PathAlreadyExists` is this terminal's predecessor, or a
-    // terminal of another name's.
-    std.Io.Dir.createDirAbsolute(io, directory, socket_mode) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+    const directory = try socketDirectoryPath(io, &directory_buffer);
 
     var listen_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const listen = std.fmt.bufPrint(
@@ -276,11 +380,23 @@ fn start(io: std.Io, arena: std.mem.Allocator, name: []const u8) !void {
         if (isFile(io, base)) try arguments.appendSlice(arena, &.{ "-c", base });
     }
 
-    var terminal_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const terminal = terminalFile(&terminal_buffer, name) orelse return error.PathTooLong;
-    try arguments.appendSlice(arena, &.{ "-c", terminal });
+    if (launch.config) |config| try arguments.appendSlice(arena, &.{ "-c", config });
+    try arguments.appendSlice(arena, launch.command);
 
     try exec.spawn(arena, arguments.items);
+}
+
+/// The socket directory, making it when it is not there, in `buffer`: kitty binds
+/// into the directory and does not make it, and nothing else makes it either. A
+/// directory that is already there is this daemon's own earlier terminal, or
+/// another terminal's.
+fn socketDirectoryPath(io: std.Io, buffer: *[std.fs.max_path_bytes]u8) ![]const u8 {
+    const directory = socketDirectory(buffer) orelse return error.PathTooLong;
+    std.Io.Dir.createDirAbsolute(io, directory, socket_mode) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    return directory;
 }
 
 /// The kitty configuration directory: `KITTY_CONFIG_DIRECTORY`, kitty's own
