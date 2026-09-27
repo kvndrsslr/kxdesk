@@ -108,11 +108,25 @@ pub fn subscribe(c: *sb.Client, name: []const u8, events: []const Event) !void {
     for (events) |event| try c.arg(@tagName(event));
 }
 
-/// `--move <item> before <anchor>`.
+/// `--move <item> before <anchor>`: the item is laid out immediately before the
+/// anchor in the bar's own order, which on the right of the bar means
+/// immediately to its right - an item keeps the place it was given when it was
+/// created, so this is how a new one is put among the old.
 pub fn move(c: *sb.Client, item: []const u8, anchor: []const u8) !void {
+    return moveSide(c, item, anchor, "before");
+}
+
+/// `--move <item> after <anchor>`, the other side of the anchor: the far side
+/// from the bar's own order, which on the right of the bar is to the anchor's
+/// left.
+pub fn moveAfter(c: *sb.Client, item: []const u8, anchor: []const u8) !void {
+    return moveSide(c, item, anchor, "after");
+}
+
+fn moveSide(c: *sb.Client, item: []const u8, anchor: []const u8, side: []const u8) !void {
     try c.arg("--move");
     try c.arg(item);
-    try c.arg("before");
+    try c.arg(side);
     try c.arg(anchor);
 }
 

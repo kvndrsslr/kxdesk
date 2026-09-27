@@ -65,10 +65,17 @@ pub inline fn app(comptime size: u8) []const u8 {
     return std.fmt.comptimePrint("{s}:Regular:{d}.0", .{ theme.app_font, size });
 }
 
+/// The size of the bar's small print, in points: a count on a badge chip and a
+/// graph's own reading are the same nine-point digits.
+const small_font_size: u8 = 9;
+
+/// That small print: the font a chip's count and a graph's reading are drawn in.
+const small_font = mono(.Bold, small_font_size);
+
 /// The chip behind a badge count: a dynamic box with a point of air on every
 /// side, so it hugs the count. Use as `.{ .icon = .{ .badge = style.badge } }`.
 pub const badge = .{
-    .font = mono(.Bold, 9),
+    .font = small_font,
     .anchor = config.Anchors.bottom_right,
     .x_offset = 2,
     .y_offset = -1,
@@ -105,6 +112,70 @@ pub const popup_row = .{
     .padding_right = 7,
     .color = config.color(theme.black),
     .drawing = false,
+};
+
+/// The herdr item's mark: the app font's own `:herdr:` ligature, at the size its
+/// square glyph inks here.
+pub const herdr_mark_size = 14;
+
+/// The box one of the mark's counts is set in, in points: one digit of the small
+/// print and the point of padding the fork keeps around glyph ink - `readoutBox`'s
+/// arithmetic for the shortest reading there is. The counts are set at the box's
+/// own left edge rather than right-aligned in it, which is what keeps the common
+/// one-digit count a point from the mark; a two-digit one grows into the room the
+/// label slot keeps for it.
+pub const herdr_count_width = readout_char_tenths / 10 + 1;
+
+/// The room a count may take beside the mark, in points, as the label slot's own
+/// `padding_right`: two digits - the most a count runs to - and a point of air at
+/// each end, which is `readoutRoom`'s arithmetic for a count.
+pub const herdr_count_room = 2 * readout_char_tenths / 10 + 2 * readout_air;
+
+/// Where the upper count's box begins, in points past the mark's left edge: both
+/// counts are placed by their box's left edge, and the column they share begins a
+/// point past the mark's right edge - which, seen from the icon slot whose own
+/// box starts at the mark's left edge, is the mark's width and then that point.
+pub const herdr_count_x = herdr_mark_size + readout_air;
+
+/// And the lower count's, from the label slot's own left edge - the mark's right
+/// edge: the air alone, the point `readout_air` moves a graph's reading by.
+pub const herdr_count_label_x = readout_air;
+
+/// The two counts the herdr item declares, in the shape `config.node` takes them:
+/// the agents done or blocked on the user above the mark, the agents working
+/// below it. They are readings of the same kind the graphs draw - the same small
+/// print, set at the edge of a box in a column beside the mark, one on the item's
+/// middle line and one a reading's height below it (`graphSlot`) - hung on the
+/// mark instead of on a graph's right end, and they wear no chip of their own.
+/// The daemon fills both in.
+pub const herdr_counts = .{
+    .attention = .{
+        .drawing = false,
+        .font = small_font,
+        .color = config.color(theme.yellow),
+        .@"align" = "left",
+        // Hung under the mark's own top, which is where the icon slot's box ends
+        // - the top half of the item, where a graph keeps its upper reading.
+        .anchor = config.Anchors.top_left,
+        .width = herdr_count_width,
+        .x_offset = herdr_count_x,
+        .y_offset = 0,
+        .background = .{ .drawing = false },
+    },
+    .working = .{
+        .drawing = false,
+        .font = small_font,
+        .color = config.color(theme.white),
+        .@"align" = "left",
+        // The label slot's empty text sits on the item's middle, which is the
+        // line a graph draws its upper reading on: a reading's height below it
+        // is their lower one.
+        .anchor = config.Anchors.bottom_left,
+        .width = herdr_count_width,
+        .x_offset = herdr_count_label_x,
+        .y_offset = -readout_height,
+        .background = .{ .drawing = false },
+    },
 };
 
 /// One graph item: its name, the colour of its line, and whether the newest
@@ -156,15 +227,13 @@ pub const Background = struct {
     drawing: bool,
 };
 
-const readout_font_size = 9;
 /// A reading is at most three digits, one separator and a unit - `12.3K`,
 /// `100%` - so five characters; JetBrains Mono sets every glyph six tenths of
 /// its size wide.
 const readout_chars = 5;
-const readout_font = mono(.Bold, readout_font_size);
 
-/// One character of that font, in tenths of a point.
-const readout_char_tenths = readout_font_size * 6;
+/// One character of the small print, in tenths of a point.
+const readout_char_tenths = small_font_size * 6;
 
 /// The box a reading is right-aligned in, in points: the characters the widest
 /// reading of its pair can take, its air, and the point of padding the fork
@@ -211,7 +280,7 @@ pub fn graphSlot(comptime series: Graph, comptime icon: bool, comptime high: boo
         .padding_right = if (reading) readoutRoom(air) else 0,
         .badge = .{
             .drawing = reading,
-            .font = readout_font,
+            .font = small_font,
             .color = config.color(series.color),
             // Right-aligned in a box as wide as the widest reading, so every
             // reading ends on the same point however long it is.

@@ -10,6 +10,7 @@ const std = @import("std");
 const sb = @import("sb.zig");
 const config = @import("config.zig");
 const style = @import("style.zig");
+const items_herdr = @import("items_herdr.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const pomodoro = @import("pomodoro.zig");
@@ -251,6 +252,15 @@ fn graphPair(
     inline for (pair, 0..) |series, index| {
         const icon_slot = comptime style.graphSlot(series, true, series.top);
         const label_slot = comptime style.graphSlot(series, false, series.top);
+        // The room the item takes on the bar, as against the window `--add`'s
+        // width argument gives its graph. The first of a pair takes no room, so
+        // the second begins at the same x and the two windows coincide; the
+        // second sizes itself to what it draws, which is where the graph is
+        // read. It is a property of the item's own `--set` because a bare
+        // `key=value` appended after `declare` is read as one more *event* by
+        // the `--subscribe` that ends it - which cost this pair its alignment
+        // when the pair grew a click.
+        const room: []const u8 = if (index == 0) "0" else "dynamic";
         try config.declare(c, .{
             .kind = .graph,
             .name = series.name,
@@ -258,6 +268,7 @@ fn graphPair(
             .helper = load,
             .events = if (load) &.{.@"mouse.clicked"} else &.{},
             .props = config.node(.{
+                .width = room,
                 .padding_left = style.item_padding,
                 .padding_right = style.item_padding,
                 .drawing = true,
@@ -276,9 +287,6 @@ fn graphPair(
                 },
             }),
         }, helper);
-        // The first of a pair takes no room of its own, so the second begins at
-        // the same x.
-        if (index == 0) try c.prop("width", "0");
     }
 }
 
@@ -317,11 +325,16 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try brewItem(c, config_input);
     try githubBell(c, config_input);
     try githubTemplate(c, config_input);
+    try herdrItem(c, config_input);
     try neuralwattItem(c, config_input);
     try openrouterItem(c, config_input);
     try opencodeItem(c, config_input);
     try usageRows(c);
     try pomodoroItem(c, config_input);
+    // The herdr mark goes beside the plan item, on its left: the bar lays the
+    // right side out from its own end, so an item is placed against the one it
+    // belongs beside rather than at a position of its own.
+    try config.moveAfter(c, items_herdr.item, items_usage.opencode_item);
 }
 
 /// The battery as one ring: the charge is its value, the level glyph its marker,
@@ -505,6 +518,51 @@ fn githubTemplate(c: *sb.Client, config_input: Config) !void {
         // it, so the routing is stated here *and* per row.
         .helper = true,
         .events = &.{.@"mouse.clicked"},
+    }, config_input.helper);
+}
+
+/// The herdr item: a purple mark with a count above it for the agents that are
+/// done or blocked on the user, and one below for the agents that are working -
+/// readings of the same kind the graphs draw, without a chip of their own. The
+/// daemon fills both in off the item's own clock; see `items_herdr.zig`.
+fn herdrItem(c: *sb.Client, config_input: Config) !void {
+    try config.declare(c, .{
+        .name = items_herdr.item,
+        .props = config.node(.{
+            .drawing = true,
+            .associated_display = 1,
+            .padding_left = style.item_padding,
+            .padding_right = style.item_padding,
+            .width = "dynamic",
+            // The mark. Its width is stated rather than measured: the label slot,
+            // which carries the lower count, begins at the mark's right edge, and
+            // that count's own offset is measured from there.
+            .icon = .{
+                .value = ":herdr:",
+                .font = style.app(style.herdr_mark_size),
+                .width = style.herdr_mark_size,
+                .padding_left = 0,
+                .padding_right = 0,
+                // Dim until a server answers, which is also the state before the
+                // first refresh has run.
+                .color = config.color(style.dim),
+                .badge = style.herdr_counts.attention,
+            },
+            // Nothing of its own to draw: the slot is there for the lower
+            // count's box, and its `padding_right` is the room both counts take.
+            .label = .{
+                .value = null,
+                .drawing = true,
+                .padding_left = 0,
+                .padding_right = style.herdr_count_room,
+                .badge = style.herdr_counts.working,
+            },
+            // Nothing but herdr knows that an agent finished, so the count is
+            // polled - off this item's own clock, which stops while the bar is
+            // not drawing it.
+            .update_freq = 2,
+        }),
+        .helper = true,
     }, config_input.helper);
 }
 

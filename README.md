@@ -188,6 +188,22 @@ instant — and the one thing that cannot be asked for over remote control is wh
 kitty's own `--move-to-active-monitor` does, so a terminal reappears where it was
 hidden rather than following the mouse to another monitor.
 
+## The herdr mark: what the agents are doing
+
+One item says what the agents a Herdr server is running are doing, in the same
+small print the graphs read their numbers in: a purple `:herdr:` mark with the
+count of agents that are done or blocked on the user above it, and the count of
+agents that are working below. A count is drawn only while it is above zero, so an
+idle bar carries the mark alone, and the mark itself is dim until a server answers
+— a bar on a machine that is not running Herdr says so rather than reporting
+zeroes it was never told.
+
+`herdr agent list` reads the server's own socket — no network, no client attached
+— and the item's own two-second clock is what asks for it, because nothing but
+Herdr knows that an agent finished. A Herdr that is not running exits with
+`server_not_running` instead of starting a server of its own, which is what makes
+polling it from the daemon safe; any other failure is a line in the log, once.
+
 ## Installing: currently from HEAD, temporarily
 
 **The installed copy is a HEAD build on purpose, while this is still being

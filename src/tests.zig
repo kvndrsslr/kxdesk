@@ -9,6 +9,7 @@ const std = @import("std");
 
 const cli = @import("cli.zig");
 const config = @import("config.zig");
+const items_herdr = @import("items_herdr.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const kanata = @import("kanata.zig");
@@ -731,16 +732,21 @@ test "config.subscribe queues one --subscribe, or nothing when no events" {
     try expectArgs(client.args.items, &expected);
 }
 
-// `config.move` spells `--move <item> before <anchor>`; `config.remove` spells
-// `--remove <pattern>`.
+// `config.move` spells `--move <item> before <anchor>` and `config.moveAfter`
+// the same with `after`; `config.remove` spells `--remove <pattern>`.
 test "config.move and config.remove spell their commands" {
     var client = sb.Client.init(std.testing.allocator, sb.sketchybar_service);
     defer client.deinit();
 
     try config.move(&client, "space.7", "space.3");
+    try config.moveAfter(&client, "herdr", "opencode-go");
     try config.remove(&client, "space.*");
 
-    const expected = [_][]const u8{ "--move", "space.7", "before", "space.3", "--remove", "space.*" };
+    const expected = [_][]const u8{
+        "--move", "space.7", "before", "space.3",
+        "--move", "herdr",   "after",  "opencode-go",
+        "--remove", "space.*",
+    };
     try expectArgs(client.args.items, &expected);
 }
 
@@ -866,6 +872,43 @@ test "graphSlot sizes the room from the widest reading of the pair" {
     try std.testing.expectEqual(@as(u32, 33), air.badge.width);
     try std.testing.expectEqualStrings(style.mono(.Bold, 9), air.badge.font);
     try std.testing.expectEqualStrings(config.color(theme.blue), air.badge.color);
+}
+
+// Two of herdr's five agent states are the agent handing the turn back to the
+// user: `done`, whose completion the server has not shown yet, and `blocked`,
+// which is an agent sitting on an approval or a question. `working` is the agent
+// holding the turn; `idle` is a completion already shown and `unknown` an agent
+// herdr could not classify, and neither is anybody's move.
+test "the herdr count takes working as work, done and blocked as attention" {
+    const answer =
+        \\{"result":{"agents":[
+        \\  {"agent":"omp","agent_status":"working"},
+        \\  {"agent":"omp","agent_status":"done"},
+        \\  {"agent":"omp","agent_status":"blocked"},
+        \\  {"agent":"omp","agent_status":"idle"},
+        \\  {"agent":"omp","agent_status":"unknown"},
+        \\  {"agent":"omp"}
+        \\]}}
+    ;
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const counts = items_herdr.countReply(arena_state.allocator(), answer) orelse
+        return error.AnswerNotRead;
+    try std.testing.expect(counts.answered);
+    try std.testing.expectEqual(@as(u32, 1), counts.working);
+    try std.testing.expectEqual(@as(u32, 2), counts.attention);
+
+    // The error answer a herdr with no server running gives is not a listing, and
+    // counts nothing at all - the mark is dimmed rather than showing zeroes.
+    const no_server =
+        \\{"id":"cli:agent:list","error":{"code":"server_not_running","message":"no herdr server is running"}}
+    ;
+    try std.testing.expectEqual(
+        @as(?items_herdr.Counts, null),
+        items_herdr.countReply(arena_state.allocator(), no_server),
+    );
 }
 
 // An empty message is nothing to report, and it does not disturb what the guard

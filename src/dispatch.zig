@@ -12,6 +12,7 @@ const std = @import("std");
 const background = @import("background.zig");
 const items_brew = @import("items_brew.zig");
 const items_github = @import("items_github.zig");
+const items_herdr = @import("items_herdr.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const items_yabai = @import("items_yabai.zig");
@@ -75,6 +76,9 @@ pub const Dispatcher = struct {
     brew: background.Slot = .{},
     github: background.Slot = .{},
     usage: background.Slot = .{},
+    /// The herdr item's count, which the item's own clock asks for; the read
+    /// shells out to `herdr`, so it runs off the event path like the others.
+    herdr: background.Slot = .{},
     /// The load graphs' terminal toggle, at most one in flight: a click that
     /// arrives while one runs waits for it rather than racing it.
     terminal: background.Slot = .{},
@@ -136,6 +140,14 @@ pub const Dispatcher = struct {
         }
         if (std.mem.eql(u8, name, items_system.ring_item)) return self.system_items.battery();
         if (std.mem.eql(u8, name, "calendar")) return self.system_items.calendar();
+
+        // The herdr mark's own clock, and the only thing that asks for its
+        // count: `herdr` is what knows an agent finished, and it answers from a
+        // socket rather than a sample, so every event it sends refreshes.
+        if (std.mem.eql(u8, name, items_herdr.item)) {
+            self.herdr.request(self.io, items_herdr.refresh, .{ self.io, self.gpa });
+            return;
+        }
 
         // `brew outdated` and `gh api` take a second or more, so they run as
         // background tasks rather than on this loop.
