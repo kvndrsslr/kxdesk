@@ -47,6 +47,10 @@ const local = [_]Command{
             .values = &shells,
         }},
     },
+    .{
+        .name = "version",
+        .summary = "print the version this binary was built from",
+    },
 };
 
 /// Everything a client can spell: the daemon's commands, then this binary's.

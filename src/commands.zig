@@ -36,8 +36,9 @@ pub const Command = struct {
     args: []const Arg = &.{},
     /// Flags, accepted anywhere the command accepts arguments.
     flags: []const Flag = &.{},
-    /// Where the command runs; null for `help`, `completions` and `server-mode`,
-    /// which the client answers and the daemon is never asked about.
+    /// Where the command runs; null for `help`, `completions`, `version` and
+    /// `server-mode`, which the client answers and the daemon is never asked
+    /// about.
     run: ?*const fn (*Context, []const []const u8) anyerror![]const u8 = null,
 };
 

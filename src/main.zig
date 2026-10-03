@@ -3,9 +3,9 @@
 //! One process serves two things over one mach port: SketchyBar's item events and
 //! the command channel `kxdesk <command> [arguments...]`. Both bootstrap names
 //! share that port. The daemon owns the bar's state, applying the configuration
-//! and restoring the store's state whenever a bar appears. `help`, `completions`
-//! and `server-mode` are answered by the binary itself; the rest is described
-//! once in `commands.zig`.
+//! and restoring the store's state whenever a bar appears. `help`, `completions`,
+//! `version` and `server-mode` are answered by the binary itself; the rest is
+//! described once in `commands.zig`.
 
 const std = @import("std");
 
@@ -227,15 +227,13 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     }
 
-    const mode = arguments[1];
+    // `--version` is the flag spelling of the `version` command, which the
+    // registry describes like any other. Both are answered here rather than by
+    // the daemon: this binary's version is the version of the daemon it starts,
+    // and it is worth asking when nothing is answering - which is exactly when a
+    // client command cannot be used.
+    const mode = if (std.mem.eql(u8, arguments[1], "--version")) "version" else arguments[1];
     if (std.mem.eql(u8, mode, "daemon")) return runDaemon(init);
-    // Answered here rather than by the daemon: this binary's version is the
-    // version of the daemon it starts, and it is worth asking when nothing is
-    // answering - which is exactly when a client command cannot be used.
-    if (std.mem.eql(u8, mode, "version") or std.mem.eql(u8, mode, "--version")) {
-        emit(io, .stdout, build_options.version);
-        return;
-    }
     if (std.mem.eql(u8, mode, "--help") or std.mem.eql(u8, mode, "-h")) {
         emit(io, .stdout, try cli.overview(arena));
         return;
@@ -254,6 +252,7 @@ pub fn main(init: std.process.Init) !void {
     // The commands this binary answers itself; see the module comment.
     if (std.mem.eql(u8, mode, "help") or
         std.mem.eql(u8, mode, "completions") or
+        std.mem.eql(u8, mode, "version") or
         std.mem.eql(u8, mode, "server-mode"))
     {
         return runLocally(init, mode, arguments[2..]);
@@ -280,6 +279,11 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
             return;
         }
         return describe(init, args[0]);
+    }
+
+    if (std.mem.eql(u8, mode, "version")) {
+        emit(init.io, .stdout, build_options.version);
+        return;
     }
 
     if (std.mem.eql(u8, mode, "server-mode")) {
