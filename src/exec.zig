@@ -14,7 +14,7 @@ const platform = @import("platform.zig");
 pub fn path(gpa: std.mem.Allocator, name: [:0]const u8) ![:0]u8 {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     if (!platform.kx_which(name.ptr, &buffer, buffer.len)) return error.NotInstalled;
-    return gpa.dupeZ(u8, std.mem.sliceTo(&buffer, 0));
+    return gpa.dupeSentinel(u8, std.mem.sliceTo(&buffer, 0), 0);
 }
 
 /// The applications the bindings open, with the arguments they were bound with:
@@ -36,7 +36,7 @@ pub fn openApp(arena: std.mem.Allocator, application: App) !void {
             const kitty = try path(arena, "kitty");
             var home_buffer: [std.fs.max_path_bytes]u8 = undefined;
             if (platform.kx_env("HOME", &home_buffer, home_buffer.len)) {
-                const home = try arena.dupeZ(u8, std.mem.sliceTo(&home_buffer, 0));
+                const home = try arena.dupeSentinel(u8, std.mem.sliceTo(&home_buffer, 0), 0);
                 try spawn(arena, &.{
                     kitty, "-d", home, "--single-instance", "--listen-on", "unix:/tmp/mykitty",
                 });
@@ -56,7 +56,7 @@ pub fn openApp(arena: std.mem.Allocator, application: App) !void {
 /// filesystem path; nothing here goes through a shell.
 pub fn spawn(arena: std.mem.Allocator, argv: []const []const u8) !void {
     const vector = try arena.alloc(?[*:0]const u8, argv.len + 1);
-    for (argv, 0..) |argument, index| vector[index] = try arena.dupeZ(u8, argument);
+    for (argv, 0..) |argument, index| vector[index] = try arena.dupeSentinel(u8, argument, 0);
     vector[argv.len] = null;
     if (platform.kx_spawn_detached(vector.ptr) < 0) return error.LaunchFailed;
 }

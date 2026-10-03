@@ -38,7 +38,7 @@ const terminal_suffix = ".conf";
 /// alone, because a remote control command is accepted from the socket in it and
 /// from nothing else.
 const socket_root = "/tmp/kxdesk-qat";
-const socket_mode: std.Io.File.Permissions = @enumFromInt(0o700);
+const socket_mode: std.Io.File.Permissions = @fromBackingInt(@intCast(0o700));
 
 /// kitty appends the process id to a socket path it reads from configuration
 /// rather than from the command line, and the socket a terminal is given is an
@@ -288,7 +288,7 @@ fn ask(io: std.Io, arena: std.mem.Allocator, name: []const u8, request: []const 
         // and a socket left behind by a terminal that is gone is skipped by
         // failing to connect to it.
         var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buffer, "{s}/{s}", .{ directory, entry.name }) catch
+        const path = std.mem.printSentinel(&path_buffer, "{s}/{s}", .{ directory, entry.name }, 0) catch
             continue;
 
         const reply = send(arena, path, request) orelse continue;

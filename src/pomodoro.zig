@@ -337,7 +337,7 @@ pub const Timer = struct {
         var label_buffer: [8]u8 = undefined;
         const shown = self.appearance(io, &key_buffer, &label_buffer);
 
-        return std.fmt.allocPrint(arena, "phase={s} remaining={s} running={s} work={d}m break={d}m", .{
+        return arena.print("phase={s} remaining={s} running={s} work={d}m break={d}m", .{
             self.phase.name(),
             shown.time,
             if (self.running) "yes" else "no",
@@ -427,9 +427,9 @@ pub const Timer = struct {
         var path: [std.fs.max_path_bytes]u8 = undefined;
         var title: [64]u8 = undefined;
         var body: [64]u8 = undefined;
-        const program = std.fmt.bufPrintZ(&path, "{s}", .{self.notifier}) catch return;
-        const heading = std.fmt.bufPrintZ(&title, "{s}", .{notice.title}) catch return;
-        const text = std.fmt.bufPrintZ(&body, "{s}", .{notice.body}) catch return;
+        const program = std.mem.printSentinel(&path, "{s}", .{self.notifier}, 0) catch return;
+        const heading = std.mem.printSentinel(&title, "{s}", .{notice.title}, 0) catch return;
+        const text = std.mem.printSentinel(&body, "{s}", .{notice.body}, 0) catch return;
 
         // `-sender com.apple.Finder` is gone: terminal-notifier dropped it,
         // because the notification framework will not let it override its bundle

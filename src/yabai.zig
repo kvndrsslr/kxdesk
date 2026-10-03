@@ -161,7 +161,7 @@ pub const Client = struct {
     ) !std.ArrayList(?[*:0]const u8) {
         var vector = std.ArrayList(?[*:0]const u8).empty;
         try vector.append(scratch, self.exe.ptr);
-        for (args) |argument| try vector.append(scratch, try scratch.dupeZ(u8, argument));
+        for (args) |argument| try vector.append(scratch, try scratch.dupeSentinel(u8, argument, 0));
         try vector.append(scratch, null);
         return vector;
     }
@@ -287,7 +287,7 @@ fn socketPath(buffer: *[std.fs.max_path_bytes]u8) ?[:0]const u8 {
     if (!platform.kx_env("USER", &environment, environment.len)) return null;
 
     const user = std.mem.sliceTo(&environment, 0);
-    return std.fmt.bufPrintZ(buffer, "/tmp/yabai_{s}.socket", .{user}) catch null;
+    return std.mem.printSentinel(buffer, "/tmp/yabai_{s}.socket", .{user}, 0) catch null;
 }
 
 /// One message over `/tmp/yabai_<user>.socket`, in the framing `yabai -m` uses
@@ -343,5 +343,5 @@ fn socketRequest(scratch: std.mem.Allocator, args: []const []const u8) !Answer {
 fn resolve(gpa: std.mem.Allocator, name: [:0]const u8) ![:0]u8 {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     if (!platform.kx_which(name.ptr, &buffer, buffer.len)) return Error.YabaiNotFound;
-    return gpa.dupeZ(u8, std.mem.sliceTo(&buffer, 0));
+    return gpa.dupeSentinel(u8, std.mem.sliceTo(&buffer, 0), 0);
 }

@@ -399,7 +399,7 @@ const Layout = struct {
                     }
                 }
             } else {
-                tail[space_index] = try std.fmt.allocPrint(arena, " {s}{s}", .{
+                tail[space_index] = try arena.print(" {s}{s}", .{
                     icon,
                     tail[space_index],
                 });
@@ -409,7 +409,7 @@ const Layout = struct {
         for (layout.strips, 0..) |*rendered, index| {
             if (head[index]) |value| {
                 rendered.* = if (index < tail.len and tail[index].len > 0)
-                    try std.fmt.allocPrint(arena, "{s}{s}", .{ value, tail[index] })
+                    try arena.print("{s}{s}", .{ value, tail[index] })
                 else
                     value;
             }

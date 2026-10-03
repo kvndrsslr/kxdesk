@@ -51,7 +51,7 @@ const Popup = enum { show, hide };
 /// asks for. A free function because it needs nothing of the dispatcher.
 fn openPage(url: []const u8) !void {
     var target: [std.fs.max_path_bytes]u8 = undefined;
-    const terminated = try std.fmt.bufPrintZ(&target, "{s}", .{url});
+    const terminated = try std.mem.printSentinel(&target, "{s}", .{url}, 0);
     if (!platform.kx_open_url(terminated.ptr)) return error.CouldNotOpenUrl;
 }
 
@@ -315,7 +315,7 @@ pub const Dispatcher = struct {
         try items_github.setPopup(self.bar, .hide);
 
         var target: [std.fs.max_path_bytes]u8 = undefined;
-        const terminated = try std.fmt.bufPrintZ(&target, "{s}", .{url});
+        const terminated = try std.mem.printSentinel(&target, "{s}", .{url}, 0);
         if (!platform.kx_open_url(terminated.ptr)) return error.CouldNotOpenUrl;
     }
 

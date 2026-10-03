@@ -69,9 +69,9 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 
 ## Runtime/Tooling Preferences
 
-- Zig `>=0.16.0` (`build.zig.zon:minimum_zig_version`) — only toolchain. No Node/Bun/Python, no package manager, no Makefile/just/Docker/Nix/CI.
+- Zig `>=0.17.0` (`build.zig.zon:minimum_zig_version`) — only toolchain. No Node/Bun/Python, no package manager, no Makefile/just/Docker/Nix/CI.
 - macOS-only (arm64): `link_libc`, system `sqlite3` (translate-C of `vendor/sqlite.h`), frameworks AppKit/CoreFoundation/CoreText/Foundation/IOKit; `platform.m` compiled `-fobjc-arc -Wall -Wextra -Wno-unused-parameter`.
-- Default `optimize=ReleaseFast` (bar event path); override `-Doptimize=Debug` for debugging.
+- Default `optimize=fast` (bar event path); override `-Doptimize=Debug` for debugging.
 - Secrets/tokens live in state DB (`kxdesk state set neuralwatt.token …`), not env — daemon runs under launchd.
 
 ## Testing & QA

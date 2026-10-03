@@ -52,12 +52,12 @@ pub const Props = struct {
     /// `config.key` needs comptime-known prefixes; the values stay runtime.
     fn emit(self: *Props, comptime prefix: []const u8, node: anytype) !void {
         @setEvalBranchQuota(10_000);
-        inline for (std.meta.fields(@TypeOf(node))) |field| {
-            const value = @field(node, field.name);
+        inline for (@typeInfo(@TypeOf(node)).@"struct".field_names) |name| {
+            const value = @field(node, name);
             if (comptime config.isNode(@TypeOf(value))) {
-                try self.emit(config.key(prefix, field.name), value);
+                try self.emit(config.key(prefix, name), value);
             } else {
-                try self.emitLeaf(config.key(prefix, field.name), value);
+                try self.emitLeaf(config.key(prefix, name), value);
             }
         }
     }

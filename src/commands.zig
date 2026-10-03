@@ -603,7 +603,7 @@ fn status(context: *Context, _: []const []const u8) ![]const u8 {
     const now = std.Io.Timestamp.now(context.io, .awake);
     const seconds = now.nanoseconds - context.started.nanoseconds;
 
-    return std.fmt.allocPrint(context.arena, "pid={d} uptime={d} bar={s} items={d} state={s}", .{
+    return context.arena.print("pid={d} uptime={d} bar={s} items={d} state={s}", .{
         std.c.getpid(),
         @divTrunc(seconds, std.time.ns_per_s),
         if (present) "connected" else "gone",

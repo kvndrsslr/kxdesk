@@ -5,10 +5,10 @@ pub fn build(b: *std.Build) void {
     // kxdesk sits on the bar's event path, so an optimized build is the default;
     // `-Doptimize=Debug` still works for debugging.
     const optimize = b.option(
-        std.builtin.OptimizeMode,
+        std.lang.Optimize,
         "optimize",
-        "Optimization mode (default: ReleaseFast)",
-    ) orelse .ReleaseFast;
+        "Optimization mode (default: fast)",
+    ) orelse .fast;
 
     const exe = b.addExecutable(.{
         .name = "kxdesk",
@@ -95,19 +95,27 @@ pub fn build(b: *std.Build) void {
 fn manifestVersion(b: *std.Build) []const u8 {
     const Manifest = struct { version: []const u8 };
 
-    const source = b.build_root.handle.readFileAllocOptions(
+    const path = b.root.joinStringZ(b.allocator, "build.zig.zon") catch
+        @panic("build.zig.zon path could not be resolved");
+    const source = std.Io.Dir.cwd().readFileAllocOptions(
         b.graph.io,
-        "build.zig.zon",
+        path,
         b.allocator,
         .unlimited,
         .of(u8),
         0,
     ) catch @panic("build.zig.zon could not be read");
 
-    const manifest = std.zon.parse.fromSliceAlloc(Manifest, b.allocator, source, null, .{
+    var arena_state: std.heap.ArenaAllocator = .init(b.allocator);
+    defer arena_state.deinit();
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const manifest = std.zon.parse.fromSlice(Manifest, .{
+        .gpa = b.allocator,
+        .arena = arena_state.allocator(),
+        .source = source,
+        .diagnostics = &diagnostics,
         .ignore_unknown_fields = true,
-        .free_on_error = false,
     }) catch @panic("build.zig.zon does not declare a version");
 
-    return manifest.version;
+    return b.allocator.dupe(u8, manifest.version) catch @panic("out of memory");
 }

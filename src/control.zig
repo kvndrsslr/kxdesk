@@ -266,7 +266,7 @@ fn startAgent(gpa: std.mem.Allocator, io: std.Io) !bool {
     defer gpa.free(launchctl);
 
     for (agent_labels) |label| {
-        const target = try std.fmt.allocPrint(gpa, "gui/{d}/{s}", .{ platform.kx_uid(), label });
+        const target = try gpa.print("gui/{d}/{s}", .{ platform.kx_uid(), label });
         defer gpa.free(target);
 
         const result = std.process.run(gpa, io, .{

@@ -342,7 +342,7 @@ pub fn validate(
             return try problem(arena, command, spec, "expected a subcommand, not a flag");
         } else {
             const chosen = findSub(command, rest[0]) orelse {
-                const detail = try std.fmt.allocPrint(arena, "no subcommand named '{s}'", .{rest[0]});
+                const detail = try arena.print("no subcommand named '{s}'", .{rest[0]});
                 return try problem(arena, command, spec, detail);
             };
             spec = specOf(command, chosen);
@@ -355,14 +355,14 @@ pub fn validate(
     for (rest) |word| {
         if (isFlag(word)) {
             if (!declares(spec.flags, word)) {
-                const detail = try std.fmt.allocPrint(arena, "unknown flag '{s}'", .{word});
+                const detail = try arena.print("unknown flag '{s}'", .{word});
                 return try problem(arena, command, spec, detail);
             }
             after_flag = true;
             continue;
         }
         if (after_flag) {
-            const detail = try std.fmt.allocPrint(arena, "unexpected argument '{s}' after a flag", .{word});
+            const detail = try arena.print("unexpected argument '{s}' after a flag", .{word});
             return try problem(arena, command, spec, detail);
         }
         try positionals.append(arena, word);
@@ -370,12 +370,11 @@ pub fn validate(
 
     const required = requiredArgs(spec.args);
     if (positionals.items.len < required) {
-        const detail = try std.fmt.allocPrint(arena, "missing {s}", .{spec.args[positionals.items.len].name});
+        const detail = try arena.print("missing {s}", .{spec.args[positionals.items.len].name});
         return try problem(arena, command, spec, detail);
     }
     if (positionals.items.len > spec.args.len) {
-        const detail = try std.fmt.allocPrint(
-            arena,
+        const detail = try arena.print(
             "unexpected argument '{s}'",
             .{positionals.items[spec.args.len]},
         );
@@ -385,24 +384,22 @@ pub fn validate(
     for (positionals.items, spec.args) |value, argument| {
         switch (argument.source) {
             .fixed => if (argument.values.len > 0 and !contains(argument.values, value)) {
-                const detail = try std.fmt.allocPrint(
-                    arena,
+                const detail = try arena.print(
                     "{s} is not one of: {s}",
                     .{ argument.name, try std.mem.join(arena, ", ", argument.values) },
                 );
                 return try problem(arena, command, spec, detail);
             },
             .commands => if (find(value) == null) {
-                const detail = try std.fmt.allocPrint(arena, "no such command '{s}'", .{value});
+                const detail = try arena.print("no such command '{s}'", .{value});
                 return try problem(arena, command, spec, detail);
             },
             .terminals => if (!kitty.configured(io, value)) {
                 const names = kitty.names(io, arena);
                 const detail = if (names.len == 0)
-                    try std.fmt.allocPrint(arena, "no quick access terminal named '{s}'", .{value})
+                    try arena.print("no quick access terminal named '{s}'", .{value})
                 else
-                    try std.fmt.allocPrint(
-                        arena,
+                    try arena.print(
                         "no quick access terminal named '{s}'; configured: {s}",
                         .{ value, try std.mem.join(arena, ", ", names) },
                     );
@@ -571,7 +568,7 @@ fn offerValues(
             var lines = std.mem.splitScalar(u8, labels, '\n');
             while (lines.next()) |label| {
                 if (label.len == 0) continue;
-                const candidate = try std.fmt.allocPrint(arena, "{s}{s}", .{ already_typed, label });
+                const candidate = try arena.print("{s}{s}", .{ already_typed, label });
                 try offer(out, arena, partial, candidate, "");
             }
         },

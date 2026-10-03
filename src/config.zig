@@ -216,12 +216,12 @@ fn valueLen(comptime value: anytype) usize {
 /// order, structs descended depth-first.
 fn scriptSize(comptime n: anytype, comptime prefix: []const u8) usize {
     var total: usize = 0;
-    inline for (std.meta.fields(@TypeOf(n))) |field| {
-        const value = @field(n, field.name);
+    inline for (@typeInfo(@TypeOf(n)).@"struct".field_names) |name| {
+        const value = @field(n, name);
         if (isNode(@TypeOf(value))) {
-            total += scriptSize(value, key(prefix, field.name));
+            total += scriptSize(value, key(prefix, name));
         } else {
-            total += key(prefix, field.name).len + 1 + valueLen(value) + 1;
+            total += key(prefix, name).len + 1 + valueLen(value) + 1;
         }
     }
     return total;
@@ -267,12 +267,12 @@ fn emit(
     comptime n: anytype,
     comptime prefix: []const u8,
 ) void {
-    inline for (std.meta.fields(@TypeOf(n))) |field| {
-        const value = @field(n, field.name);
+    inline for (@typeInfo(@TypeOf(n)).@"struct".field_names) |name| {
+        const value = @field(n, name);
         if (isNode(@TypeOf(value))) {
-            emit(out, pos, value, key(prefix, field.name));
+            emit(out, pos, value, key(prefix, name));
         } else {
-            emitLeaf(out, pos, prefix, field.name, value);
+            emitLeaf(out, pos, prefix, name, value);
             out[pos.*] = 0;
             pos.* += 1;
         }

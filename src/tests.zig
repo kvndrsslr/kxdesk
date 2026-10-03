@@ -979,7 +979,7 @@ test "props.write spells a two-level key whose last segment is value" {
 /// One level of directory, for a test that is the only thing making it: a
 /// second run of it finds the first run's still there.
 fn makeTestDir(io: std.Io, path: []const u8) !void {
-    std.Io.Dir.createDirAbsolute(io, path, @enumFromInt(0o700)) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(io, path, @fromBackingInt(@intCast(0o700))) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };

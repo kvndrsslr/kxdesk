@@ -294,8 +294,7 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
 /// Describe one command, or say there is no such command.
 fn describe(init: std.process.Init, name: []const u8) !void {
     const command = cli.find(name) orelse {
-        const message = try std.fmt.allocPrint(
-            init.arena.allocator(),
+        const message = try init.arena.allocator().print(
             "kxdesk: no such command: {s}",
             .{name},
         );
@@ -438,8 +437,7 @@ fn runDaemon(init: std.process.Init) !void {
 fn runClient(init: std.process.Init, verb: []const u8, args: []const []const u8) !void {
     const arena = init.arena.allocator();
     const command = cli.find(verb) orelse {
-        const message = try std.fmt.allocPrint(
-            arena,
+        const message = try arena.print(
             "kxdesk: no such command: {s}\n`kxdesk --help` lists them.",
             .{verb},
         );

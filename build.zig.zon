@@ -7,6 +7,6 @@
     // whenever this project is consumed as a dependency; a root-package build is
     // not checked by Zig itself - an older compiler simply fails with an
     // unrelated link error.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .paths = .{""},
 }

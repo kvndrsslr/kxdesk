@@ -19,7 +19,7 @@ pub const schema_version: c_int = 3;
 /// The directory is the owner's alone: SQLite creates its own write-ahead log and
 /// shared-memory file alongside with modes of its own, so the directory is what
 /// keeps all three private.
-const directory_mode: std.Io.File.Permissions = @enumFromInt(0o700);
+const directory_mode: std.Io.File.Permissions = @fromBackingInt(@intCast(0o700));
 
 /// How long a write waits for another writer before giving up. The daemon is
 /// the only writer, so reaching this means something is wrong; waiting beats
@@ -343,7 +343,7 @@ pub const Store = struct {
         const seconds = @divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_s);
 
         var aside: [std.fs.max_path_bytes]u8 = undefined;
-        const name = std.fmt.bufPrintZ(&aside, "{s}.corrupt-{d}", .{ path, seconds }) catch return null;
+        const name = std.mem.printSentinel(&aside, "{s}.corrupt-{d}", .{ path, seconds }, 0) catch return null;
         std.Io.Dir.renameAbsolute(path, name, io) catch |err| {
             log.warn("cannot move the corrupt database aside: {s}", .{@errorName(err)});
             return null;
@@ -351,7 +351,7 @@ pub const Store = struct {
 
         for ([_][]const u8{ "-wal", "-shm" }) |suffix| {
             var side: [std.fs.max_path_bytes]u8 = undefined;
-            const side_path = std.fmt.bufPrintZ(&side, "{s}{s}", .{ path, suffix }) catch continue;
+            const side_path = std.mem.printSentinel(&side, "{s}{s}", .{ path, suffix }, 0) catch continue;
             std.Io.Dir.deleteFileAbsolute(io, side_path) catch {};
         }
         return {};

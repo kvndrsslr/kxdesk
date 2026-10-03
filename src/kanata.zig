@@ -378,9 +378,9 @@ pub const Listener = struct {
 fn resolveHost(gpa: std.mem.Allocator, io: std.Io, store: *state.Store) ![:0]const u8 {
     var buffer: [128]u8 = undefined;
     if (store.getText(io, host_key, &buffer) catch null) |text| {
-        if (text.len > 0) return gpa.dupeZ(u8, text);
+        if (text.len > 0) return gpa.dupeSentinel(u8, text, 0);
     }
-    return gpa.dupeZ(u8, default_host);
+    return gpa.dupeSentinel(u8, default_host, 0);
 }
 
 fn resolvePort(io: std.Io, store: *state.Store) u16 {
@@ -399,7 +399,7 @@ pub fn status(arena: std.mem.Allocator) ![]const u8 {
     const listener = active.load(.monotonic) orelse
         return "kanata channel: not started";
 
-    return std.fmt.allocPrint(arena, "kanata channel: {s} {s}:{d} handled={d}", .{
+    return arena.print("kanata channel: {s} {s}:{d} handled={d}", .{
         if (listener.connected.load(.monotonic)) "connected to" else "waiting for",
         listener.host,
         listener.port,
@@ -456,8 +456,8 @@ pub fn inject(context: *Context, message: []const u8) ![]const u8 {
         try std.mem.concat(context.arena, u8, &.{ push_prefix, message, push_suffix });
 
     return switch (try handleLine(context, line)) {
-        .command => |name| std.fmt.allocPrint(context.arena, "{s}", .{name}),
-        .layer => |layer| std.fmt.allocPrint(context.arena, "layer {s}", .{layer}),
+        .command => |name| context.arena.print("{s}", .{name}),
+        .layer => |layer| context.arena.print("layer {s}", .{layer}),
         .reload => "reloaded",
         .ignored => "ignored",
     };

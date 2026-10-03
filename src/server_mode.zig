@@ -50,10 +50,10 @@ const state_override: [:0]const u8 = "KXDESK_SERVER_MODE_STATE";
 
 /// The state directory is the owner's alone - it holds private keys in the clear
 /// - and so is everything written into it.
-const directory_mode: std.Io.File.Permissions = @enumFromInt(0o700);
-const file_mode: std.Io.File.Permissions = @enumFromInt(0o600);
-const plist_mode: std.Io.File.Permissions = @enumFromInt(0o644);
-const launch_agents_mode: std.Io.File.Permissions = @enumFromInt(0o755);
+const directory_mode: std.Io.File.Permissions = @fromBackingInt(@intCast(0o700));
+const file_mode: std.Io.File.Permissions = @fromBackingInt(@intCast(0o600));
+const plist_mode: std.Io.File.Permissions = @fromBackingInt(@intCast(0o644));
+const launch_agents_mode: std.Io.File.Permissions = @fromBackingInt(@intCast(0o755));
 
 /// How long to wait for the agent to answer on its socket after spawning it, and
 /// how often to look. It binds within milliseconds; this is the ceiling for a
@@ -339,7 +339,7 @@ const Paths = struct {
     }
 
     fn under(arena: std.mem.Allocator, dir: []const u8, name: []const u8) ![]const u8 {
-        return std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, name });
+        return arena.print("{s}/{s}", .{ dir, name });
     }
 };
 
@@ -401,8 +401,7 @@ fn enter(arena: std.mem.Allocator, io: std.Io, paths: Paths) anyerror![]const u8
     const signing = try wireSigning(arena, io, keys);
     try setCaffeinate(arena, io, true);
 
-    return std.fmt.allocPrint(
-        arena,
+    return arena.print(
         "server mode active\n  socket  {s}\n  keys    {d} of {d} loaded\n  signing {s}",
         .{
             paths.sock,
@@ -451,12 +450,11 @@ fn report(arena: std.mem.Allocator, io: std.Io, paths: Paths) anyerror![]const u
     const identities: []const u8 = blk: {
         const ssh_add = exec.path(arena, "ssh-add") catch break :blk "cannot tell (no ssh-add)";
         if (!agentAnswers(arena, io, ssh_add, paths.sock)) break :blk "no agent is answering";
-        break :blk try std.fmt.allocPrint(arena, "{d}", .{identityCount(arena, io, ssh_add, paths.sock)});
+        break :blk try arena.print("{d}", .{identityCount(arena, io, ssh_add, paths.sock)});
     };
     const signing = try gitGet(arena, io, "user.signingkey");
 
-    return std.fmt.allocPrint(
-        arena,
+    return arena.print(
         "server mode: active\n  socket     {s}\n  identities {s}\n  signing    {s}",
         .{ paths.sock, identities, signing orelse "(unset)" },
     );
@@ -513,7 +511,7 @@ fn materialize(
     var keys = std.ArrayList(Key).empty;
 
     for (items) |item| {
-        const name = try std.fmt.allocPrint(arena, "{s}/{s}_{s}", .{
+        const name = try arena.print("{s}/{s}_{s}", .{
             paths.keys,
             try slug(arena, item.title),
             item.id[0..@min(6, item.id.len)],
@@ -521,7 +519,7 @@ fn materialize(
 
         // `ssh-format=openssh` is what makes op hand back a key file rather than
         // a PEM blob, which is the form ssh-agent and ssh-keygen both take.
-        const reference = try std.fmt.allocPrint(arena, "op://{s}/{s}/private key?ssh-format=openssh", .{
+        const reference = try arena.print("op://{s}/{s}/private key?ssh-format=openssh", .{
             item.vault.id,
             item.id,
         });
@@ -537,7 +535,7 @@ fn materialize(
         // signing identity is matched later.
         const public_key = try publicHalf(arena, io, op, item);
         if (public_key.len > 0) {
-            try writeFile(io, try std.fmt.allocPrint(arena, "{s}.pub", .{name}), public_key, file_mode);
+            try writeFile(io, try arena.print("{s}.pub", .{name}), public_key, file_mode);
         }
 
         try keys.append(arena, .{ .private = name, .public = public_key });
@@ -619,7 +617,7 @@ fn ensureAgent(
     const vector = try terminated(arena, &.{ ssh_agent, "-D", "-a", paths.sock });
     const pid = platform.kx_spawn_detached(vector.items.ptr);
     if (pid <= 0) return error.AgentNotStarted;
-    try writeFile(io, paths.pidfile, try std.fmt.allocPrint(arena, "{d}", .{pid}), file_mode);
+    try writeFile(io, paths.pidfile, try arena.print("{d}", .{pid}), file_mode);
 
     var waited: u32 = 0;
     while (waited < socket_timeout_ms and !exists(io, paths.sock)) : (waited += socket_poll_ms) {
@@ -801,7 +799,7 @@ fn identityAgentLine(arena: std.mem.Allocator, line: []const u8, socket: []const
     // and a bare keyword is not one.
     if (spacing == 0 or spacing == after_key.len) return null;
 
-    return try std.fmt.allocPrint(arena, "{s}{s}{s}\"{s}\"", .{
+    return try arena.print("{s}{s}{s}\"{s}\"", .{
         line[0..indentation],
         key,
         after_key[0..spacing],
@@ -903,12 +901,12 @@ fn gitGet(arena: std.mem.Allocator, io: std.Io, key: []const u8) !?[]const u8 {
 /// A machine that cannot be told to stay awake is worth saying so about, not
 /// failing the whole mode over.
 fn setCaffeinate(arena: std.mem.Allocator, io: std.Io, on: bool) !void {
-    const plist = try std.fmt.allocPrint(arena, "{s}/Library/LaunchAgents/{s}.plist", .{
+    const plist = try arena.print("{s}/Library/LaunchAgents/{s}.plist", .{
         try home(arena),
         caffeinate_label,
     });
-    const domain = try std.fmt.allocPrint(arena, "gui/{d}", .{platform.kx_uid()});
-    const service = try std.fmt.allocPrint(arena, "{s}/{s}", .{ domain, caffeinate_label });
+    const domain = try arena.print("gui/{d}", .{platform.kx_uid()});
+    const service = try arena.print("{s}/{s}", .{ domain, caffeinate_label });
     const launchctl = exec.path(arena, "launchctl") catch return;
 
     if (!on) {
@@ -1004,7 +1002,7 @@ fn output(
 
 fn terminated(scratch: std.mem.Allocator, argv: []const []const u8) !std.ArrayList(?[*:0]const u8) {
     var vector = std.ArrayList(?[*:0]const u8).empty;
-    for (argv) |argument| try vector.append(scratch, try scratch.dupeZ(u8, argument));
+    for (argv) |argument| try vector.append(scratch, try scratch.dupeSentinel(u8, argument, 0));
     try vector.append(scratch, null);
     return vector;
 }
@@ -1020,5 +1018,5 @@ fn home(arena: std.mem.Allocator) ![]const u8 {
 }
 
 fn sshConfigPath(arena: std.mem.Allocator) ![]const u8 {
-    return std.fmt.allocPrint(arena, "{s}/.ssh/config", .{try home(arena)});
+    return arena.print("{s}/.ssh/config", .{try home(arena)});
 }

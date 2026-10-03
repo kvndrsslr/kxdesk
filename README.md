@@ -240,7 +240,7 @@ updated since HEAD installs took over, so it is stale:
 ## Building from a checkout
 
 ```sh
-zig build                  # ReleaseFast, into zig-out/bin/kxdesk
+zig build                  # fast (optimized), into zig-out/bin/kxdesk
 ./zig-out/bin/kxdesk daemon
 ```
 

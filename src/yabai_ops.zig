@@ -412,7 +412,7 @@ fn lessThanId(_: void, a: yabai.Window, b: yabai.Window) bool {
 
 /// One number as the argv token yabai reads.
 fn numArg(arena: std.mem.Allocator, value: anytype) ![]const u8 {
-    return std.fmt.allocPrint(arena, "{d}", .{value});
+    return arena.print("{d}", .{value});
 }
 
 /// Focus one window by id, reporting whether yabai took it.
@@ -503,8 +503,9 @@ pub const WindowToggle = enum {
 /// A CLI word as the enum tag it names, `-` and `_` spelling the same word: the
 /// CLI spells `same-app`, and the tag it names is `same_app`.
 pub fn wordToEnum(comptime T: type, word: []const u8) ?T {
-    inline for (std.meta.fields(T)) |field| {
-        if (eqlLoose(field.name, word)) return @enumFromInt(field.value);
+    const info = @typeInfo(T).@"enum";
+    inline for (info.field_names, info.field_values) |name, value| {
+        if (eqlLoose(name, word)) return @fromBackingInt(value);
     }
     return null;
 }
@@ -512,11 +513,12 @@ pub fn wordToEnum(comptime T: type, word: []const u8) ?T {
 /// A tag name with `_` spelled as the CLI's `-`, at compile time: the fixed
 /// values a verb's argument accepts, derived from the enum that parses them, so
 /// what the registry offers and what the verb reads cannot drift apart.
-pub fn hyphenTags(comptime T: type) [std.meta.fields(T).len][]const u8 {
+pub fn hyphenTags(comptime T: type) [@typeInfo(T).@"enum".field_names.len][]const u8 {
     const tags = comptime blk: {
-        var names: [std.meta.fields(T).len][]const u8 = undefined;
-        for (std.meta.fields(T), 0..) |field, position| {
-            names[position] = hyphenated(field.name);
+        const names_info = @typeInfo(T).@"enum".field_names;
+        var names: [names_info.len][]const u8 = undefined;
+        for (names_info, 0..) |name, position| {
+            names[position] = hyphenated(name);
         }
         break :blk names;
     };
@@ -734,13 +736,13 @@ pub fn windowFillDisplay(context: *Context, args: []const []const u8) anyerror![
         "-m", "query", "--displays", "--window",
     });
 
-    const position = try std.fmt.allocPrint(arena, "abs:{d}:{d}", .{
+    const position = try arena.print("abs:{d}:{d}", .{
         @as(i64, @intFromFloat(display.frame.x)),
         @as(i64, @intFromFloat(display.frame.y)),
     });
     try context.yabai.command(arena, &.{ "-m", "window", "--move", position });
 
-    const dimensions = try std.fmt.allocPrint(arena, "abs:{d}:{d}", .{
+    const dimensions = try arena.print("abs:{d}:{d}", .{
         @as(i64, @intFromFloat(display.frame.w)),
         @as(i64, @intFromFloat(display.frame.h)),
     });
@@ -753,7 +755,7 @@ pub fn copyWindows(context: *Context, args: []const []const u8) anyerror![]const
     _ = args;
     const arena = context.arena;
     const list = try context.yabai.rawQuery(arena, &.{ "-m", "query", "--windows" });
-    const text = try arena.dupeZ(u8, list);
+    const text = try arena.dupeSentinel(u8, list, 0);
     if (!platform.kx_clipboard_set(text.ptr)) return error.ClipboardUnavailable;
     return "";
 }
