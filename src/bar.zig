@@ -43,6 +43,16 @@ pub const max_spaces = 16;
 /// Displays 1..4 get a `front_app` / `yabai_status` pair.
 pub const max_displays = 4;
 
+/// The two item positions that face each other across the notch, spelled as
+/// SketchyBar's layout switches on them (`bar.c` reads `position[0]`):
+/// `q` is center-left, whose items are laid out right-to-left from the notch's
+/// left edge, and `e` is center-right, laid out left-to-right from its right
+/// edge. On a display without a notch the two sections meet at the middle of the
+/// bar. The pomodoro's countdown takes the left one and the audio spectrum the
+/// right, so the pair brackets the notch — see `pomodoroItem` and `spectrumItem`.
+const notch_left = "q";
+const notch_right = "e";
+
 pub const Config = struct {
     /// Bootstrap name this daemon is registered under - the value SketchyBar
     /// needs in an item's `mach_helper` property to route events here.
@@ -327,6 +337,8 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
         .{ .name = items_system.net_up_item, .color = theme.graph_net_up, .readout = true, .top = true },
     }, false);
 
+    // Declared with the graphs, since it is one, but placed at the notch rather
+    // than in this row: its own position and no move is what puts it there.
     try spectrumItem(c, config_input);
     try linkItem(c);
 
@@ -340,10 +352,6 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try config.move(c, items_system.cpu_item, items_system.gpu_item);
     // Server mode sits against the date, on the far side of the graphs; moved after them.
     if (server_item) try config.move(c, server_mode.bar_item, items_system.cpu_item);
-    // And the spectrum between them and the load pair: it is a graph like they
-    // are, and not a reading of the network, so it does not belong beside the
-    // link icon. Moved last, so that it is the item nearest the pair.
-    try config.move(c, items_audio.item, items_system.cpu_item);
 
     try brewItem(c, config_input);
     try githubBell(c, config_input);
@@ -455,15 +463,22 @@ fn serverItem(c: *sb.Client, io: std.Io, config_input: Config) !void {
 ///
 /// It is the one graph the daemon fills at its own cadence - twenty frames a
 /// second, because the bars have to move with the music - and it carries nothing
-/// to click, so it takes no events. See `items_audio.zig`.
+/// to click, so it takes no events. It draws in the section right of the notch,
+/// facing the pomodoro's countdown across it; see `notch_right`. See
+/// `items_audio.zig` for the frames themselves.
 fn spectrumItem(c: *sb.Client, config_input: Config) !void {
     try config.declare(c, .{
         .kind = .graph,
         // The graph's width is the number of values a frame pushes; the item
         // states both from the one constant so they cannot drift apart.
         .name = items_audio.item,
+        .position = notch_right,
         .width = items_audio.values,
         .props = config.node(.{
+            // Stated as a property as well as to `--add`: an item that already
+            // exists is not added again, so a position an earlier configuration
+            // gave it is only ever corrected by a `--set`.
+            .position = notch_right,
             .drawing = true,
             .associated_display = 1,
             .padding_left = style.item_padding,
@@ -760,9 +775,12 @@ fn usageRows(c: *sb.Client) !void {
 fn pomodoroItem(c: *sb.Client, config_input: Config) !void {
     try config.declare(c, .{
         .name = pomodoro.item,
-        // The invalid position the previous configuration declared, carried over unchanged.
-        .position = "e",
+        .position = notch_left,
         .props = config.node(.{
+            // Stated as a property as well as to `--add`: an item that already
+            // exists is not added again, so a position an earlier configuration
+            // gave it is only ever corrected by a `--set`.
+            .position = notch_left,
             .padding_left = style.item_padding,
             .padding_right = style.item_padding,
             .associated_display = 1,

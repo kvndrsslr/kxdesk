@@ -210,7 +210,9 @@ polling it from the daemon safe; any other failure is a line in the log, once.
 1024-sample window, low frequencies on the left, drawn twenty times a second. It
 is not a graph of one value over time like the load and network pairs — every
 column is a band and every frame replaces all of them, so the item reads as a
-spectrum rather than as a history, and it is placed beside those pairs. A band is
+spectrum rather than as a history, and it is placed to the right of the notch,
+with the pomodoro's countdown to its left: the two are the pair that brackets it.
+A band is
 its loudest FFT bin in decibels, mapped onto the bar over 70 dB, and it falls
 rather than disappears when the note does: at twenty frames a second a bar that
 went out at once would read as a flicker. `src/spectrum.zig` is that arithmetic
