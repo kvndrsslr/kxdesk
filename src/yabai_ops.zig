@@ -39,7 +39,9 @@ const managed_rules = [_][]const []const u8{
 /// one `yabai_update` trigger the helper serves; `window_resized` is in it
 /// because yabai retiles a window moved to another space, so that is the event
 /// that arrives (measured - `window_moved` is the positional one, a drag in
-/// place). The display list is left to the bar's own `display_change`
+/// place). `display_changed` is the focused display moving, and it is the only
+/// notification a `display --focus` that leaves the focused window where it was
+/// sends. The display *list* is left to the bar's own `display_change`
 /// subscription.
 const managed_signals = [_][]const []const u8{
     &.{ "-m", "signal", "--add", "event=window_title_changed", "label=kx_atc", "action=sketchybar --trigger yabai_update ONLY=title YABAI_WINDOW_ID=$YABAI_WINDOW_ID", "active=yes" },
@@ -53,6 +55,7 @@ const managed_signals = [_][]const []const u8{
     &.{ "-m", "signal", "--add", "event=space_changed", "label=kx_sc", "action=sketchybar --trigger yabai_update" },
     &.{ "-m", "signal", "--add", "event=space_created", "label=kx_spc", "action=sketchybar --trigger yabai_update" },
     &.{ "-m", "signal", "--add", "event=space_destroyed", "label=kx_spd", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=display_changed", "label=kx_dch", "action=sketchybar --trigger yabai_update" },
     &.{ "-m", "signal", "--add", "event=window_created", "app=Telegram", "label=telegram-display-enforcement", "action=zsh -c \"sleep 1.5 && yabai -m window $YABAI_WINDOW_ID --display 1 --focus\"" },
 };
 

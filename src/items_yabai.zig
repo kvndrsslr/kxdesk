@@ -186,7 +186,7 @@ pub const Updater = struct {
 
             const strip = layout.strip(index);
             const visible = space.?.@"is-visible";
-            const highlighted = visible and space.?.@"has-focus";
+            const highlighted = visible and space.?.index == layout.focused_space;
             const background = if (!visible)
                 theme.background_1
             else if (highlighted)
@@ -326,6 +326,12 @@ const Layout = struct {
     arrangement: DisplayMap,
     /// Highest `stack-index` in use per space.
     max_stack: []u32,
+    /// Space the strip marks as focused. Taken from the focused window, because
+    /// the space query's own `has-focus` only moves in yabai's window focus path
+    /// and so still names the old space after `display --focus` or
+    /// `space --focus`; the space query's flag is the fallback for when nothing
+    /// is focused at all. Zero means no marker.
+    focused_space: u32,
 
     fn build(
         arena: std.mem.Allocator,
@@ -349,6 +355,7 @@ const Layout = struct {
             .front_window = try arena.alloc(?usize, display_count + 1),
             .arrangement = arrangement,
             .max_stack = try arena.alloc(u32, space_count + 1),
+            .focused_space = 0,
         };
         @memset(layout.strips, "");
         @memset(layout.spaces, null);
@@ -416,15 +423,26 @@ const Layout = struct {
         }
 
         // The space query failing is why this runs, so visibility is unknown: the
-        // focused window places the display that has focus.
+        // focused window places the display that has focus. The same window is
+        // the only current word on which space is focused - see `focused_space`.
         for (windows, 0..) |window, index| {
             if (!window.@"has-focus") continue;
             if (!std.mem.eql(u8, window.role, "AXWindow")) continue;
             if (window.@"is-minimized" or window.@"is-hidden") continue;
+
+            layout.focused_space = window.space;
+
             if (window.display == 0 or window.display >= layout.front_window.len) continue;
 
             if (layout.front_window[window.display] == null) {
                 layout.front_window[window.display] = index;
+            }
+        }
+
+        // Nothing focused anywhere, so the space query's own flag is all there is.
+        if (layout.focused_space == 0) {
+            for (spaces) |space| {
+                if (space.@"has-focus") layout.focused_space = space.index;
             }
         }
 
