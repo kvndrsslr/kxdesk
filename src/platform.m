@@ -1,5 +1,8 @@
 #import <AppKit/AppKit.h>
 
+#include <CoreAudio/AudioHardware.h>
+#include <CoreAudio/AudioHardwareTapping.h>
+#include <CoreAudio/CATapDescription.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
 #include <IOKit/IOKitLib.h>
@@ -19,6 +22,7 @@
 #include <net/route.h>
 #include <netdb.h>
 #include <spawn.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -740,6 +744,228 @@ double kx_gpu_load(void) {
   IOObjectRelease(services);
 
   return percent / 100.0;
+}
+
+/// The tap's ring: the IOProc thread appends mono samples of the machine's output
+/// audio, the receive loop takes the newest window out of it. A power of two, so
+/// the wrap is a mask; 16384 samples is a third of a second at 48 kHz, far more
+/// than the 1024-sample window a frame is drawn from, which is what makes a
+/// window whole even when the reader arrives mid-buffer.
+#define KX_AUDIO_RING (1u << 14)
+
+static float kx_audio_ring[KX_AUDIO_RING];
+/// Samples written so far, advanced by the IOProc thread alone; the release
+/// store is what makes the samples before it visible to whoever reads the count.
+static _Atomic uint64_t kx_audio_head;
+/// Where the tap got to, and what `kx_audio_status()` reports; written only by
+/// the thread that builds it.
+static _Atomic uint8_t kx_audio_state = KX_AUDIO_OFF;
+/// The rate the tap delivers at, 0 while it is not running.
+static _Atomic double kx_audio_rate_hz;
+static AudioObjectID kx_audio_tap = kAudioObjectUnknown;
+static AudioObjectID kx_audio_device = kAudioObjectUnknown;
+static AudioDeviceIOProcID kx_audio_proc = NULL;
+
+/// A stream's format lives on the tap's own object until its aggregate device
+/// exists, and on that device afterwards.
+static const AudioObjectPropertyAddress kx_audio_tap_format = {
+    kAudioTapPropertyFormat,
+    kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyElementMain,
+};
+static const AudioObjectPropertyAddress kx_audio_device_format = {
+    kAudioDevicePropertyStreamFormat,
+    kAudioObjectPropertyScopeInput,
+    kAudioObjectPropertyElementMain,
+};
+
+/// Read a stream's format. False when it cannot be read, or is not the linear
+/// PCM float the spectrum's arithmetic is written for: a machine that hands back
+/// anything else gets a flat graph rather than a graph of whatever those bytes
+/// mean as floats.
+static bool kx_audio_read_format(AudioObjectID object, AudioObjectPropertyAddress address,
+                                 AudioStreamBasicDescription* format) {
+  UInt32 size = sizeof(*format);
+  if (AudioObjectGetPropertyData(object, &address, 0, NULL, &size, format) != noErr) return false;
+
+  const bool floating = (format->mFormatFlags & kAudioFormatFlagIsFloat) != 0 &&
+                        (format->mFormatFlags & kAudioFormatFlagIsPacked) != 0 &&
+                        format->mBitsPerChannel == 32;
+  return floating && format->mSampleRate > 0;
+}
+
+/// The format the tapped stream is delivering now, whichever object records it.
+static bool kx_audio_stream_format(AudioStreamBasicDescription* format) {
+  if (kx_audio_device != kAudioObjectUnknown &&
+      kx_audio_read_format(kx_audio_device, kx_audio_device_format, format)) {
+    return true;
+  }
+  return kx_audio_read_format(kx_audio_tap, kx_audio_tap_format, format);
+}
+
+/// The machine's output device can change under a running tap - a headset is
+/// plugged in and 48 kHz becomes 44.1 - and the spectrum's bands are placed in
+/// Hz, so the rate is followed rather than remembered from the start.
+static OSStatus kx_audio_format_changed(AudioObjectID object, UInt32 count,
+                                        const AudioObjectPropertyAddress addresses[],
+                                        void* context) {
+  (void)count;
+  (void)addresses;
+  (void)context;
+
+  AudioStreamBasicDescription format;
+  const bool reads = kx_audio_stream_format(&format);
+  atomic_store(&kx_audio_rate_hz, reads ? format.mSampleRate : 0.0);
+  return noErr;
+}
+
+/// The tap's callback, on the HAL's realtime thread: no allocation, no lock, no
+/// wait. The stream is mixed to mono and appended, and nothing else happens here.
+static OSStatus kx_audio_io(AudioObjectID device, const AudioTimeStamp* now,
+                            const AudioBufferList* input, const AudioTimeStamp* input_time,
+                            AudioBufferList* output, const AudioTimeStamp* output_time,
+                            void* context) {
+  (void)device;
+  (void)now;
+  (void)input_time;
+  (void)output;
+  (void)output_time;
+  (void)context;
+  if (!input) return noErr;
+
+  // A tap is a stereo stream, which the HAL hands over either interleaved in one
+  // buffer or one channel per buffer; the mean of every channel covers both
+  // without this having to ask which it is.
+  for (UInt32 b = 0; b < input->mNumberBuffers; b++) {
+    const AudioBuffer buffer = input->mBuffers[b];
+    const float* frames = buffer.mData;
+    const uint32_t channels = buffer.mNumberChannels;
+    if (!frames || channels == 0) continue;
+
+    const size_t count = buffer.mDataByteSize / (sizeof(float) * channels);
+    for (size_t f = 0; f < count; f++) {
+      float mono = 0.0f;
+      for (uint32_t c = 0; c < channels; c++) mono += frames[f * channels + c];
+
+      const uint64_t head = atomic_load_explicit(&kx_audio_head, memory_order_relaxed);
+      kx_audio_ring[head & (KX_AUDIO_RING - 1)] = mono / (float)channels;
+      atomic_store_explicit(&kx_audio_head, head + 1, memory_order_release);
+    }
+  }
+  return noErr;
+}
+
+/// Tear down whatever a previous attempt built, so that a failure leaves nothing
+/// half-made behind for the next one. Destroying the device takes its property
+/// listener with it.
+static void kx_audio_teardown(void) {
+  if (kx_audio_device != kAudioObjectUnknown) {
+    if (kx_audio_proc) {
+      AudioDeviceStop(kx_audio_device, kx_audio_proc);
+      AudioDeviceDestroyIOProcID(kx_audio_device, kx_audio_proc);
+      kx_audio_proc = NULL;
+    }
+    AudioHardwareDestroyAggregateDevice(kx_audio_device);
+    kx_audio_device = kAudioObjectUnknown;
+  }
+  if (kx_audio_tap != kAudioObjectUnknown) {
+    AudioHardwareDestroyProcessTap(kx_audio_tap);
+    kx_audio_tap = kAudioObjectUnknown;
+  }
+  atomic_store(&kx_audio_rate_hz, 0.0);
+}
+
+/// Build the tap and put it to work. It is an aggregate device with the tap as
+/// its only stream: a global tap is not a device by itself, and the HAL delivers
+/// a tap's samples to the client that runs an IOProc on the device carrying it.
+static bool kx_audio_build(void) {
+  // Every process's output, mixed to stereo, minus none: what the machine is
+  // playing. Private, so no other application is offered it, and unmuted, so the
+  // audio keeps coming out of the speakers while the bar reads it.
+  CATapDescription* description =
+      [[CATapDescription alloc] initStereoGlobalTapButExcludeProcesses:@[]];
+  description.name = @"kxdesk spectrum";
+  description.UUID = [NSUUID UUID];
+  description.privateTap = YES;
+  description.muteBehavior = CATapUnmuted;
+
+  if (AudioHardwareCreateProcessTap(description, &kx_audio_tap) != noErr) return false;
+
+  NSDictionary* aggregate = @{
+    @kAudioAggregateDeviceNameKey : @"kxdesk spectrum",
+    @kAudioAggregateDeviceUIDKey : description.UUID.UUIDString,
+    @kAudioAggregateDeviceIsPrivateKey : @YES,
+    @kAudioAggregateDeviceIsStackedKey : @NO,
+    @kAudioAggregateDeviceTapAutoStartKey : @YES,
+    @kAudioAggregateDeviceSubDeviceListKey : @[],
+    @kAudioAggregateDeviceTapListKey : @[ @{
+      @kAudioSubTapUIDKey : description.UUID.UUIDString,
+      @kAudioSubTapDriftCompensationKey : @YES,
+    } ],
+  };
+  if (AudioHardwareCreateAggregateDevice((__bridge CFDictionaryRef)aggregate,
+                                         &kx_audio_device) != noErr) {
+    return false;
+  }
+
+  AudioStreamBasicDescription format;
+  if (!kx_audio_stream_format(&format)) return false;
+  atomic_store(&kx_audio_rate_hz, format.mSampleRate);
+
+  if (AudioDeviceCreateIOProcID(kx_audio_device, kx_audio_io, NULL, &kx_audio_proc) != noErr) {
+    return false;
+  }
+  if (AudioDeviceStart(kx_audio_device, kx_audio_proc) != noErr) return false;
+
+  AudioObjectAddPropertyListener(kx_audio_device, &kx_audio_device_format,
+                                 kx_audio_format_changed, NULL);
+  return true;
+}
+
+bool kx_audio_start(void) {
+  if (atomic_load(&kx_audio_state) == KX_AUDIO_RUNNING) return true;
+
+  // Says where an attempt got to, which is what lets the caller wait for the
+  // permission prompt this may put up instead of asking again and again.
+  atomic_store(&kx_audio_state, KX_AUDIO_STARTING);
+  kx_audio_teardown();
+  atomic_store(&kx_audio_head, 0);
+
+  /* The objects the tap is built from are released when this returns, and the
+   * caller is a worker thread of the daemon's, which has no pool of its own to
+   * drain them. */
+  @autoreleasepool {
+    if (kx_audio_build()) {
+      atomic_store(&kx_audio_state, KX_AUDIO_RUNNING);
+      return true;
+    }
+  }
+
+  kx_audio_teardown();
+  atomic_store(&kx_audio_state, KX_AUDIO_FAILED);
+  return false;
+}
+
+uint8_t kx_audio_status(void) {
+  return atomic_load(&kx_audio_state);
+}
+
+double kx_audio_rate(void) {
+  return atomic_load(&kx_audio_rate_hz);
+}
+
+bool kx_audio_window(float* out, size_t count) {
+  if (atomic_load(&kx_audio_state) != KX_AUDIO_RUNNING) return false;
+
+  const uint64_t head = atomic_load_explicit(&kx_audio_head, memory_order_acquire);
+  const size_t available = head < count ? (size_t)head : count;
+  // Whatever the tap has not delivered yet is silence, so the frames before it
+  // has started are a flat line rather than a jump.
+  memset(out, 0, (count - available) * sizeof(float));
+  for (size_t i = 0; i < available; i++) {
+    out[count - available + i] = kx_audio_ring[(head - available + i) & (KX_AUDIO_RING - 1)];
+  }
+  return true;
 }
 
 /// Interface families whose bytes are not the user's traffic, by name prefix:

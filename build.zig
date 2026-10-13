@@ -49,6 +49,9 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" },
     });
     exe.root_module.linkFramework("AppKit", .{});
+    // The audio spectrum's tap: a process tap on the machine's own output, which
+    // is one HAL object and one aggregate device carrying it.
+    exe.root_module.linkFramework("CoreAudio", .{});
     exe.root_module.linkFramework("CoreFoundation", .{});
     // CoreText locates the installed app font; the font itself describes the
     // application -> icon mapping that the helper reads at startup.
@@ -78,6 +81,7 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" },
     });
     t.root_module.linkFramework("AppKit", .{});
+    t.root_module.linkFramework("CoreAudio", .{});
     t.root_module.linkFramework("CoreFoundation", .{});
     t.root_module.linkFramework("CoreText", .{});
     t.root_module.linkFramework("Foundation", .{});

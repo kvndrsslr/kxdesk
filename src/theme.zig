@@ -44,6 +44,13 @@ pub const graph_net_down: Color = blue;
 pub const graph_net_up: Color = magenta;
 pub const graph_no_fill: Color = 0x00000000;
 
+/// The audio spectrum's line, and the wash under it. The spectrum has a window of
+/// its own - nothing is drawn over it, the way the load pair is drawn over the
+/// network pair - so unlike those four it carries a fill, which is what makes a
+/// spectrum read as one shape rather than as a line near the bottom of the bar.
+pub const graph_spectrum: Color = aqua;
+pub const graph_spectrum_fill: Color = 0x508ec07c;
+
 pub const bar_height: u32 = 24;
 pub const padding: u32 = 3;
 

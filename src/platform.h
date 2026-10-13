@@ -215,6 +215,44 @@ double kx_cpu_load(void);
 /// zero when there is no accelerator to ask, as on a machine without one.
 double kx_gpu_load(void);
 
+/// Where the audio tap got to.
+enum {
+  /// Never asked for, or torn down after a failure.
+  KX_AUDIO_OFF = 0,
+  /// Asked for; the system has not answered yet.
+  KX_AUDIO_STARTING = 1,
+  /// Delivering the machine's output audio.
+  KX_AUDIO_RUNNING = 2,
+  /// The last attempt did not produce a tap.
+  KX_AUDIO_FAILED = 3,
+};
+
+/// Start tapping the audio the machine is playing - every process's output,
+/// mixed down to one stream - for the bar's spectrum.
+///
+/// This is the call that blocks: the first time a process asks, the system puts
+/// up its System Audio Recording permission prompt and this waits for the
+/// answer, which is why the caller must be a task of its own and never the
+/// receive loop. `kx_audio_status()` says where it got to.
+///
+/// Idempotent: a running tap is left alone, and one that failed is built again
+/// from nothing. Returns whether the tap is running when it returns.
+bool kx_audio_start(void);
+
+/// `KX_AUDIO_*` for the tap.
+uint8_t kx_audio_status(void);
+
+/// The rate the tap delivers at, in Hz - 0 while it is not running. The tap
+/// follows the machine's output device, so this changes with it, which is what
+/// makes the spectrum's own frequency axis move with it too.
+double kx_audio_rate(void);
+
+/// Copy the newest `count` mono samples of the tapped stream into `out`, oldest
+/// first. Returns false when the tap is not running; a window the tap has not
+/// filled yet is zeroes, so the frames before it has started are silence rather
+/// than a jump in the spectrum.
+bool kx_audio_window(float* out, size_t count);
+
 /// Cumulative bytes the machine's links have received and transmitted, summed
 /// over the interfaces that carry the user's traffic: loopback, the tunnels and
 /// bridges that run over an already-counted link, and the radio's peer-to-peer

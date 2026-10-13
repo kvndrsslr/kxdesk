@@ -11,6 +11,7 @@
 const std = @import("std");
 
 const background = @import("background.zig");
+const items_audio = @import("items_audio.zig");
 const items_brew = @import("items_brew.zig");
 const items_github = @import("items_github.zig");
 const items_herdr = @import("items_herdr.zig");
@@ -70,6 +71,9 @@ pub const Dispatcher = struct {
 
     yabai_items: items_yabai.Updater,
     system_items: items_system.Updater,
+    /// The spectrum, whose frames come from the machine's own output audio; the
+    /// only item the loop wakes for at its own cadence rather than a second's.
+    audio_items: items_audio.Updater,
     pomodoro: *pomodoro.Timer,
     store: *state.Store,
 

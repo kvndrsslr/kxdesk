@@ -76,6 +76,26 @@ pub extern "c" fn kx_clock(
 
 pub extern "c" fn kx_cpu_load() f64;
 pub extern "c" fn kx_gpu_load() f64;
+
+/// Where the audio tap got to, in the order `src/platform.h` spells it. The tap
+/// is the machine's own output audio, mixed down to one stream; `kx_audio_start`
+/// is the call that blocks on the system's permission prompt, so it is never
+/// made from the receive loop.
+pub const AudioStatus = enum(u8) {
+    /// Never asked for, or torn down after a failure.
+    off = 0,
+    /// Asked for; the system has not answered yet.
+    starting = 1,
+    /// Delivering the machine's output audio.
+    running = 2,
+    /// The last attempt did not produce a tap.
+    failed = 3,
+};
+
+pub extern "c" fn kx_audio_start() bool;
+pub extern "c" fn kx_audio_status() u8;
+pub extern "c" fn kx_audio_rate() f64;
+pub extern "c" fn kx_audio_window(out: [*]f32, count: usize) bool;
 pub extern "c" fn kx_net_bytes(received: *u64, sent: *u64) bool;
 
 /// The link the machine is on, in the order `src/platform.h` spells it: no primary

@@ -204,6 +204,40 @@ Herdr knows that an agent finished. A Herdr that is not running exits with
 `server_not_running` instead of starting a server of its own, which is what makes
 polling it from the daemon safe; any other failure is a line in the log, once.
 
+## The audio spectrum
+
+`audio.spectrum` draws the audio the machine is playing: 59 bands of a
+1024-sample window, low frequencies on the left, drawn twenty times a second. It
+is not a graph of one value over time like the load and network pairs — every
+column is a band and every frame replaces all of them, so the item reads as a
+spectrum rather than as a history, and it is placed beside those pairs. A band is
+its loudest FFT bin in decibels, mapped onto the bar over 70 dB, and it falls
+rather than disappears when the note does: at twenty frames a second a bar that
+went out at once would read as a flicker. `src/spectrum.zig` is that arithmetic
+and nothing else — the window, the FFT, the geometric band edges and the decay —
+and `src/items_audio.zig` owns the item's name, its frame clock and the batch it
+sends. Twenty frames a second costs the daemon well under a percent of a core,
+and the bar as much again.
+
+The audio comes from a CoreAudio process tap, `kx_audio_*` in `src/platform.m`: a
+private stereo tap on every process's output, carried by a private aggregate
+device of its own, with an IOProc that mixes the stream down to mono and appends
+it to a ring the daemon takes the newest window out of. The audio keeps playing
+while it is read, and the tap follows the machine's output device, so the
+spectrum's frequency axis follows the sample rate with it rather than staying at
+whatever it was when the daemon started.
+
+**The tap needs the "System Audio Recording" permission.** macOS asks for it the
+first time a process starts one, and it names the application that started the
+process: for a daemon under launchd that is the daemon's own binary, so the first
+start after an upgrade or a `brew services restart` puts the prompt up once and
+waits for it. The daemon asks from a task of its own rather than from the receive
+loop, so the bar keeps being served while the prompt is up, and until it is
+answered the item is a flat line and the log says so once. It keeps asking every
+thirty seconds, because the answer can be changed in System Settings > Privacy &
+Security > System Audio Recording while the daemon runs, and nothing tells the
+daemon that it was.
+
 ## Installing: currently from HEAD, temporarily
 
 **The installed copy is a HEAD build on purpose, while this is still being

@@ -18,6 +18,7 @@ const commands = @import("commands.zig");
 const context = @import("context.zig");
 const control = @import("control.zig");
 const dispatch = @import("dispatch.zig");
+const items_audio = @import("items_audio.zig");
 const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
 const kanata = @import("kanata.zig");
@@ -203,8 +204,12 @@ fn onTimer() callconv(.c) u32 {
     // A held-back yabai refresh reports the wait it still owes, so the loop
     // wakes when that closes rather than sleeping through it.
     const graph_wait = daemon.dispatcher.system_items.pollGraphs(daemon.io, bar);
+    const audio_wait = daemon.dispatcher.audio_items.poll(daemon.io, bar);
     const yabai_wait = daemon.dispatcher.pollYabai();
-    return soonest(soonest(soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage()), graph_wait), yabai_wait);
+    return soonest(
+        soonest(soonest(soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage()), graph_wait), audio_wait),
+        yabai_wait,
+    );
 }
 
 /// The sooner of two waits, in the loop's convention that 0 means "nothing
@@ -389,6 +394,7 @@ fn runDaemon(init: std.process.Init) !void {
             .store = &store,
             .yabai_items = items_yabai.Updater.init(gpa, &yabai_client, &bar, &scratch, &icons),
             .system_items = items_system.Updater.init(&bar),
+            .audio_items = items_audio.Updater.init(&bar),
         },
         .started = std.Io.Timestamp.now(init.io, .awake),
     };

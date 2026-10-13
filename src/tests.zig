@@ -18,6 +18,7 @@ const log = @import("log.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const server_mode = @import("server_mode.zig");
+const spectrum = @import("spectrum.zig");
 const store = @import("store.zig");
 const style = @import("style.zig");
 const theme = @import("theme.zig");
@@ -176,6 +177,112 @@ test "config: single flag becomes one NUL-terminated arg" {
     const cfg = config.node(.{ .drawing = true });
     try expectArgs(cfg.args, &.{"drawing=on"});
     try std.testing.expectEqual(@as(usize, 11), cfg.args.len);
+}
+
+test "the spectrum's bands are one geometric series over the audible range" {
+    // The bands are the display's whole frequency axis: each one starts where the
+    // last ended, so no frequency falls between two of them and the axis is
+    // monotone - which is what makes a tone's band a reading of its pitch.
+    const rates = [_]f64{ 48_000, 44_100 };
+    for (rates) |rate| {
+        var start = spectrum.bandRangeHz(rate, 0)[0];
+        try std.testing.expectApproxEqAbs(@as(f64, 40), start, 1e-9);
+        for (0..spectrum.bands) |band| {
+            const range = spectrum.bandRangeHz(rate, band);
+            try std.testing.expectEqual(start, range[0]);
+            try std.testing.expect(range[1] > range[0]);
+            // Each band is wider than the last, by the same factor.
+            start = range[1];
+        }
+        try std.testing.expectApproxEqAbs(@as(f64, 16_000), start, 1e-6);
+    }
+}
+
+test "the spectrum puts a tone in the band its frequency names" {
+    const rate = 48_000.0;
+    // Tones at a bin's own frequency - 1024-point bins are 46.875 Hz wide at
+    // 48 kHz, so 3000 and 9000 Hz are exactly bins 64 and 192 - where the window
+    // leaves the whole tone in one bin, and so in one band.
+    const tones = [_]f64{ 3_000, 9_000 };
+
+    // Silence is a flat line, and not a floor of noise.
+    var span: spectrum.Span = .{};
+    const silence: [spectrum.window_size]f32 = @splat(0);
+    for (span.analyse(&silence, rate)) |level| {
+        try std.testing.expectEqual(@as(f64, 0), level);
+    }
+
+    var previous: ?usize = null;
+    for (tones) |tone| {
+        // A span of its own per tone: the bands of one tone fall for a frame or
+        // two, which is the decay test's business rather than this one's.
+        var fresh: spectrum.Span = .{};
+        const levels = fresh.analyse(&tone_window(tone, 0.5, rate), rate);
+        const peak = std.mem.indexOfMax(f64, levels);
+        const range = spectrum.bandRangeHz(rate, peak);
+        try std.testing.expect(range[0] <= tone and tone < range[1]);
+
+        // Half scale is a loud tone, and the graph is scaled so that it fills its
+        // band: the bands above it are near the bottom, and a higher tone lands in
+        // a higher band.
+        try std.testing.expect(levels[peak] > 0.95);
+        for (levels, 0..) |level, band| {
+            if (band != peak) try std.testing.expect(level < 0.5);
+        }
+        if (previous) |earlier| try std.testing.expect(peak > earlier);
+        previous = peak;
+    }
+}
+
+test "the spectrum's lowest bands read their own frequency, not one bin's" {
+    // The bottom of the display is finer than the transform: twenty of the
+    // lowest bands are narrower than the 47 Hz a 1024-point bin covers at
+    // 48 kHz, so a band that narrow is read at its own centre, and the bands
+    // that share one bin do not all read alike.
+    const rate = 48_000.0;
+    var span: spectrum.Span = .{};
+    const levels = span.analyse(&tone_window(100, 0.5, rate), rate);
+
+    const low = levels[0 .. spectrum.bands / 3];
+    var distinct: usize = 1;
+    for (low[1..], low[0 .. low.len - 1]) |level, previous| {
+        if (level != previous) distinct += 1;
+    }
+    try std.testing.expect(distinct > low.len / 3);
+}
+
+test "the spectrum's bands fall when the sound stops, rather than blink" {
+    const rate = 48_000.0;
+    var span: spectrum.Span = .{};
+    const silence: [spectrum.window_size]f32 = @splat(0);
+
+    const loud = span.analyse(&tone_window(3_000, 0.5, rate), rate);
+    const band = std.mem.indexOfMax(f64, loud);
+    const peak = loud[band];
+    try std.testing.expect(peak > 0.95);
+
+    // One silent frame after a loud one leaves the band below where it was and
+    // above nothing, and the frames after it walk it down to nothing - which is
+    // what keeps a bar from vanishing between two frames of a note.
+    const after_one = span.analyse(&silence, rate)[band];
+    try std.testing.expect(after_one < peak);
+    try std.testing.expect(after_one > 0);
+
+    var frames: usize = 1;
+    while (span.analyse(&silence, rate)[band] > 0) : (frames += 1) {
+        try std.testing.expect(frames < 100);
+    }
+    try std.testing.expect(frames > 1);
+}
+
+/// One window of a `tone` at `amplitude`, at `rate` Hz.
+fn tone_window(tone: f64, amplitude: f64, rate: f64) [spectrum.window_size]f32 {
+    var samples: [spectrum.window_size]f32 = undefined;
+    for (&samples, 0..) |*sample, index| {
+        const seconds = @as(f64, @floatFromInt(index)) / rate;
+        sample.* = @floatCast(amplitude * std.math.sin(2.0 * std.math.pi * tone * seconds));
+    }
+    return samples;
 }
 
 test "netLevel maps a rate onto the graph logarithmically" {

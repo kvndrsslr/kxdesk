@@ -10,6 +10,7 @@ const std = @import("std");
 const sb = @import("sb.zig");
 const config = @import("config.zig");
 const style = @import("style.zig");
+const items_audio = @import("items_audio.zig");
 const items_herdr = @import("items_herdr.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
@@ -326,6 +327,7 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
         .{ .name = items_system.net_up_item, .color = theme.graph_net_up, .readout = true, .top = true },
     }, false);
 
+    try spectrumItem(c, config_input);
     try linkItem(c);
 
     // The link and the four graphs are moved into place between the date and the
@@ -338,6 +340,10 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try config.move(c, items_system.cpu_item, items_system.gpu_item);
     // Server mode sits against the date, on the far side of the graphs; moved after them.
     if (server_item) try config.move(c, server_mode.bar_item, items_system.cpu_item);
+    // And the spectrum between them and the load pair: it is a graph like they
+    // are, and not a reading of the network, so it does not belong beside the
+    // link icon. Moved last, so that it is the item nearest the pair.
+    try config.move(c, items_audio.item, items_system.cpu_item);
 
     try brewItem(c, config_input);
     try githubBell(c, config_input);
@@ -441,6 +447,45 @@ fn serverItem(c: *sb.Client, io: std.Io, config_input: Config) !void {
             .mach_helper = null,
         }),
         .click_script = try server_mode.clickScript(io, &click_buffer),
+    }, config_input.helper);
+}
+
+/// The audio spectrum: the machine's own output audio, drawn with one column per
+/// band rather than as a series over time.
+///
+/// It is the one graph the daemon fills at its own cadence - twenty frames a
+/// second, because the bars have to move with the music - and it carries nothing
+/// to click, so it takes no events. See `items_audio.zig`.
+fn spectrumItem(c: *sb.Client, config_input: Config) !void {
+    try config.declare(c, .{
+        .kind = .graph,
+        // The graph's width is the number of values a frame pushes; the item
+        // states both from the one constant so they cannot drift apart.
+        .name = items_audio.item,
+        .width = items_audio.values,
+        .props = config.node(.{
+            .drawing = true,
+            .associated_display = 1,
+            .padding_left = style.item_padding,
+            .padding_right = style.item_padding,
+            // The graph is the whole item: no icon, no label, and no room kept
+            // for either - an item outlives the configuration that set it, so an
+            // earlier one's slot is cleared by name rather than left alone.
+            .icon = .{ .value = null, .drawing = false, .padding_left = 0, .padding_right = 0 },
+            .label = .{ .value = null, .drawing = false, .padding_left = 0, .padding_right = 0 },
+            // As on the pairs: a height for the window the graph draws into, and
+            // no colour of its own.
+            .background = .{
+                .drawing = true,
+                .color = style.graph_fill,
+                .height = style.graph_height,
+            },
+            .graph = .{
+                .color = config.color(theme.graph_spectrum),
+                .fill_color = config.color(theme.graph_spectrum_fill),
+                .line_width = style.graph_line_width,
+            },
+        }),
     }, config_input.helper);
 }
 
