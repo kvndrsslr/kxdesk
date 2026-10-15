@@ -47,11 +47,12 @@ const ceiling_db = -6;
 /// second.
 const fall_per_frame = 0.09;
 
-/// How long a flat spectrum is still drawn before it is faded out: ten seconds
-/// of nothing is long enough that the machine is idle rather than between two
-/// pieces, and short enough that the empty room the item keeps on the bar does
-/// not stand there for a whole album's gap.
-pub const quiet_ms: i64 = 10_000;
+/// How long a flat spectrum is still drawn before it is faded out, in
+/// milliseconds: the levels go flat within `fall_per_frame`'s own decay of the
+/// last note, so a second of that is a machine that has stopped rather than one
+/// between two notes, and the room the item keeps is empty for the rest of the
+/// gap.
+pub const quiet_ms: i64 = 1_000;
 
 /// How long the fade takes once it starts, in milliseconds: half a second is
 /// ten of the item's frames, which is a fade rather than a cut.

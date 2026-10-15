@@ -468,8 +468,8 @@ fn serverItem(c: *sb.Client, io: std.Io, config_input: Config) !void {
 /// `items_audio.zig` for the frames themselves.
 ///
 /// Its colours are the two the daemon fades: a machine that has been quiet for
-/// ten seconds is drawn with both at zero opacity, so the item's room on the bar
-/// is empty rather than holding a flat line and an empty wash.
+/// a second is drawn with both at zero opacity, so the item's room on the bar is
+/// empty rather than holding a flat line and an empty wash.
 fn spectrumItem(c: *sb.Client, config_input: Config) !void {
     try config.declare(c, .{
         .kind = .graph,

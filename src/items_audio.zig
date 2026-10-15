@@ -8,7 +8,7 @@
 //! for the system's permission prompt.
 //!
 //! A frame carries the item's colours as well as its values, faded by
-//! `spectrum.Silence`: the block goes invisible ten seconds after the spectrum
+//! `spectrum.Silence`: the block goes invisible a second after the spectrum
 //! went flat, and is drawn whole again the frame a sound arrives.
 
 const std = @import("std");

@@ -276,10 +276,10 @@ test "the spectrum's bands fall when the sound stops, rather than blink" {
     try std.testing.expect(frames > 1);
 }
 
-test "the spectrum is faded out ten seconds after it goes flat, and back at once" {
+test "the spectrum is faded out a second after it goes flat, and back at once" {
     // The item's block is drawn at the opacity this hands back: one while there
-    // is sound, one for the ten seconds a flat spectrum is still shown, then a
-    // fade to nothing over the half second after that.
+    // is sound, one for the second a flat spectrum is still shown, then a fade to
+    // nothing over the half second after that.
     const flat: [spectrum.bands]f64 = @splat(0);
     const loud: [spectrum.bands]f64 = @splat(0.5);
 

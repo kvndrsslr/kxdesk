@@ -52,7 +52,7 @@ pub const dim = theme.dark_grey;
 
 /// `color` with its alpha scaled by `opacity`, 0 being invisible and 1 the
 /// colour as it is declared: the opacity `items_audio` draws the spectrum's
-/// block at once the machine has been quiet for ten seconds. Only the alpha
+/// block at once the machine has been quiet for a second. Only the alpha
 /// moves, so a hue stays the palette's own and a change of palette still reaches
 /// a faded item.
 pub fn faded(color: theme.Color, opacity: f64) theme.Color {
