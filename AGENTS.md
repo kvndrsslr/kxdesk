@@ -40,9 +40,25 @@ kxdesk help <command>      # one command in full
 kxdesk <command> --help    # same, without running
 KXDESK_STATE=/tmp/x.db ./zig-out/bin/kxdesk …  # sandbox state DB for probes
 zig fmt                    # canonical formatter (no config file)
+./deploy.sh                # push, move the brew HEAD build onto that commit, restart the service
 ```
 
-Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services restart kxdesk`); tap formula pinned stale at v0.1.23 — see `README.md` "Switch back to releases".
+Install is a HEAD build, which is what `./deploy.sh` does end to end; the tap formula is pinned stale at v0.1.23 — see `README.md` "Switch back to releases".
+
+## Committing & Deploying
+
+Every change is committed by the agent that made it, in the same session as the
+change itself. Review happens in `git log`, not in a working tree: an uncommitted
+edit is work nobody else can see, and `./deploy.sh` will not ship it.
+
+`./deploy.sh` is the whole of what reaches this machine — it pushes `main`, moves
+the brew HEAD build onto that commit, and restarts the service. The build comes
+from GitHub rather than from this checkout, which is why the script refuses to run
+with modified tracked files. Two things it leaves to the caller, because they are
+not wanted every time: restarting `kxsketchybar` when the configuration retired
+an item, a subscription or a registered event (a bar process keeps all three for
+as long as it lives), and `kxdesk wm refresh-signals` when the signal table
+changed.
 
 ## Code Conventions & Common Patterns
 
@@ -65,7 +81,7 @@ Install is a HEAD build (`brew upgrade --fetch-HEAD kxdesk && brew services rest
 - Transport: `src/control.zig` (CMD/OK/ERR), `src/platform.zig`/`.m`/`.h`, `src/sb.zig` (bar client).
 - Config/render: `src/config.zig` (the SketchyBar command layer), `src/style.zig` (shared fonts, chips, ring/graph look and geometry), `src/props.zig` (runtime property bridge), `src/log.zig`, `src/bar.zig`, `src/theme.zig`, `src/items_yabai.zig`, `src/items_system.zig`, `src/items_usage.zig`, `src/items_github.zig`, `src/items_brew.zig`, `src/items_herdr.zig`.
 - Subsystems: `src/store.zig` (SQLite), `src/yabai.zig` + `src/yabai_ops.zig` (yabai queries, and the `wm` verb table), `src/pomodoro.zig`, `src/zen.zig`, `src/mode_indicator.zig`, `src/server_mode.zig`, `src/kitty.zig` (the quick access terminals), `src/background.zig`, `src/exec.zig`, `src/app_icons.zig`.
-- Build/version/docs: `build.zig`, `build.zig.zon` (version `0.1.24`), `README.md` (only doc), `.gitignore` (only `zig-out/`, `.zig-cache/`).
+- Build/version/docs: `build.zig`, `build.zig.zon` (version `0.1.24`), `deploy.sh` (push → HEAD build → service restart), `README.md` (only doc), `.gitignore` (only `zig-out/`, `.zig-cache/`).
 
 ## Runtime/Tooling Preferences
 

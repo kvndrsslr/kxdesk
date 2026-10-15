@@ -294,6 +294,13 @@ change reaches the machine with `git push` and nothing else — no tap commit, n
 version bump, no tag.
 
 ```sh
+./deploy.sh              # from the checkout: push, then the two steps below
+```
+
+Run by hand, that is the push (the formula builds from `main` on GitHub, so the
+commit has to be there first) followed by
+
+```sh
 brew upgrade --fetch-HEAD kxdesk
 brew services restart kxdesk
 ```
