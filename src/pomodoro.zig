@@ -163,10 +163,7 @@ pub const Timer = struct {
 
         var props: Props = .{};
         const color = props.argb(shown.color) catch return;
-        props.write(.{
-            .label = .{ .value = shown.label, .color = color },
-            .icon = .{ .color = color },
-        }) catch return;
+        readingProps(&props, shown.label, color) catch return;
 
         client.set(item, props.slice()) catch |err| return self.report(err);
         client.commit() catch |err| return self.report(err);
@@ -450,6 +447,22 @@ pub const Timer = struct {
 
     const Notice = struct { title: []const u8, body: []const u8 };
 };
+
+/// The properties one reading sets: the label, and the colour the label and the
+/// icon are both drawn with. The label is drawn only while it has text - a drawn
+/// empty label still costs its padding, and the item would keep the width of a
+/// countdown that is not running. Split from `renderLocked` so that the test can
+/// pin the keys.
+pub fn readingProps(props: *Props, label: []const u8, color: []const u8) !void {
+    try props.write(.{
+        .label = .{
+            .value = label,
+            .drawing = label.len != 0,
+            .color = color,
+        },
+        .icon = .{ .color = color },
+    });
+}
 
 /// Seconds since the epoch, for the one thing the awake clock cannot say: when
 /// an instant was, in terms another process will understand.

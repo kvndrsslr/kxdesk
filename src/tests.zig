@@ -16,6 +16,7 @@ const items_usage = @import("items_usage.zig");
 const kanata = @import("kanata.zig");
 const kitty = @import("kitty.zig");
 const log = @import("log.zig");
+const pomodoro = @import("pomodoro.zig");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const server_mode = @import("server_mode.zig");
@@ -650,6 +651,36 @@ test "a spent Go reading drops the label and reddens the ringed mark" {
     const plain_expected = [_][]const u8{ "drawing=on", "label=$12.00", "icon.color=0xffb8bb27" };
     try std.testing.expectEqual(plain_expected.len, plain.slice().len);
     for (plain_expected, plain.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+test "a pomodoro reading draws its label only while the timer has one" {
+    // The running phase's own colour, which label and icon share.
+    var running: Props = .{};
+    const work = try running.argb(theme.magenta);
+    try pomodoro.readingProps(&running, "07:23", work);
+    const running_expected = [_][]const u8{
+        "label=07:23",
+        "label.drawing=on",
+        "label.color=0xffd3869b",
+        "icon.color=0xffd3869b",
+    };
+    try std.testing.expectEqual(running_expected.len, running.slice().len);
+    for (running_expected, running.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
+
+    // An idle timer shows nothing, and nothing drawn is what drops the label's
+    // 52-point slot: an empty label that is still drawn costs its padding, so the
+    // item would keep the width of a countdown that is not running.
+    var idle: Props = .{};
+    const dim = try idle.argb(style.dim);
+    try pomodoro.readingProps(&idle, "", dim);
+    const idle_expected = [_][]const u8{
+        "label=",
+        "label.drawing=off",
+        "label.color=0xff7c6f64",
+        "icon.color=0xff7c6f64",
+    };
+    try std.testing.expectEqual(idle_expected.len, idle.slice().len);
+    for (idle_expected, idle.slice()) |want, got| try std.testing.expectEqualStrings(want, got);
 }
 
 test "a provider item is drawn only while its token is in the store" {

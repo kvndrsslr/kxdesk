@@ -791,15 +791,26 @@ fn pomodoroItem(c: *sb.Client, config_input: Config) !void {
             .padding_left = style.item_padding,
             .padding_right = style.item_padding,
             .associated_display = 1,
+            // The widths are stated for the same reason, with the one spelling
+            // that means content-sized: `dynamic`. A width set once outlives the
+            // configuration that set it, and SketchyBar reads a value it does not
+            // know - `auto` - as a constant width of 0, which collapses the item
+            // and every text on it.
+            .width = "dynamic",
             .icon = .{
                 .value = ":clock:",
+                .width = "dynamic",
                 .font = style.app(16),
                 .padding_right = 2,
                 .color = config.color(style.dim),
                 .drawing = true,
             },
+            // A 52-point slot, so the countdown's digits do not move the item. The
+            // daemon hides the label while it has nothing to show, which is what
+            // drops the slot: a drawn empty label still costs its padding.
             .label = .{
                 .value = null,
+                .drawing = false,
                 .width = 52,
                 .@"align" = "left",
                 .color = config.color(style.dim),
