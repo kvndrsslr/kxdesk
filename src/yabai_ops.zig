@@ -776,13 +776,20 @@ pub fn copyWindows(context: *Context, args: []const []const u8) anyerror![]const
 }
 
 /// Swap yabai's external bar reservation between the strip the settings table
-/// asserts and none at all.
+/// asserts and none at all, and the bar itself between drawn and hidden with it.
 ///
 /// `yabai -m config <setting>` with no value answers with the current one, so the
 /// toggle reads the live setting rather than remembering it: the value stays
 /// right across a kxdesk restart, and across a `~/.yabairc` that set it
 /// differently. Anything that is not the reserved value - `off`, `main:26:0`, a
 /// value a future bar writes - is taken as unreserved and goes back to `all`.
+///
+/// The bar's `hidden` property follows from that one value rather than being
+/// remembered or read back: reserving the strip for a bar that is not drawn
+/// leaves a gap, and drawing a bar over a strip windows were let into puts it
+/// over their tops, so the two only make sense together. Best effort - a machine
+/// running no SketchyBar has no bar to hide, and the yabai setting has already
+/// been swapped by then.
 pub fn externalBarToggle(context: *Context, args: []const []const u8) anyerror![]const u8 {
     _ = args;
     const arena = context.arena;
@@ -790,12 +797,23 @@ pub fn externalBarToggle(context: *Context, args: []const []const u8) anyerror![
     const current = std.mem.trim(u8, try context.yabai.rawQuery(arena, &.{
         "-m", "config", "external_bar",
     }), " \t\r\n");
-    const next: []const u8 = if (std.mem.eql(u8, current, external_bar_on))
-        external_bar_off
-    else
-        external_bar_on;
+    const reserved = std.mem.eql(u8, current, external_bar_on);
+    const next: []const u8 = if (reserved) external_bar_off else external_bar_on;
     try context.yabai.command(arena, &.{ "-m", "config", "external_bar", next });
+
+    setBarHidden(context, reserved) catch |err| {
+        log.warn("cannot set the bar's hidden property: {s}", .{@errorName(err)});
+    };
     return "";
+}
+
+/// Show or hide the whole bar - `--bar hidden=off|on`, no display named, so
+/// every bar goes with it the way the reservation does.
+fn setBarHidden(context: *Context, hidden: bool) !void {
+    try context.ensureBar();
+    try context.bar.arg("--bar");
+    try context.bar.prop("hidden", if (hidden) "on" else "off");
+    try context.bar.commit();
 }
 
 /// One `wm` verb: the word a client types after `wm`, and the run over its argv.

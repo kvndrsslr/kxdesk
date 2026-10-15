@@ -293,7 +293,7 @@ pub const all = [_]Command{
             .{ .name = "refresh-yabai", .summary = "re-provision the yabai rules and signals" },
             .{
                 .name = "external-bar-toggle",
-                .summary = "reserve the bar's strip on every display, or release it",
+                .summary = "show the bar and reserve its strip, or hide both",
             },
             .{
                 .name = "window-swap",
