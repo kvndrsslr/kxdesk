@@ -29,6 +29,7 @@ const Props = @import("props.zig").Props;
 const pomodoro = @import("pomodoro.zig");
 const state = @import("store.zig");
 const sb = @import("sb.zig");
+const yabai = @import("yabai.zig");
 const zen = @import("zen.zig");
 
 /// The quick access terminals a click brings up, named as the files in the kitty
@@ -41,11 +42,22 @@ const github_terminal = "ghr";
 /// to a socket and, when the terminal is not running, starts a whole kitty
 /// process - and the receive loop has to keep running while that happens. A
 /// failure is a line in the log, like every other background task's.
-fn toggleTerminal(io: std.Io, gpa: std.mem.Allocator, name: []const u8) background.Result {
+///
+/// The terminal is brought to the display the focused window is on: a click does
+/// not move the focus, so that is the display whose bar was clicked.
+fn toggleTerminal(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    yabai_client: *yabai.Client,
+    name: []const u8,
+) background.Result {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
+    const arena = arena_state.allocator();
 
-    return kitty.toggleNamed(io, arena_state.allocator(), name);
+    var buffer: [kitty.max_display_name]u8 = undefined;
+    const display = kitty.focusedDisplayName(yabai_client, arena, &buffer);
+    return kitty.toggleNamed(io, arena, name, display);
 }
 
 /// The popup rows under an item are shown and hidden, never toggled: what a
@@ -243,7 +255,11 @@ pub const Dispatcher = struct {
         if (std.mem.eql(u8, name, items_system.cpu_item) or
             std.mem.eql(u8, name, items_system.gpu_item))
         {
-            self.terminal.request(self.io, toggleTerminal, .{ self.io, self.gpa, load_terminal });
+            self.terminal.request(
+                self.io,
+                toggleTerminal,
+                .{ self.io, self.gpa, self.yabai_items.yabai_client, load_terminal },
+            );
             return;
         }
         // A provider's number opens that provider's usage page.
@@ -255,7 +271,11 @@ pub const Dispatcher = struct {
             // schedule: what the dashboard reads is what the item renders, and
             // waiting that out would leave the badge showing notifications that
             // were just worked through.
-            self.terminal.request(self.io, toggleTerminal, .{ self.io, self.gpa, github_terminal });
+            self.terminal.request(
+                self.io,
+                toggleTerminal,
+                .{ self.io, self.gpa, self.yabai_items.yabai_client, github_terminal },
+            );
             self.github.request(
                 self.io,
                 items_github.refresh,

@@ -121,3 +121,11 @@ pub extern "c" fn kx_tcp_write(fd: i32, buffer: [*]const u8, len: usize) bool;
 pub extern "c" fn kx_tcp_close(fd: i32) void;
 
 pub extern "c" fn kx_clipboard_set(text: [*:0]const u8) bool;
+
+/// The name the system gives a display, which is the name kitty knows it by;
+/// false when no display of that id is attached or the name does not fit `out`.
+pub extern "c" fn kx_display_name(display_id: u32, out: [*]u8, cap: usize) bool;
+
+/// Whether that process has a window on screen right now: the state a quick
+/// access terminal's panel is shown or hidden in.
+pub extern "c" fn kx_has_onscreen_window(pid: i32) bool;

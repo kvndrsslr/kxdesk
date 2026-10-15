@@ -289,3 +289,22 @@ bool kx_open_url(const char* url);
 /// problem, not a text one: the caller's text is already UTF-8 and NUL
 /// terminated.
 bool kx_clipboard_set(const char* text);
+
+/// Copy the name the system gives the display with this `CGDirectDisplayID` into
+/// `out`. Returns false when no display of that id is attached, or when the name
+/// does not fit in `cap`.
+///
+/// This is the name kitty knows a display by: the panel kitten's
+/// `--output-name list` prints exactly these strings, in the same order, and a
+/// panel's `output_name` takes one of them. Naming a display is therefore what
+/// brings a quick access terminal to it - the remote control protocol has no
+/// command that moves a panel to the monitor the user is at.
+bool kx_display_name(uint32_t display_id, char* out, size_t cap);
+
+/// Whether the process of this pid has a window on screen right now.
+///
+/// A hidden window is not one: kitty takes a quick access terminal's panel off
+/// screen without ending the process, so this is what tells the two states of a
+/// panel apart - and whether bringing it to another display is a move the user
+/// would see.
+bool kx_has_onscreen_window(int32_t pid);

@@ -130,6 +130,20 @@ pub const Client = struct {
         return self.query([]Window, scratch, &.{ "-m", "query", "--windows" });
     }
 
+    /// The display the focused window is on: the display the user is at, which is
+    /// also the one the bar marks. Null when no window has focus - an empty space
+    /// in front of everything, or a window yabai does not know.
+    ///
+    /// Taken from the window rather than from the display query's own `has-focus`,
+    /// which moves in yabai's display focus path and so can name a display whose
+    /// window the user has already left.
+    pub fn focusedDisplay(self: *Client, scratch: std.mem.Allocator) !?u32 {
+        for (try self.windows(scratch)) |entry| {
+            if (entry.@"has-focus") return entry.display;
+        }
+        return null;
+    }
+
     /// The windows of the space in focus, floating ones included - the list
     /// cycling has to be built from, since every `--focus` selector of yabai's
     /// own walks the BSP tree and so never reaches a floating window.

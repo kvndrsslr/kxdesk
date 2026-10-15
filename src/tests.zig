@@ -1239,6 +1239,21 @@ test "a terminal's socket is its name and kitty's process id, and nobody else's"
     try std.testing.expect(!kitty.isSocketOf("my term-42", "my"));
 }
 
+// The pid out of that name is what a move is decided by - whether the panel is on
+// screen is asked of the process that owns the window - so an entry that is not a
+// socket, or one whose id is past what a pid holds, has to answer nothing rather
+// than a number to ask about.
+test "the process id in a socket's name is read, and only out of a socket" {
+    try std.testing.expectEqual(@as(?i32, 1234), kitty.socketPid("btop-1234", "btop"));
+    try std.testing.expectEqual(@as(?i32, 42), kitty.socketPid("my term-42", "my term"));
+
+    try std.testing.expectEqual(@as(?i32, null), kitty.socketPid("btop", "btop"));
+    try std.testing.expectEqual(@as(?i32, null), kitty.socketPid("btop-", "btop"));
+    try std.testing.expectEqual(@as(?i32, null), kitty.socketPid("btop-12a", "btop"));
+    try std.testing.expectEqual(@as(?i32, null), kitty.socketPid("btop-1234", "bt"));
+    try std.testing.expectEqual(@as(?i32, null), kitty.socketPid("btop-9999999999", "btop"));
+}
+
 // An answer arrives between the two escape sequences kitty frames it in, and
 // anything else is not an answer at all - which is how a socket belonging to
 // something other than a terminal is told apart from one.

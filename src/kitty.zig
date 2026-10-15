@@ -11,6 +11,12 @@
 //! terminal that is not running needs one, and then it is kitty's own
 //! `kitten quick_access_terminal` that draws the window.
 //!
+//! A panel lives on one display. kitty's own toggle moves it to the monitor the
+//! mouse is on (`--move-to-active-monitor`, macOS only), which is a flag of the
+//! panel process and not a field of any remote control command - so this moves it
+//! itself, by naming the display the focused window is on as the panel's
+//! `output_name`, before the toggle that shows it.
+//!
 //! `showText` is the same window with none of the user's configuration: one the
 //! daemon names itself, whose text it writes itself and whose window prints that
 //! text and hands over a login shell. That is what a bar item with something long
@@ -24,6 +30,7 @@ const exec = @import("exec.zig");
 const log = @import("log.zig");
 const platform = @import("platform.zig");
 const timeouts = @import("timeouts.zig");
+const yabai = @import("yabai.zig");
 
 /// The shared base every terminal inherits, and the directory the terminals' own
 /// configurations live in: both beside `kitty.conf`, in the kitty configuration
@@ -75,6 +82,28 @@ const show_request =
 const close_request =
     "\x1bP@kitty-cmd{\"cmd\":\"close-window\",\"version\":[0,42,0]," ++
     "\"payload\":{\"match\":\"all\"}}\x1b\\";
+
+/// Largest display name this spells into a request: the system's own name for a
+/// display, a handful of words at most.
+pub const max_display_name = 128;
+
+/// Largest request this builds - the move below with a name of that length in it.
+const max_request = 512;
+
+/// The move that brings a panel to a display.
+///
+/// A panel's `output_name` is one of its layer shell settings, and setting it is
+/// what puts the window on another display: `resize-os-window` has no action that
+/// moves a panel, and this is the same setting the panel kitten takes as
+/// `--output-name`, spelled without the dashes the way the action's own settings
+/// are.
+const move_prefix =
+    "\x1bP@kitty-cmd{\"cmd\":\"resize-os-window\",\"version\":[0,42,0]," ++
+    "\"payload\":{\"match\":\"all\",\"action\":\"os-panel\",\"incremental\":true," ++
+    "\"os_panel\":[\"output-name=";
+const move_suffix = "\"]}}\x1b\\";
+
+/// The reply prefix and terminator every remote control message is framed in.
 const reply_prefix = "\x1bP@kitty-cmd";
 const reply_terminator = "\x1b\\";
 
@@ -94,21 +123,64 @@ const print_then_shell = "cat \"$1\"; exec \"${SHELL:-/bin/zsh}\" -l";
 /// daemon allocate.
 const reply_bytes = 1024;
 
+/// The move request for `display`, spelled into `buffer`, or null when the name
+/// will not go into one: a quote or a backslash in it would end the JSON string
+/// it is written into, and no display the system names has either.
+fn moveRequest(buffer: []u8, display: []const u8) ?[]const u8 {
+    for (display) |character| {
+        if (character == '"' or character == '\\' or std.ascii.isControl(character)) return null;
+    }
+    return std.fmt.bufPrint(buffer, "{s}{s}{s}", .{ move_prefix, display, move_suffix }) catch null;
+}
+
+/// The display a terminal should be brought to: the one the focused window is on,
+/// named the way kitty names displays. Null when nothing can say - yabai not
+/// running, nothing focused, or a display kitty has no name for - which leaves
+/// the panel where it is rather than refusing the toggle over it.
+pub fn focusedDisplayName(
+    client: *yabai.Client,
+    scratch: std.mem.Allocator,
+    buffer: *[max_display_name]u8,
+) ?[]const u8 {
+    const display = (client.focusedDisplay(scratch) catch return null) orelse return null;
+    if (!platform.kx_display_name(display, buffer, buffer.len)) return null;
+    return std.mem.sliceTo(buffer, 0);
+}
+
 /// Show or hide the named terminal: what the `term toggle` command runs, and what
-/// the load graphs' click runs.
-pub fn toggleNamed(io: std.Io, arena: std.mem.Allocator, name: []const u8) !void {
+/// the load graphs' click runs. `display` is the display to bring it to, or null
+/// to leave it where it is.
+pub fn toggleNamed(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    name: []const u8,
+    display: ?[]const u8,
+) !void {
     // Checked here as well as by `cli.validate`, which is what a client's word
     // and a binding's word are refused by: a terminal this would start is a
     // window with a configuration of its own, and one without is a window
     // nothing configured.
     if (!configured(io, name)) return error.NotConfigured;
 
-    if (try ask(io, arena, name, toggle_request)) return;
+    var request_buffer: [max_request]u8 = undefined;
+    const move = if (display) |value| moveRequest(&request_buffer, value) else null;
+
+    // A terminal that is running is either on screen - where a toggle hides it,
+    // and a move first would be a window the user watches cross the desk - or
+    // hidden, where the move belongs before the toggle that shows it. The window
+    // server is the only one that knows which, and `ask` is where the socket that
+    // says the terminal is up comes from.
+    if (panelPid(io, name)) |pid| {
+        if (move) |request| {
+            if (!platform.kx_has_onscreen_window(pid)) _ = ask(io, arena, name, request) catch false;
+        }
+        if (try ask(io, arena, name, toggle_request)) return;
+    }
 
     var terminal_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const terminal = terminalFile(&terminal_buffer, name) orelse return error.NotConfigured;
     try start(io, arena, name, .{ .config = terminal });
-    return showWhenReady(io, arena, name);
+    return showWhenReady(io, arena, name, move);
 }
 
 /// Show `text` in a terminal of the given name: the text is written to a file
@@ -146,20 +218,31 @@ pub fn showText(io: std.Io, arena: std.mem.Allocator, name: []const u8, text: []
     try start(io, arena, name, .{
         .command = &.{ "/bin/sh", "-c", print_then_shell, name, path },
     });
-    return showWhenReady(io, arena, name);
+    return showWhenReady(io, arena, name, null);
 }
 
 /// Ask the terminal to show itself until it answers. A terminal is started hidden
 /// and its window is drawn before it is seen, so the ask that follows is what
 /// shows it rather than a toggle: "is it up yet" cannot be answered by hiding it.
 ///
+/// `move` is asked again on every round rather than once, because a terminal that
+/// has bound its socket has not necessarily drawn its window, and the move has to
+/// land before the show does: it is a hidden window being given a display, and the
+/// show that follows is the first frame it is drawn in.
+///
 /// A refusal is not the end of the wait: a terminal that has bound its socket but
 /// has not drawn its window yet answers exactly that, and the next ask - a moment
 /// later - is answered by the window that is there by then. The reason is in the
 /// log either way, and a terminal that never comes up ends the wait below.
-fn showWhenReady(io: std.Io, arena: std.mem.Allocator, name: []const u8) !void {
+fn showWhenReady(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    name: []const u8,
+    move: ?[]const u8,
+) !void {
     var waited: u32 = 0;
     while (waited < timeouts.terminal_timeout_ms) : (waited += timeouts.start_poll_ms) {
+        if (move) |request| _ = ask(io, arena, name, request) catch false;
         if (ask(io, arena, name, show_request) catch false) return;
         std.Io.sleep(
             io,
@@ -204,9 +287,16 @@ fn awaitClosed(io: std.Io, name: []const u8) void {
 
 /// The `term toggle` command: the word names the terminal, and the toggle itself
 /// is `toggleNamed`. It answers with nothing, like every other action.
+///
+/// The display is looked up here rather than inside the toggle, because yabai is
+/// what knows where the user is: a machine whose query fails toggles the terminal
+/// where it is, which is where it was.
 pub fn toggle(context: *Context, args: []const []const u8) ![]const u8 {
     const name = if (args.len > 1) args[1] else return error.MissingArgument;
-    try toggleNamed(context.io, context.arena, name);
+
+    var buffer: [max_display_name]u8 = undefined;
+    const display = focusedDisplayName(context.yabai, context.arena, &buffer);
+    try toggleNamed(context.io, context.arena, name, display);
     return "";
 }
 
@@ -255,6 +345,33 @@ pub fn isSocketOf(entry: []const u8, name: []const u8) bool {
         if (!std.ascii.isDigit(character)) return false;
     }
     return true;
+}
+
+/// The process id out of a socket's name, or null when the entry is not this
+/// terminal's socket, or the id in it is not one this can hold.
+///
+/// The pid is what says whether the panel's window is on screen, and the socket's
+/// name is the only record of it: the process that started the terminal may be
+/// long gone, and a daemon that was restarted never knew it.
+pub fn socketPid(entry: []const u8, name: []const u8) ?i32 {
+    if (!isSocketOf(entry, name)) return null;
+    return std.fmt.parseInt(i32, entry[name.len + 1 ..], 10) catch null;
+}
+
+/// The process id of the terminal that is running, or null when none is.
+fn panelPid(io: std.Io, name: []const u8) ?i32 {
+    var directory_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const directory = socketDirectory(&directory_buffer) orelse return null;
+
+    var opened = std.Io.Dir.openDirAbsolute(io, directory, .{ .iterate = true }) catch
+        return null;
+    defer opened.close(io);
+
+    var entries = opened.iterate();
+    while (entries.next(io) catch return null) |entry| {
+        if (socketPid(entry.name, name)) |pid| return pid;
+    }
+    return null;
 }
 
 /// The JSON of one answer, out of the escape sequences kitty frames it in, or

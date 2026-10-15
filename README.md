@@ -230,9 +230,21 @@ that is not running is the only thing that costs a process, and then it is
 kitty's own `kitten quick_access_terminal` that draws the window: started hidden
 and shown once it answers, so a key press never shows a window half-drawn. A
 terminal that is hidden keeps running, which is what makes the second press
-instant — and the one thing that cannot be asked for over remote control is what
-kitty's own `--move-to-active-monitor` does, so a terminal reappears where it was
-hidden rather than following the mouse to another monitor.
+instant.
+
+A panel lives on one display, and a terminal reappearing on the display it was
+hidden on is not much use when the user has moved to another one. kitty's own
+answer to that is `--move-to-active-monitor`, which the quick access terminal
+always passes — but it is a flag of the panel process, the move happens only in
+that process's own toggle path, and nothing in the remote control protocol asks
+for it. So kxdesk does the move itself, and to the display the *focused window* is
+on rather than the one the mouse is on: it asks yabai for the focused window's
+display, asks the system for that display's name (`kitten panel --output-name
+list` prints the same strings), and sets the panel's `output_name` to it. A panel
+is moved only while it is hidden — the move is asked before the toggle that shows
+it, and skipped when the window is already on screen, so a press that hides a
+terminal never moves a window the user is looking at. When yabai cannot answer, or
+no window is focused, the terminal is toggled where it is, as it was before.
 
 ## The herdr mark: what the agents are doing
 

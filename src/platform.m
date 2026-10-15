@@ -1108,3 +1108,47 @@ bool kx_clipboard_set(const char* text) {
     return [pasteboard setString:string forType:NSPasteboardTypeString];
   }
 }
+
+bool kx_display_name(uint32_t display_id, char* out, size_t cap) {
+  @autoreleasepool {
+    for (NSScreen* screen in [NSScreen screens]) {
+      NSNumber* number = screen.deviceDescription[@"NSScreenNumber"];
+      if (number.unsignedIntValue != display_id) continue;
+
+      /* `localizedName` is what kitty prints and what a panel's `output_name`
+       * takes, the system's own disambiguation of two displays sharing a name
+       * included: a second BenQ is "BenQ PD2730S (2)" here as it is there. */
+      const char* name = screen.localizedName.UTF8String;
+      if (!name) return false;
+      const size_t length = strlen(name);
+      if (length + 1 > cap) return false;
+      memcpy(out, name, length + 1);
+      return true;
+    }
+    return false;
+  }
+}
+
+bool kx_has_onscreen_window(int32_t pid) {
+  @autoreleasepool {
+    /* On screen only, which is the whole question: a window hidden the way
+     * kitty hides a panel is one the window server no longer returns here. */
+    CFArrayRef windows = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID);
+    if (!windows) return false;
+
+    bool found = false;
+    const CFIndex count = CFArrayGetCount(windows);
+    for (CFIndex index = 0; index < count; index++) {
+      NSDictionary* window = (__bridge NSDictionary*)CFArrayGetValueAtIndex(windows, index);
+      NSNumber* owner = window[(id)kCGWindowOwnerPID];
+      if (owner.intValue != pid) continue;
+      found = true;
+      break;
+    }
+
+    CFRelease(windows);
+    return found;
+  }
+}
