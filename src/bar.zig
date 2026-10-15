@@ -194,10 +194,10 @@ fn spaces(c: *sb.Client) !void {
 
 fn frontAppItems(c: *sb.Client, config_input: Config) !void {
     @setEvalBranchQuota(1_000_000);
-    // One hidden driver item receives `yabai_update` and lets the helper refresh
-    // every space and per-display item from one batch.
-    try config.declare(c, .{ .kind = .event, .name = "yabai_update" }, config_input.helper);
-
+    // One hidden driver item, for the one event the daemon has no other way to
+    // hear: yabai's own events reach it through `kxdesk yabai changed`, but that
+    // the display arrangement moved is the bar's to report - it is what drops the
+    // updater's cached display map, and the batch below rebuilds the rest.
     try config.declare(c, .{
         .name = "system.yabai",
         .position = "left",
@@ -207,7 +207,7 @@ fn frontAppItems(c: *sb.Client, config_input: Config) !void {
             .associated_display = 1,
         }),
         .helper = true,
-        .events = &.{ .yabai_update, .display_change },
+        .events = &.{.display_change},
     }, config_input.helper);
 
     inline for (1..max_displays + 1) |display| {
@@ -530,8 +530,11 @@ fn linkItem(c: *sb.Client) !void {
 /// Homebrew's outdated count and the click that upgrades: `brew outdated` and
 /// `brew upgrade` are both far too slow for the event path, so the daemon runs
 /// them off it and this only asks for the work; see `items_brew.zig`.
+///
+/// The count is asked for on the item's own hour, and by `kxdesk brew refresh`
+/// when a shell has just upgraded: no `brew_update` event is declared for it, so
+/// nothing has to be routed through the bar to have it re-read.
 fn brewItem(c: *sb.Client, config_input: Config) !void {
-    try config.declare(c, .{ .kind = .event, .name = "brew_update" }, config_input.helper);
     try config.declare(c, .{
         .name = "brew",
         .props = config.node(.{
@@ -550,7 +553,7 @@ fn brewItem(c: *sb.Client, config_input: Config) !void {
             .drawing = true,
         }),
         .helper = true,
-        .events = &.{ .@"mouse.clicked", .brew_update },
+        .events = &.{.@"mouse.clicked"},
     }, config_input.helper);
 }
 

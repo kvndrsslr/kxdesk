@@ -211,6 +211,36 @@ pub const all = [_]Command{
         .run = appCommand,
     },
 
+    // The other thing a shell knows before the item's own clock does: the badge
+    // is re-read on the hour, and this is how an upgrade in a shell catches it up.
+    .{
+        .name = "brew",
+        .summary = "Homebrew's outdated count, on the badge beside the GitHub one",
+        .subcommands = &.{
+            .{
+                .name = "refresh",
+                .summary = "re-read `brew outdated`, which the item does hourly anyway",
+            },
+        },
+    },
+
+    // What yabai's own signals report: no window verb, no provisioning, just the
+    // event that says what the bar draws from yabai is stale.
+    .{
+        .name = "yabai",
+        .summary = "the events yabai's signals post",
+        .subcommands = &.{
+            .{
+                .name = "changed",
+                .summary = "refresh what the bar draws from yabai",
+                .args = &.{.{
+                    .name = "[<window>]",
+                    .summary = "the id the signal carries ($YABAI_WINDOW_ID): only that window's title moves",
+                }},
+            },
+        },
+    },
+
     // Every window, space and display verb, and yabai's provisioning: the one
     // vocabulary a client types and a key binding in `kanata.kbd` pushes.
     .{

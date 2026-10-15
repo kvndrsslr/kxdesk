@@ -45,8 +45,6 @@ pub const Event = enum {
     battery,
     system_woke,
     power_source_change,
-    brew_update,
-    yabai_update,
     display_change,
 };
 

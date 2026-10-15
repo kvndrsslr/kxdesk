@@ -1,6 +1,10 @@
 //! Event routing: every event SketchyBar addresses to the item that declared
-//! `mach_helper=`, routed on `NAME` (`SENDER` says what happened). The names here
+//! `mach_helper`, routed on `NAME` (`SENDER` says what happened). The names here
 //! mirror the items in `bar.zig` that declare the helper.
+//!
+//! The events a client posts (`EVT`-tagged blocks, see `control.postEvent`)
+//! arrive on the same loop and are routed by `handleClientEvent`: the work the
+//! bar's own triggers used to relay, with no item in the way.
 //!
 //! Nothing on this path forks a process, and every event is handled inline except
 //! the ones whose work is slow: a refresh that reaches the network, the brew icon's
@@ -129,17 +133,11 @@ pub const Dispatcher = struct {
         if (std.mem.eql(u8, env.getOrEmpty("SENDER"), "mouse.clicked")) {
             return self.click(name, env);
         }
-        if (std.mem.eql(u8, name, "system.yabai")) {
+        if (std.mem.eql(u8, name, items_yabai.item)) {
             // The display map is cached, so a display change has to drop it; the
             // full update below then rebuilds it.
             if (std.mem.eql(u8, env.getOrEmpty("SENDER"), "display_change")) {
                 self.yabai_items.invalidateDisplays();
-            }
-
-            // `window_title_changed` names the window that changed, so only that
-            // display's label needs to move.
-            if (std.mem.eql(u8, env.getOrEmpty("ONLY"), "title")) {
-                return self.yabai_items.updateTitle(env.getOrEmpty("YABAI_WINDOW_ID"));
             }
             return self.requestYabai();
         }
@@ -203,6 +201,30 @@ pub const Dispatcher = struct {
 
         // Unknown senders are ignored; `space_change` reaches the space items
         // only because they were created with that subscription.
+    }
+
+    /// An event a client posted for the daemon - `kxdesk yabai changed`, which is
+    /// what every yabai signal runs, and `kxdesk brew refresh`, which is what a
+    /// shell runs after upgrading Homebrew. Both name the item they are about:
+    /// unlike a bar event, neither carries an item's own environment.
+    ///
+    /// The pair that matters for yabai is `window` - a title change names the one
+    /// window whose label moves, and anything else rebuilds every strip.
+    pub fn handleClientEvent(self: *Dispatcher, block: [*:0]const u8) !void {
+        const env = sb.Env{ .block = block };
+        const item = env.getOrEmpty("item");
+
+        if (std.mem.eql(u8, item, items_brew.item)) {
+            self.brew.request(self.io, items_brew.refresh, .{ self.io, self.gpa, self.store });
+            return;
+        }
+        // An item this build knows nothing about is a client from another
+        // version; like an unknown sender, it is ignored.
+        if (!std.mem.eql(u8, item, items_yabai.item)) return;
+
+        const window = env.getOrEmpty("window");
+        if (window.len > 0) return self.yabai_items.updateTitle(window);
+        return self.requestYabai();
     }
 
     /// What a click asks for.

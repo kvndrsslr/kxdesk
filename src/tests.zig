@@ -979,14 +979,14 @@ test "config.add spells --add per kind" {
     try config.add(&client, .graph, "net.down", "left", 60);
     try config.add(&client, .ring, "battery.ring", "right", 20);
     // Position and width are spelled anyway, but an event carries neither.
-    try config.add(&client, .event, "yabai_update", "right", 99);
+    try config.add(&client, .event, "system_woke", "right", 99);
 
     const expected = [_][]const u8{
-        "--add",        "item",  "brew",     "right",
-        "--add",        "graph", "net.down", "left",
-        "60",           "--add", "ring",     "battery.ring",
-        "right",        "20",    "--add",    "event",
-        "yabai_update",
+        "--add",       "item",  "brew",     "right",
+        "--add",       "graph", "net.down", "left",
+        "60",          "--add", "ring",     "battery.ring",
+        "right",       "20",    "--add",    "event",
+        "system_woke",
     };
     try expectArgs(client.args.items, &expected);
 }
@@ -1000,8 +1000,8 @@ test "config.subscribe queues one --subscribe, or nothing when no events" {
     try config.subscribe(&client, "brew", &.{});
     try std.testing.expectEqual(@as(usize, 0), client.args.items.len);
 
-    try config.subscribe(&client, "brew", &.{ .@"mouse.clicked", .brew_update });
-    const expected = [_][]const u8{ "--subscribe", "brew", "mouse.clicked", "brew_update" };
+    try config.subscribe(&client, "brew", &.{ .@"mouse.clicked", .system_woke });
+    const expected = [_][]const u8{ "--subscribe", "brew", "mouse.clicked", "system_woke" };
     try expectArgs(client.args.items, &expected);
 }
 
@@ -1036,14 +1036,14 @@ test "config.declare queues add, set with the clears, helper, click script, subs
         .props = config.node(.{ .drawing = true, .icon = .{ .value = "B" } }),
         .helper = true,
         .click_script = "echo clicked",
-        .events = &.{ .@"mouse.clicked", .brew_update },
+        .events = &.{ .@"mouse.clicked", .system_woke },
     }, "org.kdressler.kxdesk.item.brew");
 
     const expected = [_][]const u8{
         "--add",       "item",   "brew",                                       "right",
         "--set",       "brew",   "script=",                                    "click_script=",
         "drawing=on",  "icon=B", "mach_helper=org.kdressler.kxdesk.item.brew", "click_script=echo clicked",
-        "--subscribe", "brew",   "mouse.clicked",                              "brew_update",
+        "--subscribe", "brew",   "mouse.clicked",                              "system_woke",
     };
     try expectArgs(client.args.items, &expected);
 }
@@ -1053,9 +1053,9 @@ test "config.declare for an event kind is only the --add" {
     var client = sb.Client.init(std.testing.allocator, sb.sketchybar_service);
     defer client.deinit();
 
-    try config.declare(&client, .{ .kind = .event, .name = "yabai_update" }, "org.kdressler.kxdesk");
+    try config.declare(&client, .{ .kind = .event, .name = "system_woke" }, "org.kdressler.kxdesk");
 
-    const expected = [_][]const u8{ "--add", "event", "yabai_update" };
+    const expected = [_][]const u8{ "--add", "event", "system_woke" };
     try expectArgs(client.args.items, &expected);
 }
 

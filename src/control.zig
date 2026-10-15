@@ -5,6 +5,10 @@
 //! block starts with one of its own `key`/`value` keys and names no response
 //! port, so `postReply` does nothing for it. A reply to the port the request
 //! named is `OK\0<payload>\0` or `ERR\0<message>\0`.
+//!
+//! The third block is an event a client posts: `EVT\0<key>\0<value>...\0\0`. It
+//! names no response port either, and its tag is what tells the two events apart
+//! - see `postEvent`.
 
 const std = @import("std");
 
@@ -50,6 +54,25 @@ const Tokens = struct {
 /// Whether `block` is a control request rather than a SketchyBar event.
 pub fn isRequest(block: [*:0]const u8) bool {
     return block[0] == 'C' and std.mem.eql(u8, std.mem.sliceTo(block, 0), tag);
+}
+
+/// First token of an event a *client* posts for the daemon, as opposed to one
+/// SketchyBar addressed to the item that declared `mach_helper`: the same
+/// key/value pairs behind a tag, because an event's first token is `NAME` and
+/// says nothing about who sent it. The tag is what keeps a client event from
+/// being read as proof that a bar is present - the reader of an event block does
+/// exactly that, and only SketchyBar is in a position to prove it.
+pub const event_tag = "EVT";
+
+/// Whether `block` is an event a client posted rather than a request or a
+/// SketchyBar event.
+pub fn isEvent(block: [*:0]const u8) bool {
+    return block[0] == 'E' and std.mem.eql(u8, std.mem.sliceTo(block, 0), event_tag);
+}
+
+/// `block` without its event tag: the pairs `sb.Env` reads.
+pub fn eventPayload(block: [*:0]const u8) [*:0]const u8 {
+    return @ptrCast(block + event_tag.len + 1);
 }
 
 /// Split `CMD\0verb\0argument...` into its parts. Returns null when the block is
@@ -191,6 +214,51 @@ pub fn query(
         -1, -2 => null,
         else => out[0..@min(@as(usize, @intCast(written)), out.len)],
     };
+}
+
+/// Largest client event this frames: the tag and one pair, with room to spare.
+/// What a caller posts is a word and a window id, so a longer one is a bug and
+/// is refused rather than cut down.
+const max_event = 256;
+
+/// Post an event to the daemon and return, naming no reply port: the daemon does
+/// the work with nothing waiting on it, which is what the caller needs - it is a
+/// signal's shell command, and the work an event starts (two yabai queries and a
+/// rebuild of every strip) is not its to wait for.
+///
+/// `pairs` is the flat `key`, `value`, `key`, `value` the daemon reads. Returns
+/// false when nothing was posted. Unlike `submit` this never asks launchd to
+/// start a daemon: an event is worth delivering to a daemon that is already
+/// there, and worth nothing after a wait.
+pub fn postEvent(pairs: []const []const u8) bool {
+    var buffer: [max_event]u8 = undefined;
+    const framed = frameEvent(&buffer, pairs) orelse return false;
+
+    const port = platform.kx_bootstrap_lookup(sb.control_service);
+    if (port == 0) return false;
+    defer platform.kx_port_release(port);
+
+    return platform.kx_post(port, framed.ptr, framed.len) == 0;
+}
+
+/// `EVT\0<key>\0<value>\0...\0\0`, the block an event is posted as. Null when the
+/// pairs do not fit `buffer`, or are not pairs.
+fn frameEvent(buffer: []u8, pairs: []const []const u8) ?[]u8 {
+    if (pairs.len % 2 != 0) return null;
+
+    var caret: usize = 0;
+    for (0..pairs.len + 1) |position| {
+        const token = if (position == 0) event_tag else pairs[position - 1];
+        // The token, its NUL, and - whatever this token is - the empty token
+        // that closes the block.
+        if (caret + token.len + 2 > buffer.len) return null;
+        @memcpy(buffer[caret..][0..token.len], token);
+        caret += token.len;
+        buffer[caret] = 0;
+        caret += 1;
+    }
+    buffer[caret] = 0;
+    return buffer[0 .. caret + 1];
 }
 
 /// Send one request and return the reply, or null when a daemon that the

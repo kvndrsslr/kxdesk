@@ -35,27 +35,32 @@ const managed_rules = [_][]const []const u8{
 /// substituted by yabai at signal time, so it must reach yabai verbatim; argv
 /// tokens rather than a shell keep it intact.
 ///
-/// The `kx_*` family fans every event that changes what the bar renders into the
-/// one `yabai_update` trigger the helper serves; `window_resized` is in it
-/// because yabai retiles a window moved to another space, so that is the event
-/// that arrives (measured - `window_moved` is the positional one, a drag in
-/// place). `display_changed` is the focused display moving, and it is the only
-/// notification a `display --focus` that leaves the focused window where it was
-/// sends. The display *list* is left to the bar's own `display_change`
-/// subscription.
+/// The `kx_*` family fans every event that changes what the bar renders into one
+/// `kxdesk yabai changed`; `window_resized` is in it because yabai retiles a
+/// window moved to another space, so that is the event that arrives (measured -
+/// `window_moved` is the positional one, a drag in place). `display_changed` is
+/// the focused display moving, and it is the only notification a `display --focus`
+/// that leaves the focused window where it was sends. The display *list* is left
+/// to the bar's own `display_change` subscription.
+///
+/// The event goes straight to the daemon rather than through the bar's own
+/// `--trigger`, which the bar would have to relay: the daemon is the only thing
+/// that acts on it, one process per event is unavoidable (yabai runs an action as
+/// a shell command), and a daemon that is not there costs nothing. See
+/// `commands.zig` for the words.
 const managed_signals = [_][]const []const u8{
-    &.{ "-m", "signal", "--add", "event=window_title_changed", "label=kx_atc", "action=sketchybar --trigger yabai_update ONLY=title YABAI_WINDOW_ID=$YABAI_WINDOW_ID", "active=yes" },
-    &.{ "-m", "signal", "--add", "event=window_focused", "label=kx_wf", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_moved", "label=kx_wm", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_resized", "label=kx_wr", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_created", "label=kx_wc", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_destroyed", "label=kx_wd", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_minimized", "label=kx_wmin", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=window_deminimized", "label=kx_wdemin", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=space_changed", "label=kx_sc", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=space_created", "label=kx_spc", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=space_destroyed", "label=kx_spd", "action=sketchybar --trigger yabai_update" },
-    &.{ "-m", "signal", "--add", "event=display_changed", "label=kx_dch", "action=sketchybar --trigger yabai_update" },
+    &.{ "-m", "signal", "--add", "event=window_title_changed", "label=kx_atc", "action=kxdesk yabai changed $YABAI_WINDOW_ID", "active=yes" },
+    &.{ "-m", "signal", "--add", "event=window_focused", "label=kx_wf", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=window_moved", "label=kx_wm", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=window_resized", "label=kx_wr", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=window_created", "label=kx_wc", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=window_destroyed", "label=kx_wd", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=window_minimized", "label=kx_wmin", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=window_deminimized", "label=kx_wdemin", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=space_changed", "label=kx_sc", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=space_created", "label=kx_spc", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=space_destroyed", "label=kx_spd", "action=kxdesk yabai changed" },
+    &.{ "-m", "signal", "--add", "event=display_changed", "label=kx_dch", "action=kxdesk yabai changed" },
     &.{ "-m", "signal", "--add", "event=window_created", "app=Telegram", "label=telegram-display-enforcement", "action=zsh -c \"sleep 1.5 && yabai -m window $YABAI_WINDOW_ID --display 1 --focus\"" },
 };
 

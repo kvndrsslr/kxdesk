@@ -1,6 +1,6 @@
 //! Native updater for the space strips and the per-display front-app items:
-//! every `yabai_update` becomes one batch, assembled from the yabai space and
-//! window queries.
+//! every event yabai reports becomes one batch, assembled from the yabai space
+//! and window queries.
 //!
 //! A query that fails degrades the update rather than aborting it, and a failure
 //! that repeats is reported once. The display map is cached until SketchyBar
@@ -21,6 +21,11 @@ const yabai = @import("yabai.zig");
 const max_title = 48;
 /// Spaces beyond the number of `space.*` items that exist are ignored.
 const max_spaces = 16;
+
+/// The hidden driver item `bar.zig` declares: the daemon's name for yabai in the
+/// bar's own vocabulary, whether the event about it comes from the bar
+/// (`display_change`) or from a signal's shell (`kxdesk yabai changed`).
+pub const item = "system.yabai";
 
 /// A display as SketchyBar sees it.
 const SbDisplay = struct {
@@ -118,12 +123,12 @@ pub const Updater = struct {
         };
 
         var item_buf: [32]u8 = undefined;
-        const item = try std.fmt.bufPrint(&item_buf, "front_app.{d}", .{display});
+        const item_name = try std.fmt.bufPrint(&item_buf, "front_app.{d}", .{display});
 
         var title_buf: [max_title + 3]u8 = undefined;
         var props: Props = .{};
         try props.write(.{ .label = truncateTitle(window.title, &title_buf) });
-        try self.bar.set(item, props.slice());
+        try self.bar.set(item_name, props.slice());
         try self.bar.commit();
     }
 
@@ -195,7 +200,7 @@ pub const Updater = struct {
                 theme.space_visible;
 
             var name: [24]u8 = undefined;
-            const item = try std.fmt.bufPrint(&name, "space.{d}", .{index});
+            const item_name = try std.fmt.bufPrint(&name, "space.{d}", .{index});
 
             var props: Props = .{};
             try props.write(.{
@@ -214,7 +219,7 @@ pub const Updater = struct {
             // One node cannot carry both highlights in the batch's order, so the
             // label's follows the icon's in a node of its own.
             try props.write(.{ .label = .{ .highlight = highlighted } });
-            try self.bar.set(item, props.slice());
+            try self.bar.set(item_name, props.slice());
         }
     }
 

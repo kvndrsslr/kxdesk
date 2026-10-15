@@ -4,8 +4,9 @@
 //! the command channel `kxdesk <command> [arguments...]`. Both bootstrap names
 //! share that port. The daemon owns the bar's state, applying the configuration
 //! and restoring the store's state whenever a bar appears. `help`, `completions`,
-//! `version` and `server-mode` are answered by the binary itself; the rest is
-//! described once in `commands.zig`.
+//! `version`, `server-mode`, and the events `yabai changed` and `brew refresh`
+//! post are answered by the binary itself; the rest is described once in
+//! `commands.zig`.
 
 const std = @import("std");
 
@@ -19,6 +20,7 @@ const context = @import("context.zig");
 const control = @import("control.zig");
 const dispatch = @import("dispatch.zig");
 const items_audio = @import("items_audio.zig");
+const items_brew = @import("items_brew.zig");
 const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
 const kanata = @import("kanata.zig");
@@ -174,6 +176,17 @@ fn onBlock(block: [*:0]const u8, reply_port: u32) callconv(.c) void {
 
     if (control.isRequest(block)) return daemon.startCommand(block, reply_port);
 
+    // An event a client posted is not SketchyBar sending, so it says nothing
+    // about whether the bar is there - which is why it is routed before the
+    // presence check below rather than through it.
+    if (control.isEvent(block)) {
+        if (daemon.dispatcher.bar.trace) sb.traceBlock(block);
+        daemon.dispatcher.handleClientEvent(control.eventPayload(block)) catch |err| {
+            log.warn("event failed: {s}", .{@errorName(err)});
+        };
+        return;
+    }
+
     // A block addressed to our `mach_helper` proves a bar is present - and can
     // arrive after the shutdown marker of the bar it belongs to.
     if (!daemon.present.load(.monotonic)) {
@@ -258,7 +271,9 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, mode, "help") or
         std.mem.eql(u8, mode, "completions") or
         std.mem.eql(u8, mode, "version") or
-        std.mem.eql(u8, mode, "server-mode"))
+        std.mem.eql(u8, mode, "server-mode") or
+        std.mem.eql(u8, mode, "yabai") or
+        std.mem.eql(u8, mode, "brew"))
     {
         return runLocally(init, mode, arguments[2..]);
     }
@@ -291,6 +306,10 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
         return;
     }
 
+    if (std.mem.eql(u8, mode, "yabai") or std.mem.eql(u8, mode, "brew")) {
+        return postClientEvent(mode, args);
+    }
+
     if (std.mem.eql(u8, mode, "server-mode")) {
         const payload = server_mode.serverMode(arena, init.io, args) catch |err| return fail(init.io, err);
         if (payload.len > 0) emit(init.io, .stdout, payload);
@@ -298,6 +317,29 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
     }
 
     writeText(init.io, .stdout, cli.script(args[0]) orelse return);
+}
+
+/// `kxdesk yabai changed [<window>]` and `kxdesk brew refresh`: post the event and
+/// say nothing. The callers are shells - a yabai signal's action, and a shell that
+/// has just upgraded Homebrew - whose only voice would be a line in a log, so a
+/// daemon that is not listening is silence: the event is worth nothing without
+/// one, and the next event to arrive with a daemon up refreshes everything
+/// anyway. Nothing waits for the work an event starts either; see
+/// `control.postEvent`.
+fn postClientEvent(mode: []const u8, args: []const []const u8) void {
+    if (std.mem.eql(u8, mode, "brew")) {
+        _ = control.postEvent(&.{ "item", items_brew.item });
+        return;
+    }
+
+    // `args[0]` is the subcommand, already checked against the registry; the
+    // window is the one argument `changed` may carry.
+    const window = if (args.len > 1) args[1] else "";
+    if (window.len == 0) {
+        _ = control.postEvent(&.{ "item", items_yabai.item });
+        return;
+    }
+    _ = control.postEvent(&.{ "item", items_yabai.item, "window", window });
 }
 
 /// Describe one command, or say there is no such command.

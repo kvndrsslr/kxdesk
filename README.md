@@ -137,6 +137,52 @@ argument in the launcher the `kxkanata` formula installs, which is what
 `brew services` starts (`/opt/homebrew/bin/kxkanata`, `brew services info
 kxkanata`).
 
+## The yabai signals: `kxdesk yabai changed`
+
+Everything yabai does that changes what the bar draws — a window focused, moved,
+created or destroyed, a title, a space, a display — is a yabai *signal*, and every
+one of them runs the same line:
+
+```sh
+kxdesk yabai changed                    # window_focused, space_changed, …
+kxdesk yabai changed $YABAI_WINDOW_ID   # window_title_changed, which names the window
+```
+
+`kxdesk wm refresh-signals` writes that table (`src/yabai_ops.zig:managed_signals`)
+into yabai, and `yabai -m signal --list` shows what is configured.
+
+Naming the window is the cheap path: the daemon asks yabai for that one window's
+record and moves the single label, where any other event rebuilds every space
+strip and front-app pair from the space and window lists. Refreshes are held 120 ms
+apart, so a drag — which emits `window_resized` per frame — collapses into one
+update, and an event that arrives inside the interval is drained by the receive
+loop's own clock rather than dropped.
+
+The event goes straight to the daemon rather than through the bar, which would
+otherwise be a relay for it: a bar event would have to be triggered, delivered to
+an item that exists only to receive it, and handed on. A process per event is
+unavoidable — yabai runs an action through a shell, the fork kanata's channel is
+built to avoid — so the client posts one block and exits, naming no reply port,
+rather than waiting out the yabai queries and the bar rebuild it started. A daemon
+that is not listening is not an error: the event is dropped in silence, since the
+signal's shell has nowhere to report and the next event to arrive with a daemon up
+refreshes everything anyway.
+
+## The brew count: `kxdesk brew refresh`
+
+The badge beside the GitHub bell is how many packages `brew outdated` lists — the
+check mark when there are none. The item asks for that count on its own clock, an
+hour apart, and its click starts the upgrade; a shell that has just run
+`brew upgrade` knows sooner than that. So `~/.zshrc`'s `brewit` calls
+
+```sh
+kxdesk brew refresh
+```
+
+on either side of its two upgrades. The event is posted the same way yabai's
+signals post theirs (see above): one block, no reply port, and nothing to report
+when no daemon is listening.
+
 ## Quick access terminals: `kxdesk term toggle`
 
 `kxdesk term toggle <name>` shows the named kitty quick access terminal, or hides
