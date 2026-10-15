@@ -147,6 +147,24 @@ pub fn frameProps(props: *Props, opacity: f64) !void {
     } });
 }
 
+/// One frame in the order this item's own draw reads it: the value the path starts
+/// at, then the bands highest first.
+///
+/// The draw starts at the left edge with `y[0]` and paints `y[width - 1]` first
+/// (`graph.c`), so the lowest band has to be both the value the path starts at
+/// and the value at the far end of the frame: that is what paints it on the left
+/// edge, with the highest band one column in from the right. The start repeats
+/// the lowest band because both are drawn on the same column - a start that
+/// disagreed with the column under it would draw a spike there.
+pub fn frameOrder(levels: []const f64) [values]f64 {
+    std.debug.assert(levels.len + 1 == values);
+
+    var frame: [values]f64 = undefined;
+    frame[0] = levels[0];
+    for (frame[1..], 0..) |*value, position| value.* = levels[levels.len - 1 - position];
+    return frame;
+}
+
 /// Hand one frame to the bar: the graph's whole width, in one batch, so the
 /// spectrum is never drawn half of one frame and half of the next.
 ///
@@ -162,18 +180,9 @@ fn push(client: *sb.Client, levels: []const f64, opacity: f64) !void {
     try frameProps(&props, opacity);
     try client.set(item, props.slice());
 
-    // The frame in the order this item's own draw reads it: the path starts at the
-    // lowest band, and the columns then run from the highest band back down to
-    // that lowest one, so that low frequencies are painted on the left and the
-    // highest band ends one column short of the item's right edge - the column a
-    // left-to-right graph never paints. The start repeats the lowest band because
-    // it is drawn on the same column as the last value of the frame.
-    try client.push(item, levels[0]);
-    var band = levels.len;
-    while (band > 0) {
-        band -= 1;
-        try client.push(item, levels[band]);
-    }
+    // Every value the frame has, in the order the item's draw reads them, from the
+    // column the path starts at to the far end of the item.
+    for (frameOrder(levels)) |level| try client.push(item, level);
     try client.commit();
 }
 

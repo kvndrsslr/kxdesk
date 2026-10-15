@@ -341,6 +341,26 @@ test "the spectrum weights a band by what the ear hears, not by the energy in it
     for (quiet.analyse(&silent, rate)) |level| try std.testing.expectEqual(@as(f64, 0), level);
 }
 
+test "a frame carries the bands in the order the graph draws them" {
+    // `graph.c` starts a left-to-right graph at the left edge with `y[0]` and then
+    // paints `y[width - 1]` first, walking right: the value at the path's start is
+    // drawn on the column under the frame's last value, and the graph's own last
+    // column is never painted. So the frame is the lowest band at both ends, and
+    // the bands in between run highest first - which is what puts low frequencies
+    // on the left of the item and the highest band one column in from its right.
+    var levels: [spectrum.bands]f64 = undefined;
+    for (&levels, 0..) |*level, band| level.* = @as(f64, @floatFromInt(band)) / 100.0;
+
+    const frame = items_audio.frameOrder(&levels);
+    try std.testing.expectEqual(@as(usize, spectrum.bands + 1), frame.len);
+    try std.testing.expectEqual(levels[0], frame[0]);
+    try std.testing.expectEqual(levels[0], frame[items_audio.values - 1]);
+    try std.testing.expectEqual(levels[spectrum.bands - 1], frame[1]);
+    for (frame[1..], 0..) |value, position| {
+        try std.testing.expectEqual(levels[spectrum.bands - 1 - position], value);
+    }
+}
+
 test "a faded colour keeps its hue and moves only its alpha" {
     // The alpha is the byte the bar reads as opacity, so a full opacity is the
     // colour the configuration declared, byte for byte - the frame's own colours
