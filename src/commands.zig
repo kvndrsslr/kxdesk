@@ -262,6 +262,10 @@ pub const all = [_]Command{
             .{ .name = "clear-signals", .summary = "drop every configured yabai signal" },
             .{ .name = "refresh-yabai", .summary = "re-provision the yabai rules and signals" },
             .{
+                .name = "external-bar-toggle",
+                .summary = "reserve the bar's strip on every display, or release it",
+            },
+            .{
                 .name = "window-swap",
                 .summary = "swap the focused window with its neighbour",
                 .args = &.{direction_argument},

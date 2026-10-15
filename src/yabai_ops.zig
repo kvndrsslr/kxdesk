@@ -59,6 +59,13 @@ const managed_signals = [_][]const []const u8{
     &.{ "-m", "signal", "--add", "event=window_created", "app=Telegram", "label=telegram-display-enforcement", "action=zsh -c \"sleep 1.5 && yabai -m window $YABAI_WINDOW_ID --display 1 --focus\"" },
 };
 
+/// The strip the external bar draws in, reserved on every display: SketchyBar is
+/// 26 points tall and sits on all of them.
+const external_bar_on = "all:26:0";
+
+/// The same bar, reserved nowhere: windows take the strip the bar draws in.
+const external_bar_off = "off:26:0";
+
 /// Every setting kxdesk asserts on yabai, in the order yabai receives them.
 ///
 /// Flat `key, value, key, value`, because that is the shape `yabai -m config`
@@ -90,7 +97,7 @@ const settings = [_][]const u8{
     "left_padding",                "0",
     "right_padding",               "0",
     "window_gap",                  "3",
-    "external_bar",                "all:26:0",
+    "external_bar",                external_bar_on,
     "display_arrangement_order",   "horizontal",
     // Off: yabai then writes every event and every bar query to
     // `/tmp/yabai_kdressler.out.log` on the same thread that processes them, and
@@ -763,6 +770,29 @@ pub fn copyWindows(context: *Context, args: []const []const u8) anyerror![]const
     return "";
 }
 
+/// Swap yabai's external bar reservation between the strip the settings table
+/// asserts and none at all.
+///
+/// `yabai -m config <setting>` with no value answers with the current one, so the
+/// toggle reads the live setting rather than remembering it: the value stays
+/// right across a kxdesk restart, and across a `~/.yabairc` that set it
+/// differently. Anything that is not the reserved value - `off`, `main:26:0`, a
+/// value a future bar writes - is taken as unreserved and goes back to `all`.
+pub fn externalBarToggle(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
+    const arena = context.arena;
+
+    const current = std.mem.trim(u8, try context.yabai.rawQuery(arena, &.{
+        "-m", "config", "external_bar",
+    }), " \t\r\n");
+    const next: []const u8 = if (std.mem.eql(u8, current, external_bar_on))
+        external_bar_off
+    else
+        external_bar_on;
+    try context.yabai.command(arena, &.{ "-m", "config", "external_bar", next });
+    return "";
+}
+
 /// One `wm` verb: the word a client types after `wm`, and the run over its argv.
 pub const WmVerb = struct {
     name: []const u8,
@@ -783,6 +813,7 @@ pub const wm_verbs = [_]WmVerb{
     .{ .name = "refresh-signals", .run = refreshSignals },
     .{ .name = "clear-signals", .run = clearSignals },
     .{ .name = "refresh-yabai", .run = refreshYabai },
+    .{ .name = "external-bar-toggle", .run = externalBarToggle },
     .{ .name = "window-swap", .run = windowSwap },
     .{ .name = "window-warp", .run = windowWarp },
     .{ .name = "window-insert", .run = windowInsert },
