@@ -7,6 +7,11 @@
 //! silence, mapped onto the graph's height, and it falls back over a few frames
 //! rather than dropping the instant the note stops: at twenty frames a second a
 //! bar that vanished at once would read as a flicker.
+//!
+//! `Silence` is the other half of that: the levels of a machine that stopped
+//! playing are flat within a few frames, and what is left on the bar then is the
+//! graph's own frame - the wash under the line - which an idle machine only ever
+//! shows as an empty box.
 
 const std = @import("std");
 
@@ -41,6 +46,16 @@ const ceiling_db = -6;
 /// at twenty frames a second this clears a full-height peak in a third of a
 /// second.
 const fall_per_frame = 0.09;
+
+/// How long a flat spectrum is still drawn before it is faded out: ten seconds
+/// of nothing is long enough that the machine is idle rather than between two
+/// pieces, and short enough that the empty room the item keeps on the bar does
+/// not stand there for a whole album's gap.
+pub const quiet_ms: i64 = 10_000;
+
+/// How long the fade takes once it starts, in milliseconds: half a second is
+/// ten of the item's frames, which is a fade rather than a cut.
+pub const fade_ms: i64 = 500;
 
 /// The twiddles of the window's FFT, `exp(-2*pi*i*k/N)`, as real and imaginary
 /// pairs - fixed by the window size, so built once at compile time.
@@ -115,6 +130,47 @@ pub const Span = struct {
         return &self.levels;
     }
 };
+
+/// What is left of the item when the machine stops playing: the opacity its
+/// colours are drawn at, and the state that says when the spectrum went flat.
+///
+/// A level of zero is a band below the floor, so a frame of nothing but zeroes
+/// is a spectrum with no sound in it at all; the quiet stretch is counted from
+/// the frame that first reads so, which is within the decay of the last note.
+/// The fade is a reading of the time since then rather than a count of the
+/// frames drawn since it, so a frame the loop was late for lands where the fade
+/// is rather than a step behind it.
+///
+/// The way back is not a fade: a frame with sound in it is drawn at full opacity
+/// at once, since a fade in would dim the opening of the piece being played -
+/// nothing is being hidden while there is something to show.
+pub const Silence = struct {
+    /// When the levels last went flat, zero while they are not. Only the newest
+    /// quiet stretch is measured, so a frame with sound in it clears it.
+    flat_since: i64 = 0,
+
+    /// The opacity a frame of `levels` at `now` is drawn at: one until the flat
+    /// spectrum has stood for `quiet_ms`, then falling to zero over `fade_ms`.
+    pub fn opacity(self: *Silence, levels: []const f64, now: i64) f64 {
+        if (sounding(levels)) {
+            self.flat_since = 0;
+            return 1;
+        }
+        if (self.flat_since == 0) self.flat_since = now;
+
+        const flat_for = now - self.flat_since;
+        if (flat_for < quiet_ms) return 1;
+        const faded = @as(f64, @floatFromInt(flat_for - quiet_ms)) / fade_ms;
+        return @max(0, 1 - faded);
+    }
+};
+
+/// Whether a frame's levels carry sound: any band above the floor is a band with
+/// music in it.
+fn sounding(levels: []const f64) bool {
+    for (levels) |level| if (level > 0) return true;
+    return false;
+}
 
 /// The magnitude of one FFT bin, in amplitude units of the windowed samples.
 fn binMagnitude(real: *const [window_size]f32, imaginary: *const [window_size]f32, bin: usize) f64 {

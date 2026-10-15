@@ -50,6 +50,17 @@ pub const space_chip_height = 25;
 /// The colour a stale or idle mark wears.
 pub const dim = theme.dark_grey;
 
+/// `color` with its alpha scaled by `opacity`, 0 being invisible and 1 the
+/// colour as it is declared: the opacity `items_audio` draws the spectrum's
+/// block at once the machine has been quiet for ten seconds. Only the alpha
+/// moves, so a hue stays the palette's own and a change of palette still reaches
+/// a faded item.
+pub fn faded(color: theme.Color, opacity: f64) theme.Color {
+    const alpha: f64 = @floatFromInt(color >> 24);
+    const scaled: u8 = @intFromFloat(@round(alpha * std.math.clamp(opacity, 0, 1)));
+    return (color & 0x00ffffff) | (@as(theme.Color, scaled) << 24);
+}
+
 /// Font weights, spelled as SketchyBar's font spec spells them.
 pub const Weight = enum { Regular, Bold, SemiBold, ExtraBold, Italic };
 

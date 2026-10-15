@@ -9,6 +9,7 @@ const std = @import("std");
 
 const cli = @import("cli.zig");
 const config = @import("config.zig");
+const items_audio = @import("items_audio.zig");
 const items_herdr = @import("items_herdr.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
@@ -273,6 +274,90 @@ test "the spectrum's bands fall when the sound stops, rather than blink" {
         try std.testing.expect(frames < 100);
     }
     try std.testing.expect(frames > 1);
+}
+
+test "the spectrum is faded out ten seconds after it goes flat, and back at once" {
+    // The item's block is drawn at the opacity this hands back: one while there
+    // is sound, one for the ten seconds a flat spectrum is still shown, then a
+    // fade to nothing over the half second after that.
+    const flat: [spectrum.bands]f64 = @splat(0);
+    const loud: [spectrum.bands]f64 = @splat(0.5);
+
+    var silence: spectrum.Silence = .{};
+    var now: i64 = 1_000_000;
+    try std.testing.expectEqual(@as(f64, 1), silence.opacity(&loud, now));
+
+    // The quiet stretch is counted from the frame the levels went flat, not from
+    // the last frame with sound in it: the bars decay for a few frames first.
+    now += 50;
+    try std.testing.expectEqual(@as(f64, 1), silence.opacity(&flat, now));
+    const flat_at = now;
+
+    now = flat_at + spectrum.quiet_ms - 1;
+    try std.testing.expectEqual(@as(f64, 1), silence.opacity(&flat, now));
+    now = flat_at + spectrum.quiet_ms;
+    try std.testing.expectEqual(@as(f64, 1), silence.opacity(&flat, now));
+
+    now = flat_at + spectrum.quiet_ms + spectrum.fade_ms / 2;
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), silence.opacity(&flat, now), 1e-9);
+
+    // The fade lands on nothing and stays there: a frame the loop was late for
+    // does not leave the block faintly drawn.
+    now = flat_at + spectrum.quiet_ms + spectrum.fade_ms;
+    try std.testing.expectEqual(@as(f64, 0), silence.opacity(&flat, now));
+    now += 60_000;
+    try std.testing.expectEqual(@as(f64, 0), silence.opacity(&flat, now));
+
+    // Sound is drawn whole again at once - a fade back in would dim the first
+    // note - and the quiet stretch starts over from that frame.
+    now += 50;
+    try std.testing.expectEqual(@as(f64, 1), silence.opacity(&loud, now));
+    now += 50;
+    try std.testing.expectEqual(@as(f64, 1), silence.opacity(&flat, now));
+    now += spectrum.quiet_ms - 1;
+    try std.testing.expectEqual(@as(f64, 1), silence.opacity(&flat, now));
+}
+
+test "a faded colour keeps its hue and moves only its alpha" {
+    // The alpha is the byte the bar reads as opacity, so a full opacity is the
+    // colour the configuration declared, byte for byte - the frame's own colours
+    // have to be the bar's when there is nothing to fade.
+    try std.testing.expectEqual(theme.graph_spectrum, style.faded(theme.graph_spectrum, 1));
+    try std.testing.expectEqual(@as(theme.Color, 0xff8ec07c), style.faded(theme.graph_spectrum, 1));
+
+    // Nothing at all is nothing drawn, whatever the colour's own alpha was.
+    try std.testing.expectEqual(@as(theme.Color, 0x008ec07c), style.faded(theme.graph_spectrum, 0));
+    try std.testing.expectEqual(@as(theme.Color, 0x008ec07c), style.faded(theme.graph_spectrum_fill, 0));
+
+    // Half way through the fade is half the colour's own alpha, not half of a
+    // full one: the wash is translucent as it is declared.
+    try std.testing.expectEqual(@as(theme.Color, 0x808ec07c), style.faded(theme.graph_spectrum, 0.5));
+    try std.testing.expectEqual(@as(theme.Color, 0x288ec07c), style.faded(theme.graph_spectrum_fill, 0.5));
+
+    // An opacity off the scale is where it ends, never over it: a fade that
+    // overshot by a frame would brighten the colour it is fading.
+    try std.testing.expectEqual(theme.graph_spectrum, style.faded(theme.graph_spectrum, 1.2));
+    try std.testing.expectEqual(@as(theme.Color, 0x008ec07c), style.faded(theme.graph_spectrum, -0.2));
+}
+
+test "a frame sets the spectrum's colours at its own opacity" {
+    // The two colours the block is drawn with are set by name on every frame, so
+    // a name the item does not answer to is a fade that never happens: the item
+    // declaration (`bar.spectrumItem`) and these keys are one spelling apart.
+    const cases = [_]struct { opacity: f64, expected: [2][]const u8 }{
+        .{ .opacity = 1, .expected = .{ "graph.color=0xff8ec07c", "graph.fill_color=0x508ec07c" } },
+        .{ .opacity = 0.5, .expected = .{ "graph.color=0x808ec07c", "graph.fill_color=0x288ec07c" } },
+        .{ .opacity = 0, .expected = .{ "graph.color=0x008ec07c", "graph.fill_color=0x008ec07c" } },
+    };
+
+    for (cases) |case| {
+        var props: Props = .{};
+        try items_audio.frameProps(&props, case.opacity);
+        try std.testing.expectEqual(case.expected.len, props.slice().len);
+        for (case.expected, props.slice()) |want, got| {
+            try std.testing.expectEqualStrings(want, got);
+        }
+    }
 }
 
 /// One window of a `tone` at `amplitude`, at `rate` Hz.

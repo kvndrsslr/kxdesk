@@ -6,14 +6,21 @@
 //! minute. The tap itself is the platform's (`kx_audio_*` in `src/platform.m`),
 //! and it is started from a task of its own because the call that starts it waits
 //! for the system's permission prompt.
+//!
+//! A frame carries the item's colours as well as its values, faded by
+//! `spectrum.Silence`: the block goes invisible ten seconds after the spectrum
+//! went flat, and is drawn whole again the frame a sound arrives.
 
 const std = @import("std");
 
 const background = @import("background.zig");
 const log = @import("log.zig");
 const platform = @import("platform.zig");
+const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const spectrum = @import("spectrum.zig");
+const style = @import("style.zig");
+const theme = @import("theme.zig");
 
 /// The bar item the spectrum is drawn on.
 pub const item = "audio.spectrum";
@@ -49,6 +56,9 @@ pub const Updater = struct {
     bar: *sb.Client,
     /// The bars' levels, which each band only ever falls from.
     span: spectrum.Span = .{},
+    /// When the spectrum went flat, and so how far the block has been faded out
+    /// since - see `spectrum.Silence`.
+    silence: spectrum.Silence = .{},
     /// The tap's start, at most one in flight. It is the call that blocks, so it
     /// never runs on the receive loop this is polled from.
     tap: background.Slot = .{},
@@ -103,7 +113,8 @@ pub const Updater = struct {
 
         // A bar that will not take the frame is on its way out: the next one
         // describes the audio as it is then, and that is all that is owed.
-        push(client, self.span.analyse(&self.window, rate)) catch {};
+        const levels = self.span.analyse(&self.window, rate);
+        push(client, levels, self.silence.opacity(levels, now)) catch {};
         return @intCast(cadence_ms);
     }
 
@@ -121,10 +132,30 @@ pub const Updater = struct {
     }
 };
 
+/// The properties one frame sets: the block's two colours, faded to the frame's
+/// `opacity`. Split from `push` so that the keys the item is drawn with are the
+/// item declaration's to state and a test's to pin.
+pub fn frameProps(props: *Props, opacity: f64) !void {
+    try props.write(.{ .graph = .{
+        .color = try props.argb(style.faded(theme.graph_spectrum, opacity)),
+        .fill_color = try props.argb(style.faded(theme.graph_spectrum_fill, opacity)),
+    } });
+}
+
 /// Hand one frame to the bar: the graph's whole width, in one batch, so the
 /// spectrum is never drawn half of one frame and half of the next.
-fn push(client: *sb.Client, levels: []const f64) !void {
+///
+/// The block's opacity rides on the frame as the alpha of the two colours it is
+/// drawn with - the line and the wash under it, which is the whole of the block:
+/// its background is `style.graph_fill`, which is transparent. Both are stated
+/// every frame rather than only while faded, so that the colours a `reload`
+/// restates are the frame's to correct, the way its values are.
+fn push(client: *sb.Client, levels: []const f64, opacity: f64) !void {
     std.debug.assert(levels.len + 1 == values);
+
+    var props: Props = .{};
+    try frameProps(&props, opacity);
+    try client.set(item, props.slice());
 
     // The column the fork's draw never reaches.
     try client.push(item, 0);
