@@ -318,6 +318,29 @@ test "the spectrum is faded out a second after it goes flat, and back at once" {
     try std.testing.expectEqual(@as(f64, 1), silence.opacity(&flat, now));
 }
 
+test "the spectrum weights a band by what the ear hears, not by the energy in it" {
+    const rate = 48_000.0;
+    // One tone at a time, the same amplitude: the window carries the same energy
+    // at 100 Hz and at 3 kHz, and what separates the two readings is the
+    // weighting alone - 100 Hz is weighted around 20 dB below 3 kHz, which on a
+    // graph 64 dB tall is a third of its height.
+    var low: spectrum.Span = .{};
+    var mid: spectrum.Span = .{};
+    const at_100 = low.analyse(&tone_window(100, 0.5, rate), rate);
+    const at_3000 = mid.analyse(&tone_window(3_000, 0.5, rate), rate);
+
+    const low_band = std.mem.indexOfMax(f64, at_100);
+    const mid_band = std.mem.indexOfMax(f64, at_3000);
+    try std.testing.expect(at_100[low_band] > 0.5);
+    try std.testing.expect(at_3000[mid_band] > at_100[low_band] + 0.2);
+
+    // And a band nothing is playing in is still drawn empty: the weighting moves
+    // where the floor sits for a band, it does not lift the band above it.
+    const silent: [spectrum.window_size]f32 = @splat(0);
+    var quiet: spectrum.Span = .{};
+    for (quiet.analyse(&silent, rate)) |level| try std.testing.expectEqual(@as(f64, 0), level);
+}
+
 test "a faded colour keeps its hue and moves only its alpha" {
     // The alpha is the byte the bar reads as opacity, so a full opacity is the
     // colour the configuration declared, byte for byte - the frame's own colours

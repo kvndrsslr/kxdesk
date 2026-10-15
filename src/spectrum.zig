@@ -4,9 +4,10 @@
 //! bands that grow geometrically with frequency - music is heard in octaves, so
 //! an octave of hiss takes as much of the bar as an octave of bass, which a
 //! linear fold would not. A band's level is its loudest bin in decibels against
-//! silence, mapped onto the graph's height, and it falls back over a few frames
-//! rather than dropping the instant the note stops: at twenty frames a second a
-//! bar that vanished at once would read as a flicker.
+//! silence, moved by what the ear hears at the band's own frequency
+//! (`weightingDb`) and mapped onto the graph's height, and it falls back over a
+//! few frames rather than dropping the instant the note stops: at twenty frames a
+//! second a bar that vanished at once would read as a flicker.
 //!
 //! `Silence` is the other half of that: the levels of a machine that stopped
 //! playing are flat within a few frames, and what is left on the bar then is the
@@ -33,11 +34,15 @@ const low_hz = 40;
 /// width cannot say anything about.
 const high_hz = 16_000;
 
-/// What reads as the bottom of the graph and what reads as the top, in dBFS. A
-/// band quieter than the floor is drawn empty, which is what silence and the
-/// noise floor of a machine playing nothing both are; the ceiling is a few
-/// decibels below full scale, so that loud music fills the graph without clipping
-/// against the top of it.
+/// What reads as the bottom of the graph and what reads as the top, in dBFS,
+/// before each band's own `weightingDb` moves them: a band quieter than its floor
+/// is drawn empty, which is what silence and the noise floor of a machine playing
+/// nothing both are; the ceiling is a few decibels below full scale, so that loud
+/// music fills the graph without clipping against the top of it.
+///
+/// The weighting moves both ends by a whole spectrum's worth: the 40 Hz band's
+/// floor is 34 dB further down than the kilohertz bands', which is where a bass
+/// line of that band plays, and the top of the display only sits 7 dB lower.
 const floor_db = -70;
 const ceiling_db = -6;
 
@@ -123,8 +128,9 @@ pub const Span = struct {
 
             // A band with no signal at all is 20*log10(0) = -inf, which the
             // comparison below reads as the floor - the same place a band the
-            // floor's own width below is drawn.
-            const db = 20.0 * @log10(@max(magnitude * scale, 1e-9));
+            // floor's own width below is drawn. The band's own weight is what
+            // turns that reading of its energy into a reading of its loudness.
+            const db = 20.0 * @log10(@max(magnitude * scale, 1e-9)) + weightingDb(range.hz);
             const wanted = std.math.clamp((db - floor_db) / (ceiling_db - floor_db), 0, 1);
             self.levels[band] = @max(wanted, self.levels[band] - fall_per_frame);
         }
@@ -173,6 +179,29 @@ fn sounding(levels: []const f64) bool {
     return false;
 }
 
+/// The A-weighting curve of IEC 61672 at `hz` Hz, in dB: the gain the ear does
+/// not apply, so that a band's level plus its weight is how loud the band is
+/// heard rather than how much energy it carries.
+///
+/// It is the curve of equal loudness at low levels, and it is the tilt a
+/// spectrum display needs: music carries far more energy an octave down - a bass
+/// line reads tens of decibels hotter than a cymbal in the bins themselves -
+/// while the ear hears 40 Hz as 34 dB quieter than 1 kHz at the same level, and
+/// 3 kHz a decibel louder. An unweighted display is therefore a wall of bass with
+/// a thin line above it, and this is what makes the display move with the mix
+/// instead.
+fn weightingDb(hz: f64) f64 {
+    const square = hz * hz;
+    const air_square = 12194.0 * 12194.0;
+
+    // The standard's own transfer function, magnitude in amplitude of one.
+    const numerator = air_square * square * square;
+    const denominator = (square + 20.6 * 20.6) * @sqrt((square + 107.7 * 107.7) * (square + 737.9 * 737.9)) * (square + air_square);
+
+    // The +2 dB is the standard's own reference: a kilohertz reads zero.
+    return 20.0 * @log10(numerator / denominator) + 2.0;
+}
+
 /// The magnitude of one FFT bin, in amplitude units of the windowed samples.
 fn binMagnitude(real: *const [window_size]f32, imaginary: *const [window_size]f32, bin: usize) f64 {
     const re: f64 = real[bin];
@@ -186,9 +215,13 @@ const Band = struct {
     /// The lowest and highest bin the band is read from, `first .. past`.
     first: usize,
     past: usize,
-    /// Where the band's own centre frequency sits, as a fractional bin, when the
-    /// band is narrower than the FFT can resolve - and `null` when it spans at
-    /// least one whole bin and is read from the bins themselves.
+    /// The band's own centre frequency, in Hz: the geometric mean of its edges,
+    /// because a band is a share of the octave above it and pitch is heard
+    /// logarithmically. This is the frequency the band is weighted at.
+    hz: f64,
+    /// Where that centre sits, as a fractional bin, when the band is narrower
+    /// than the FFT can resolve - and `null` when it spans at least one whole bin
+    /// and is read from the bins themselves.
     ///
     /// The bottom of the display is finer than the transform: at 48 kHz a bin is
     /// 47 Hz wide, and twenty of the lowest bands are narrower than that, so
@@ -212,13 +245,14 @@ const Band = struct {
         const high = edgeHz(rate, band + 1);
         const first = binAt(rate, low);
         const past = @max(binAt(rate, high), first + 1);
-        const centre = @sqrt(low * high) / bin_hz;
+        const hz = @sqrt(low * high);
 
         return .{
             .first = first,
             .past = past,
+            .hz = hz,
             .centre = if (high - low < bin_hz)
-                std.math.clamp(centre, 1, window_size / 2 - 1)
+                std.math.clamp(hz / bin_hz, 1, window_size / 2 - 1)
             else
                 null,
         };

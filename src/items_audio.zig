@@ -2,10 +2,10 @@
 //! as a spectrum rather than as a series over time.
 //!
 //! Every frame pushes one value per graph column, so the graph's whole width is
-//! replaced at once and nothing scrolls: the columns are the bands, not the last
-//! minute. The tap itself is the platform's (`kx_audio_*` in `src/platform.m`),
-//! and it is started from a task of its own because the call that starts it waits
-//! for the system's permission prompt.
+//! replaced at once and nothing scrolls: the columns are the bands, lowest
+//! frequency on the left, not the last minute. The tap itself is the platform's
+//! (`kx_audio_*` in `src/platform.m`), and it is started from a task of its own
+//! because the call that starts it waits for the system's permission prompt.
 //!
 //! A frame carries the item's colours as well as its values, faded by
 //! `spectrum.Silence`: the block goes invisible a second after the spectrum
@@ -26,13 +26,18 @@ const theme = @import("theme.zig");
 pub const item = "audio.spectrum";
 
 /// The values one frame pushes, which is also the graph's own column count: the
-/// bands, and the column the fork's right-to-left draw never reaches.
+/// bands, and the value the item's draw starts its path at.
 ///
-/// A right-positioned graph is drawn from `y[1]` to `y[width - 1]` - `graph.c`
-/// starts one point past the graph's left edge and walks back over it - so the
-/// first value of a frame is a column that is never painted and the bands begin
-/// at the second. Pushing the graph's whole width every frame is what keeps that
-/// alignment: each frame overwrites every value the last one left.
+/// This item sits in the notch's right-hand section, and SketchyBar sets a
+/// graph's `rtl` only for the right and center-left positions (`bar.c`), so this
+/// graph is drawn left to right: it moves to `y[0]` at the left edge and then
+/// paints `y[width - 1]` through `y[1]` away from it (`graph.c`). The value the
+/// path starts at therefore lands on the column under `y[width - 1]`, and the
+/// graph's own last column is never painted at all. Pushing the graph's whole
+/// width every frame is what keeps that alignment - each frame overwrites every
+/// value the last one left - and it is why a frame carries the lowest band twice:
+/// once as the value the path starts at, and once as the column below it, where
+/// the frame's second value begins.
 pub const values = spectrum.bands + 1;
 
 /// How often a frame is drawn. Twenty a second is what makes the bars move with
@@ -157,9 +162,18 @@ fn push(client: *sb.Client, levels: []const f64, opacity: f64) !void {
     try frameProps(&props, opacity);
     try client.set(item, props.slice());
 
-    // The column the fork's draw never reaches.
-    try client.push(item, 0);
-    for (levels) |level| try client.push(item, level);
+    // The frame in the order this item's own draw reads it: the path starts at the
+    // lowest band, and the columns then run from the highest band back down to
+    // that lowest one, so that low frequencies are painted on the left and the
+    // highest band ends one column short of the item's right edge - the column a
+    // left-to-right graph never paints. The start repeats the lowest band because
+    // it is drawn on the same column as the last value of the frame.
+    try client.push(item, levels[0]);
+    var band = levels.len;
+    while (band > 0) {
+        band -= 1;
+        try client.push(item, levels[band]);
+    }
     try client.commit();
 }
 
