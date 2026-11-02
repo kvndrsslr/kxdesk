@@ -257,6 +257,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, mode, "__complete")) return runCompletions(init, arguments[2..]);
+    if (std.mem.eql(u8, mode, "__blackout")) return runBlackout(init, arguments[2..]);
 
     // `kxdesk <command> --help`: answered here so it works with no daemon
     // listening, and before the local commands below, which would refuse a
@@ -279,6 +280,17 @@ pub fn main(init: std.process.Init) !void {
     }
 
     return runClient(init, mode, arguments[2..]);
+}
+
+/// The process `wm blackout` starts: draw the overlay on every display but the
+/// focused window's, and return when it ends. The display id and the socket the
+/// running overlay listens on are the two arguments the command hands over.
+fn runBlackout(init: std.process.Init, args: []const []const u8) !void {
+    if (args.len < 2) std.process.exit(1);
+    const display_id = std.fmt.parseInt(u32, args[0], 10) catch std.process.exit(1);
+    const arena = init.arena.allocator();
+    const socket = try arena.dupeSentinel(u8, args[1], 0);
+    if (!platform.kx_blackout_run(display_id, socket.ptr)) std.process.exit(1);
 }
 
 /// The commands this binary answers itself, each checked against its own

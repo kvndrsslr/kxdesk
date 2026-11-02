@@ -10,6 +10,7 @@
 #include <IOKit/ps/IOPowerSources.h>
 #include <SystemConfiguration/SystemConfiguration.h>
 #include <bootstrap.h>
+#include <dispatch/dispatch.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <locale.h>
@@ -116,6 +117,14 @@ bool kx_server_publish(uint32_t port, const char* name) {
 
 uint32_t kx_uid(void) {
   return (uint32_t)getuid();
+}
+
+bool kx_self_path(char* out, size_t cap) {
+  if (!out || cap == 0) return false;
+  uint32_t size = (uint32_t)cap;
+  if (_NSGetExecutablePath(out, &size) != 0) return false;
+  out[cap - 1] = '\0';
+  return true;
 }
 
 /// Receive one message, waiting at most `timeout_ms` milliseconds; false when the
@@ -1091,6 +1100,45 @@ bool kx_open_url(const char* url) {
   return [[NSWorkspace sharedWorkspace] openURL:target];
 }
 
+bool kx_browser_open(void) {
+  @autoreleasepool {
+    NSWorkspace* workspace = [NSWorkspace sharedWorkspace];
+
+    /* Asking the workspace which application handles an `https` URL is the
+     * system's own answer to "the default browser", and it follows a change the
+     * user makes in System Settings without anything here being reconfigured. */
+    NSURL* probe = [NSURL URLWithString:@"https://example.com"];
+    NSURL* application_url = probe ? [workspace URLForApplicationToOpenURL:probe] : nil;
+    NSString* identifier =
+        application_url ? [NSBundle bundleWithURL:application_url].bundleIdentifier : nil;
+    NSRunningApplication* target =
+        identifier ? [NSRunningApplication runningApplicationsWithBundleIdentifier:identifier].firstObject
+                   : nil;
+
+    /* No default could be read: fall back to the browser this machine uses,
+     * by the bundle it ships under rather than by its display name. */
+    if (!application_url) {
+      application_url = [NSURL fileURLWithPath:@"/Applications/Zen.app"];
+      target = [NSRunningApplication runningApplicationsWithBundleIdentifier:@"app.zen-browser.zen"]
+                   .firstObject;
+    }
+
+    /* A summon, not a toggle: an application already in front is left exactly
+     * as it is, and one behind something else is raised. */
+    if (target) {
+      if (target.processIdentifier == workspace.frontmostApplication.processIdentifier) return true;
+      return [target activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+    }
+
+    if (!application_url) return false;
+    NSWorkspaceOpenConfiguration* configuration = [NSWorkspaceOpenConfiguration configuration];
+    [workspace openApplicationAtURL:application_url
+                      configuration:configuration
+                  completionHandler:nil];
+    return true;
+  }
+}
+
 bool kx_clipboard_set(const char* text) {
   if (!text) return false;
 
@@ -1150,5 +1198,187 @@ bool kx_has_onscreen_window(int32_t pid) {
 
     CFRelease(windows);
     return found;
+  }
+}
+
+/* ---- blackout overlay ------------------------------------------------- */
+
+/* One helper process owns the overlay: `wm blackout` starts it, a second press
+ * connects to its socket to stop it, and it ends by itself when focus leaves the
+ * application it was started in. There is no second caller and no other thread,
+ * so the state is file-scope. */
+
+static int g_blackout_listener = -1;
+static char g_blackout_socket[sizeof(((struct sockaddr_un*)0)->sun_path)];
+static NSMutableArray<NSWindow*>* g_blackout_windows = nil;
+static pid_t g_blackout_application = 0;
+
+static void kx_blackout_teardown(void) {
+  for (NSWindow* window in g_blackout_windows) [window orderOut:nil];
+  g_blackout_windows = nil;
+  if (g_blackout_listener >= 0) {
+    close(g_blackout_listener);
+    g_blackout_listener = -1;
+  }
+  if (g_blackout_socket[0] != '\0') {
+    unlink(g_blackout_socket);
+    g_blackout_socket[0] = '\0';
+  }
+}
+
+static void kx_blackout_end(void) {
+  kx_blackout_teardown();
+  exit(0);
+}
+
+static int kx_blackout_connect(const char* path) {
+  if (!path || path[0] == '\0' || strlen(path) >= sizeof(g_blackout_socket)) return -1;
+
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+
+  struct sockaddr_un address;
+  memset(&address, 0, sizeof(address));
+  address.sun_family = AF_UNIX;
+  strcpy(address.sun_path, path);
+
+  if (connect(fd, (struct sockaddr*)&address, sizeof(address)) != 0) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+bool kx_blackout_stop(const char* socket_path) {
+  int fd = kx_blackout_connect(socket_path);
+  if (fd < 0) return false;
+  close(fd);
+  return true;
+}
+
+bool kx_blackout_run(uint32_t display_id, const char* socket_path) {
+  @autoreleasepool {
+    if (!socket_path || socket_path[0] == '\0' ||
+        strlen(socket_path) >= sizeof(g_blackout_socket)) {
+      return false;
+    }
+
+    /* The caller checks for a running overlay first. Checking again here closes
+     * the gap before this process has a socket of its own: a press that raced
+     * with the previous helper still turns the previous one off instead of
+     * drawing a second overlay. */
+    if (kx_blackout_stop(socket_path)) return true;
+
+    unlink(socket_path);
+    int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listener < 0) return false;
+
+    struct sockaddr_un address;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    strcpy(address.sun_path, socket_path);
+    if (bind(listener, (struct sockaddr*)&address, sizeof(address)) != 0 ||
+        listen(listener, 1) != 0) {
+      close(listener);
+      unlink(socket_path);
+      return false;
+    }
+
+    g_blackout_listener = listener;
+    strcpy(g_blackout_socket, socket_path);
+
+    NSWorkspace* workspace = [NSWorkspace sharedWorkspace];
+    g_blackout_application = workspace.frontmostApplication.processIdentifier;
+
+    /* An accessory application may draw windows but never takes the keyboard;
+     * the overlay itself is borderless and ignores the pointer, so the display
+     * under it keeps behaving as it did. */
+    NSApplication* application = [NSApplication sharedApplication];
+    [application setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    [application finishLaunching];
+
+    g_blackout_windows = [NSMutableArray array];
+    bool matched = false;
+    for (NSScreen* screen in [NSScreen screens]) {
+      NSNumber* number = screen.deviceDescription[@"NSScreenNumber"];
+      if (number.unsignedIntValue == display_id) {
+        matched = true;
+        continue;
+      }
+
+      NSWindow* window = [[NSWindow alloc] initWithContentRect:screen.frame
+                                                     styleMask:NSWindowStyleMaskBorderless
+                                                       backing:NSBackingStoreBuffered
+                                                         defer:NO];
+      window.backgroundColor = [NSColor blackColor];
+      window.opaque = YES;
+      window.hasShadow = NO;
+      window.ignoresMouseEvents = YES;
+      /* Above the menu bar, the Dock and a native-fullscreen window, and present
+       * on every Space including the fullscreen ones. */
+      window.level = NSScreenSaverWindowLevel;
+      window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                  NSWindowCollectionBehaviorStationary |
+                                  NSWindowCollectionBehaviorFullScreenAuxiliary |
+                                  NSWindowCollectionBehaviorIgnoresCycle;
+      [window orderFrontRegardless];
+      [g_blackout_windows addObject:window];
+    }
+
+    if (!matched) {
+      kx_blackout_teardown();
+      return false;
+    }
+
+    /* A connection is the stop signal: the second press connects and closes,
+     * and there is no message to parse. */
+    dispatch_source_t source = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_READ, (uintptr_t)g_blackout_listener, 0,
+        dispatch_get_main_queue());
+    dispatch_source_set_event_handler(source, ^{
+      int client = accept(g_blackout_listener, NULL, NULL);
+      if (client >= 0) close(client);
+      kx_blackout_end();
+    });
+    dispatch_resume(source);
+
+    NSNotificationCenter* center = workspace.notificationCenter;
+
+    /* Focus moving to another application is the end of the mode. */
+    [center addObserverForName:NSWorkspaceDidActivateApplicationNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification* note) {
+                      NSRunningApplication* changed = note.userInfo[NSWorkspaceApplicationKey];
+                      if (!changed) return;
+                      pid_t pid = changed.processIdentifier;
+                      if (pid == getpid() || pid == g_blackout_application) return;
+                      kx_blackout_end();
+                    }];
+
+    /* An application that quits need not activate another one first - a last
+     * window closing is enough - so its termination ends the mode too. */
+    [center addObserverForName:NSWorkspaceDidTerminateApplicationNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification* note) {
+                      NSRunningApplication* changed = note.userInfo[NSWorkspaceApplicationKey];
+                      if (changed && changed.processIdentifier == g_blackout_application) {
+                        kx_blackout_end();
+                      }
+                    }];
+
+    /* The notification center only reports changes from this point on, so a
+     * focus change during setup is caught by reading the state once more. The
+     * helper itself never counts as a change. */
+    NSRunningApplication* frontmost = workspace.frontmostApplication;
+    if (frontmost.processIdentifier != getpid() &&
+        frontmost.processIdentifier != g_blackout_application) {
+      kx_blackout_end();
+    }
+
+    [application run];
+    kx_blackout_teardown();
+    return true;
   }
 }

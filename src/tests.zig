@@ -778,10 +778,10 @@ test "app open takes the applications the bindings open, and nothing else" {
     const arena = arena_state.allocator();
 
     const app = cli.find("app") orelse return error.TestUnexpectedResult;
-    try std.testing.expect((try cli.validate(arena, std.testing.io, app, &.{ "open", "arc-debug" })) == null);
+    try std.testing.expect((try cli.validate(arena, std.testing.io, app, &.{ "open", "browser" })) == null);
 
     const chrome = (try cli.validate(arena, std.testing.io, app, &.{ "open", "chrome" })).?;
-    try std.testing.expect(std.mem.indexOf(u8, chrome, "<app> is not one of: code, kitty, arc-debug") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chrome, "<app> is not one of: code, kitty, browser") != null);
 }
 
 test "a CLI word names its enum tag whichever way it is spelled" {

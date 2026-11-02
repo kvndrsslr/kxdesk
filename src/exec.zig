@@ -18,17 +18,16 @@ pub fn path(gpa: std.mem.Allocator, name: [:0]const u8) ![:0]u8 {
 }
 
 /// The applications the bindings open, with the arguments they were bound with:
-/// Arc on the debugging port `hyper ret` opened it on, kitty as a single instance
-/// listening on the socket `kitty @` reaches.
-pub const App = enum { code, kitty, arc_debug };
+/// kitty as a single instance listening on the socket `kitty @` reaches, and the
+/// default browser summoned rather than opened by name, since which browser that
+/// is can change under the binding.
+pub const App = enum { code, kitty, browser };
 
-/// Launch one of them, detached from this process.
+/// Run one of them: most are launched detached, the browser is summoned in place.
 pub fn openApp(arena: std.mem.Allocator, application: App) !void {
     switch (application) {
         .code => try spawn(arena, &.{ "/usr/bin/open", "-a", "Visual Studio Code" }),
-        .arc_debug => try spawn(arena, &.{
-            "/usr/bin/open", "-a", "Arc", "--args", "--remote-debugging-port=9222",
-        }),
+        .browser => if (!platform.kx_browser_open()) return error.BrowserUnavailable,
         .kitty => {
             // Resolved rather than assumed, like every other external command
             // here: the daemon runs under launchd, whose PATH has no Homebrew in

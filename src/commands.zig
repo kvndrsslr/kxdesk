@@ -202,7 +202,7 @@ pub const all = [_]Command{
                 .summary = "open the named application",
                 .args = &.{.{
                     .name = "<app>",
-                    .summary = "code, kitty or arc-debug",
+                    .summary = "code, kitty or browser",
                     .source = .fixed,
                     .values = &applications,
                 }},
@@ -294,6 +294,10 @@ pub const all = [_]Command{
             .{
                 .name = "external-bar-toggle",
                 .summary = "show the bar and reserve its strip, or hide both",
+            },
+            .{
+                .name = "blackout",
+                .summary = "black out every display but the focused window's, until focus leaves its application",
             },
             .{
                 .name = "window-swap",

@@ -10,6 +10,7 @@
 const std = @import("std");
 
 const Context = @import("context.zig").Context;
+const exec = @import("exec.zig");
 const kanata = @import("kanata.zig");
 const log = @import("log.zig");
 const platform = @import("platform.zig");
@@ -816,6 +817,48 @@ fn setBarHidden(context: *Context, hidden: bool) !void {
     try context.bar.commit();
 }
 
+/// Black out every display but the one holding the focused window, and keep it
+/// black until focus moves to another application or the binding is pressed
+/// again.
+///
+/// The overlay is a process of its own because AppKit draws it on the main
+/// thread, which the daemon has given to the receive loop. The socket is how a
+/// second press reaches the first process, so no overlay state is kept here: if
+/// nothing answers, there is nothing to turn off.
+pub fn blackout(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
+    const arena = context.arena;
+
+    var socket_buffer: [128]u8 = undefined;
+    const socket = try std.fmt.bufPrintSentinel(
+        &socket_buffer,
+        "/tmp/kxdesk-blackout-{d}.sock",
+        .{platform.kx_uid()},
+        0,
+    );
+    if (platform.kx_blackout_stop(socket.ptr)) return "";
+
+    // The display the focused window is on - the display this application is
+    // the active one of. yabai answers with the window's display, not the
+    // display query's own `has-focus`, which follows a `display --focus` rather
+    // than the window the user is in.
+    const display = try context.yabai.query(yabai.Display, arena, &.{
+        "-m", "query", "--displays", "--window",
+    });
+
+    var executable_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    if (!platform.kx_self_path(&executable_buffer, executable_buffer.len)) return error.LaunchFailed;
+    const executable = std.mem.sliceTo(&executable_buffer, 0);
+
+    try exec.spawn(arena, &.{
+        executable,
+        "__blackout",
+        try numArg(arena, display.id),
+        socket,
+    });
+    return "";
+}
+
 /// One `wm` verb: the word a client types after `wm`, and the run over its argv.
 pub const WmVerb = struct {
     name: []const u8,
@@ -837,6 +880,7 @@ pub const wm_verbs = [_]WmVerb{
     .{ .name = "clear-signals", .run = clearSignals },
     .{ .name = "refresh-yabai", .run = refreshYabai },
     .{ .name = "external-bar-toggle", .run = externalBarToggle },
+    .{ .name = "blackout", .run = blackout },
     .{ .name = "window-swap", .run = windowSwap },
     .{ .name = "window-warp", .run = windowWarp },
     .{ .name = "window-insert", .run = windowInsert },

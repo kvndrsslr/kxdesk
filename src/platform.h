@@ -82,6 +82,10 @@ bool kx_server_publish(uint32_t port, const char* name);
 /// Real user id of this process, for `launchctl` domain targets.
 uint32_t kx_uid(void);
 
+/// Copy this process's executable path into `out`, for the detached helper a
+/// command starts from the same binary. Returns false when the path does not fit.
+bool kx_self_path(char* out, size_t cap);
+
 /// Run `argv` (NULL-terminated, `argv[0]` is a filesystem path) with stdout
 /// captured into `out` and stderr discarded. Returns the total number of bytes
 /// the child wrote - which may exceed `cap`, signalling truncation - or -1 if
@@ -284,6 +288,13 @@ bool kx_dark_mode(void);
 /// Open a URL with the user's default handler.
 bool kx_open_url(const char* url);
 
+/// Raise the default browser, launching it when it is not running. The handler
+/// is the system's default browser for an `https` URL, so it follows whichever
+/// browser the user last chose; Zen stands in when no handler can be read. An
+/// application already in front is left alone. Returns false when no browser
+/// could be started.
+bool kx_browser_open(void);
+
 /// Put `text` on the general pasteboard, replacing what was on it. Returns
 /// false when the pasteboard could not be written - which is a pasteboard
 /// problem, not a text one: the caller's text is already UTF-8 and NUL
@@ -308,3 +319,17 @@ bool kx_display_name(uint32_t display_id, char* out, size_t cap);
 /// panel apart - and whether bringing it to another display is a move the user
 /// would see.
 bool kx_has_onscreen_window(int32_t pid);
+
+/// Ask the blackout helper listening on `socket_path` to stop, if one is up.
+/// True when a helper answered. The helper exits by itself, so this does not
+/// wait for it.
+bool kx_blackout_stop(const char* socket_path);
+
+/// Draw the blackout on every display but `display_id`, and run until the
+/// frontmost application changes, that application terminates, or another
+/// `kx_blackout_stop` reaches the socket. `socket_path` is the address a second
+/// press uses to turn the overlay off; a stale socket file is replaced.
+///
+/// Blocks: this is the whole of the helper process `wm blackout` starts. False
+/// when the socket could not be bound or no screen carries that display id.
+bool kx_blackout_run(uint32_t display_id, const char* socket_path);

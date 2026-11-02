@@ -27,6 +27,9 @@ pub extern "c" fn kx_port_copy(port: u32) u32;
 pub extern "c" fn kx_server_publish(port: u32, name: [*:0]const u8) bool;
 pub extern "c" fn kx_uid() u32;
 
+/// This process's executable path, for spawning the same binary as a helper.
+pub extern "c" fn kx_self_path(out: [*]u8, cap: usize) bool;
+
 pub extern "c" fn kx_exec_capture(
     argv: [*]const ?[*:0]const u8,
     out: [*]u8,
@@ -105,6 +108,7 @@ pub const Link = enum(u8) { disconnected = 0, wifi = 1, wired = 2 };
 pub extern "c" fn kx_net_link() u8;
 pub extern "c" fn kx_dark_mode() bool;
 pub extern "c" fn kx_open_url(url: [*:0]const u8) bool;
+pub extern "c" fn kx_browser_open() bool;
 
 /// Connect to a TCP peer and keep the descriptor, for a channel that stays open;
 /// -1 while the peer is not listening, which is the caller's cue to try again.
@@ -129,3 +133,10 @@ pub extern "c" fn kx_display_name(display_id: u32, out: [*]u8, cap: usize) bool;
 /// Whether that process has a window on screen right now: the state a quick
 /// access terminal's panel is shown or hidden in.
 pub extern "c" fn kx_has_onscreen_window(pid: i32) bool;
+
+/// Stop the blackout helper listening on `path`, if one is up.
+pub extern "c" fn kx_blackout_stop(path: [*:0]const u8) bool;
+
+/// Run the blackout overlay over every screen but `display_id`; see
+/// `src/platform.h` for the two ways it ends.
+pub extern "c" fn kx_blackout_run(display_id: u32, path: [*:0]const u8) bool;
