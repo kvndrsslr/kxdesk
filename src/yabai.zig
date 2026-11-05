@@ -48,9 +48,10 @@ pub const Window = struct {
     app: []const u8 = "",
     title: []const u8 = "",
     role: []const u8 = "",
-    /// Zero for an ordinary window; above zero for an overlay an application
-    /// floats over the desktop instead of putting a window on it.
-    level: u32 = 0,
+    /// What kind of window it is (`AXStandardWindow`, `AXDialog`,
+    /// `AXSystemDialog`, `AXFloatingWindow`): the classification yabai itself
+    /// decides "real window" by, where `level` would only say how it stacks.
+    subrole: []const u8 = "",
     display: u32 = 0,
     space: u32 = 0,
     @"stack-index": u32 = 0,

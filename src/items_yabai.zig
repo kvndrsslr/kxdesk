@@ -116,6 +116,9 @@ pub const Updater = struct {
             report(&self.reported.spaces, err);
             return;
         };
+        // The cheap path must agree with the full one: a window the strips leave
+        // out may not put its app and title back on its display.
+        if (!drawn(window)) return;
         const arrangement = try self.displayArrangement();
         const display = arrangement.get(window.display) orelse {
             self.stale = true;
@@ -334,13 +337,19 @@ const DisplayMap = struct {
     }
 };
 
-/// Whether the bar lists a window at all: a root window yabai manages, not
-/// minimized or hidden, and not an overlay an application floats above the
-/// desktop. A dictation helper's invisible panels sit at levels 25-27 and are
-/// sticky, so without the level they would head a strip on whichever space is
-/// showing and stand in as that display's front app.
+/// Whether the bar lists a window at all: one yabai itself calls real - a
+/// standard window, a floating window or a dialog - and not minimized or
+/// hidden. A dictation helper's invisible panels are `AXSystemDialog`, so they
+/// are left out whatever level they stack at, while a floating or always-on-top
+/// window the user can work in still counts.
 fn drawn(window: yabai.Window) bool {
-    return std.mem.eql(u8, window.role, "AXWindow") and !window.@"is-minimized" and !window.@"is-hidden" and window.level == 0;
+    return std.mem.eql(u8, window.role, "AXWindow") and realSubrole(window.subrole) and !window.@"is-minimized" and !window.@"is-hidden";
+}
+
+/// The subroles of yabai's `window_is_real`: `AXSystemDialog` and `AXUnknown`
+/// are not windows the user works in.
+fn realSubrole(subrole: []const u8) bool {
+    return std.mem.eql(u8, subrole, "AXStandardWindow") or std.mem.eql(u8, subrole, "AXFloatingWindow") or std.mem.eql(u8, subrole, "AXDialog");
 }
 
 /// Derived per-space state: which windows are on which space and what each space
