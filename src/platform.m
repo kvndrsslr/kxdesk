@@ -423,6 +423,14 @@ bool kx_which(const char* name, char* out, size_t cap) {
     }
   }
 
+  // Tern installs its launcher here, and launchd's PATH has no home directory in
+  // it; a user-local install is tried before the system-wide prefixes.
+  const char* home = getenv("HOME");
+  if (home && home[0]) {
+    int written = snprintf(out, cap, "%s/.local/bin/%s", home, name);
+    if (written > 0 && (size_t)written < cap && access(out, X_OK) == 0) return true;
+  }
+
   static const char* const prefixes[] = {"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", NULL};
   for (size_t i = 0; prefixes[i]; ++i) {
     int written = snprintf(out, cap, "%s/%s", prefixes[i], name);

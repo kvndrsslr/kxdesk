@@ -10,7 +10,7 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const config = @import("config.zig");
 const items_audio = @import("items_audio.zig");
-const items_herdr = @import("items_herdr.zig");
+const items_tern = @import("items_tern.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const kanata = @import("kanata.zig");
@@ -1043,12 +1043,12 @@ test "config.move and config.remove spell their commands" {
     defer client.deinit();
 
     try config.move(&client, "space.7", "space.3");
-    try config.moveAfter(&client, "herdr", "opencode-go");
+    try config.moveAfter(&client, "tern", "opencode-go");
     try config.remove(&client, "space.*");
 
     const expected = [_][]const u8{
         "--move",   "space.7", "before", "space.3",
-        "--move",   "herdr",   "after",  "opencode-go",
+        "--move",   "tern",    "after",  "opencode-go",
         "--remove", "space.*",
     };
     try expectArgs(client.args.items, &expected);
@@ -1178,41 +1178,37 @@ test "graphSlot sizes the room from the widest reading of the pair" {
     try std.testing.expectEqualStrings(config.color(theme.blue), air.badge.color);
 }
 
-// Two of herdr's five agent states are the agent handing the turn back to the
-// user: `done`, whose completion the server has not shown yet, and `blocked`,
-// which is an agent sitting on an approval or a question. `working` is the agent
-// holding the turn; `idle` is a completion already shown and `unknown` an agent
-// herdr could not classify, and neither is anybody's move.
-test "the herdr count takes working as work, done and blocked as attention" {
-    const answer =
-        \\{"result":{"agents":[
-        \\  {"agent":"omp","agent_status":"working"},
-        \\  {"agent":"omp","agent_status":"done"},
-        \\  {"agent":"omp","agent_status":"blocked"},
-        \\  {"agent":"omp","agent_status":"idle"},
-        \\  {"agent":"omp","agent_status":"unknown"},
-        \\  {"agent":"omp"}
-        \\]}}
+// `tern inspect --json` counts a pane as working when its program reports work,
+// and a body from a Tern with no daemon - not a listing at all - counts nothing
+// rather than zeroes. The inbox count comes from the window's own state, which a
+// daemon alone cannot report.
+test "the tern counts take working panes and the attention inbox" {
+    const listing =
+        \\{"sessions":[],"detached":[],"panes":[{"working":true},{"working":false},{"working":true}],"clients":[]}
     ;
 
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
+    const arena = arena_state.allocator();
 
-    const counts = items_herdr.countReply(arena_state.allocator(), answer) orelse
-        return error.AnswerNotRead;
+    const counts = items_tern.countListing(arena, listing) orelse return error.AnswerNotRead;
     try std.testing.expect(counts.answered);
-    try std.testing.expectEqual(@as(u32, 1), counts.working);
-    try std.testing.expectEqual(@as(u32, 2), counts.attention);
+    try std.testing.expectEqual(@as(u32, 2), counts.working);
+    try std.testing.expectEqual(@as(u32, 0), counts.attention);
 
-    // The error answer a herdr with no server running gives is not a listing, and
-    // counts nothing at all - the mark is dimmed rather than showing zeroes.
-    const no_server =
-        \\{"id":"cli:agent:list","error":{"code":"server_not_running","message":"no herdr server is running"}}
-    ;
     try std.testing.expectEqual(
-        @as(?items_herdr.Counts, null),
-        items_herdr.countReply(arena_state.allocator(), no_server),
+        @as(?items_tern.Counts, null),
+        items_tern.countListing(arena, "tern inspect: no Tern is running (no session daemon on /tmp/tern.sock)"),
     );
+
+    const state =
+        \\{"ok":true,"tabs":[],"inbox":{"open":false,"count":3,"selected":null,"entries":[],"banners":[]}}
+    ;
+    try std.testing.expectEqual(@as(?u32, 3), items_tern.countInbox(arena, state));
+    const not_state =
+        \\{"ok":false,"error":"no window"}
+    ;
+    try std.testing.expectEqual(@as(?u32, null), items_tern.countInbox(arena, not_state));
 }
 
 // An empty message is nothing to report, and it does not disturb what the guard

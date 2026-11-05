@@ -263,21 +263,25 @@ it, and skipped when the window is already on screen, so a press that hides a
 terminal never moves a window the user is looking at. When yabai cannot answer, or
 no window is focused, the terminal is toggled where it is, as it was before.
 
-## The herdr mark: what the agents are doing
+## The tern mark: what the panes are doing
 
-One item says what the agents a Herdr server is running are doing, in the same
-small print the graphs read their numbers in: a purple `:herdr:` mark with the
-count of agents that are done or blocked on the user above it, and the count of
-agents that are working below. A count is drawn only while it is above zero, so an
-idle bar carries the mark alone, and the mark itself is dim until a server answers
-— a bar on a machine that is not running Herdr says so rather than reporting
-zeroes it was never told.
+One item says what the panes a Tern session daemon is running are doing, in the
+same small print the graphs read their numbers in: a purple `:tern:` mark with the
+count of entries in Tern's needs-attention inbox above it — agents waiting on the
+user, bells, failed exits — and the count of panes whose program reports work
+below. A count is drawn only while it is above zero, so an idle bar carries the
+mark alone, and the mark itself is dim until the daemon answers — a bar on a
+machine that is not running Tern says so rather than reporting zeroes it was
+never told.
 
-`herdr agent list` reads the server's own socket — no network, no client attached
-— and the item's own two-second clock is what asks for it, because nothing but
-Herdr knows that an agent finished. A Herdr that is not running exits with
-`server_not_running` instead of starting a server of its own, which is what makes
-polling it from the daemon safe; any other failure is a line in the log, once.
+`tern inspect --json` reads the session daemon's own socket — no network, no
+window attached — and the item's own two-second clock is what asks for it, because
+nothing but Tern knows that an agent finished. The inbox's count is the window's
+own state (`tern ctl state`), reached the way a pane reaches it, through the
+daemon socket; with no window open there is no inbox to read and the count stays
+zero. A Tern with no daemon exits instead of starting one of its own, which is
+what makes polling it from the daemon safe; any other failure is a line in the
+log, once.
 
 ## The audio spectrum
 

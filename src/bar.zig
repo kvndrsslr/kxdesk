@@ -11,7 +11,7 @@ const sb = @import("sb.zig");
 const config = @import("config.zig");
 const style = @import("style.zig");
 const items_audio = @import("items_audio.zig");
-const items_herdr = @import("items_herdr.zig");
+const items_tern = @import("items_tern.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
 const pomodoro = @import("pomodoro.zig");
@@ -36,6 +36,8 @@ const retired_items = [_][]const u8{
     "/^opencode-go$/",
     // Aliases to other applications' status items drew nothing on the two macOS versions before this one either.
     "/^network_alias$/",
+    // The Herdr mark, whose place the Tern mark took.
+    "/^herdr$/",
 };
 
 /// Spaces 1..16 exist as items; yabai decides which ones are real.
@@ -356,16 +358,16 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     try brewItem(c, config_input);
     try githubBell(c, config_input);
     try githubTemplate(c, config_input);
-    try herdrItem(c, config_input);
+    try ternItem(c, config_input);
     try neuralwattItem(c, config_input);
     try openrouterItem(c, config_input);
     try opencodeItem(c, config_input);
     try usageRows(c);
     try pomodoroItem(c, config_input);
-    // The herdr mark goes beside the plan item, on its left: the bar lays the
+    // The tern mark goes beside the plan item, on its left: the bar lays the
     // right side out from its own end, so an item is placed against the one it
     // belongs beside rather than at a position of its own.
-    try config.moveAfter(c, items_herdr.item, items_usage.opencode_item);
+    try config.moveAfter(c, items_tern.item, items_usage.opencode_item);
 }
 
 /// The battery as one ring: the charge is its value, the level glyph its marker,
@@ -607,13 +609,13 @@ fn githubTemplate(c: *sb.Client, config_input: Config) !void {
     }, config_input.helper);
 }
 
-/// The herdr item: a purple mark with a count above it for the agents that are
-/// done or blocked on the user, and one below for the agents that are working -
-/// readings of the same kind the graphs draw, without a chip of their own. The
-/// daemon fills both in off the item's own clock; see `items_herdr.zig`.
-fn herdrItem(c: *sb.Client, config_input: Config) !void {
+/// The tern item: a purple mark with a count above it for the entries in Tern's
+/// needs-attention inbox, and one below for the panes that are working - readings
+/// of the same kind the graphs draw, without a chip of their own. The daemon
+/// fills both in off the item's own clock; see `items_tern.zig`.
+fn ternItem(c: *sb.Client, config_input: Config) !void {
     try config.declare(c, .{
-        .name = items_herdr.item,
+        .name = items_tern.item,
         .props = config.node(.{
             .drawing = true,
             .associated_display = 1,
@@ -624,15 +626,15 @@ fn herdrItem(c: *sb.Client, config_input: Config) !void {
             // which carries the lower count, begins at the mark's right edge, and
             // that count's own offset is measured from there.
             .icon = .{
-                .value = ":herdr:",
-                .font = style.app(style.herdr_mark_size),
-                .width = style.herdr_mark_size,
+                .value = ":tern:",
+                .font = style.app(style.tern_mark_size),
+                .width = style.tern_mark_size,
                 .padding_left = 0,
                 .padding_right = 0,
-                // Dim until a server answers, which is also the state before the
+                // Dim until a daemon answers, which is also the state before the
                 // first refresh has run.
                 .color = config.color(style.dim),
-                .badge = style.herdr_counts.attention,
+                .badge = style.tern_counts.attention,
             },
             // Nothing of its own to draw: the slot is there for the lower
             // count's box, and its `padding_right` is the room both counts take.
@@ -640,10 +642,10 @@ fn herdrItem(c: *sb.Client, config_input: Config) !void {
                 .value = null,
                 .drawing = true,
                 .padding_left = 0,
-                .padding_right = style.herdr_count_room,
-                .badge = style.herdr_counts.working,
+                .padding_right = style.tern_count_room,
+                .badge = style.tern_counts.working,
             },
-            // Nothing but herdr knows that an agent finished, so the count is
+            // Nothing but Tern knows that an agent finished, so the count is
             // polled - off this item's own clock, which stops while the bar is
             // not drawing it.
             .update_freq = 2,
