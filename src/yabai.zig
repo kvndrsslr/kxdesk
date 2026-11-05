@@ -48,6 +48,9 @@ pub const Window = struct {
     app: []const u8 = "",
     title: []const u8 = "",
     role: []const u8 = "",
+    /// Zero for an ordinary window; above zero for an overlay an application
+    /// floats over the desktop instead of putting a window on it.
+    level: u32 = 0,
     display: u32 = 0,
     space: u32 = 0,
     @"stack-index": u32 = 0,

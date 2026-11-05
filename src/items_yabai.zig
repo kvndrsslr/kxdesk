@@ -229,7 +229,6 @@ pub const Updater = struct {
         windows: []const yabai.Window,
     ) !void {
         for (layout.front_window, 0..) |maybe_window, position| {
-            const window_index = maybe_window orelse continue;
             if (position == 0) continue;
             const display_index: u32 = @intCast(position);
 
@@ -238,6 +237,25 @@ pub const Updater = struct {
                 self.stale = true;
                 continue;
             };
+
+            var front_name: [32]u8 = undefined;
+            var status_name: [32]u8 = undefined;
+            const front_item = try std.fmt.bufPrint(&front_name, "front_app.{d}", .{arrangement});
+            const status_item = try std.fmt.bufPrint(&status_name, "yabai_status.{d}", .{arrangement});
+
+            const window_index = maybe_window orelse {
+                // The display's space is known and holds nothing the bar lists,
+                // so the display has no front app. The last one must not stay up:
+                // a helper overlay the bar ignores would still own the items.
+                if (layout.active_space[position] == 0) continue;
+
+                var blank: Props = .{};
+                try blank.write(.{ .icon = "", .label = "" });
+                try self.bar.set(front_item, blank.slice());
+                try self.bar.set(status_item, blank.slice());
+                continue;
+            };
+
             const window = windows[window_index];
             const mark = markFor(layout.space_of(window.space), window);
 
@@ -264,10 +282,7 @@ pub const Updater = struct {
                 .label = .{ .value = stack, .drawing = stack != null },
             });
 
-            var name: [32]u8 = undefined;
-            const front_item = try std.fmt.bufPrint(&name, "front_app.{d}", .{arrangement});
             try self.bar.set(front_item, front.slice());
-            const status_item = try std.fmt.bufPrint(&name, "yabai_status.{d}", .{arrangement});
             try self.bar.set(status_item, status.slice());
         }
     }
@@ -319,6 +334,15 @@ const DisplayMap = struct {
     }
 };
 
+/// Whether the bar lists a window at all: a root window yabai manages, not
+/// minimized or hidden, and not an overlay an application floats above the
+/// desktop. A dictation helper's invisible panels sit at levels 25-27 and are
+/// sticky, so without the level they would head a strip on whichever space is
+/// showing and stand in as that display's front app.
+fn drawn(window: yabai.Window) bool {
+    return std.mem.eql(u8, window.role, "AXWindow") and !window.@"is-minimized" and !window.@"is-hidden" and window.level == 0;
+}
+
 /// Derived per-space state: which windows are on which space and what each space
 /// strip renders as.
 const Layout = struct {
@@ -328,6 +352,10 @@ const Layout = struct {
     spaces: []?yabai.Space,
     /// First window of each visible space, keyed by display index.
     front_window: []?usize,
+    /// Space each display shows, keyed by display index; zero when the space
+    /// query did not place the display, so nothing derived from it may be
+    /// cleared.
+    active_space: []u32,
     arrangement: DisplayMap,
     /// Highest `stack-index` in use per space.
     max_stack: []u32,
@@ -358,6 +386,7 @@ const Layout = struct {
             .strips = try arena.alloc([]const u8, space_count + 1),
             .spaces = try arena.alloc(?yabai.Space, space_count + 1),
             .front_window = try arena.alloc(?usize, display_count + 1),
+            .active_space = try arena.alloc(u32, display_count + 1),
             .arrangement = arrangement,
             .max_stack = try arena.alloc(u32, space_count + 1),
             .focused_space = 0,
@@ -365,6 +394,7 @@ const Layout = struct {
         @memset(layout.strips, "");
         @memset(layout.spaces, null);
         @memset(layout.front_window, null);
+        @memset(layout.active_space, 0);
         @memset(layout.max_stack, 0);
 
         // Space lookup is by index, and every window's space must be reflected
@@ -380,11 +410,11 @@ const Layout = struct {
         }
 
         // A sticky window belongs to whichever space is active on its display.
-        var active_space = try arena.alloc(u32, display_count + 1);
-        @memset(active_space, 0);
         for (spaces) |space| {
             if (!space.@"is-visible") continue;
-            if (space.display < active_space.len) active_space[space.display] = space.index;
+            if (space.display < layout.active_space.len) {
+                layout.active_space[space.display] = space.index;
+            }
         }
 
         var head = try arena.alloc(?[]const u8, space_count + 1);
@@ -393,11 +423,13 @@ const Layout = struct {
         @memset(tail, "");
 
         for (windows, 0..) |window, index| {
-            if (!std.mem.eql(u8, window.role, "AXWindow")) continue;
-            if (window.@"is-minimized" or window.@"is-hidden") continue;
+            if (!drawn(window)) continue;
 
             const space_index = if (window.@"is-sticky")
-                (if (window.display < active_space.len) active_space[window.display] else 0)
+                (if (window.display < layout.active_space.len)
+                    layout.active_space[window.display]
+                else
+                    0)
             else
                 window.space;
             if (space_index == 0 or space_index >= head.len) continue;
@@ -432,8 +464,7 @@ const Layout = struct {
         // the only current word on which space is focused - see `focused_space`.
         for (windows, 0..) |window, index| {
             if (!window.@"has-focus") continue;
-            if (!std.mem.eql(u8, window.role, "AXWindow")) continue;
-            if (window.@"is-minimized" or window.@"is-hidden") continue;
+            if (!drawn(window)) continue;
 
             layout.focused_space = window.space;
 
