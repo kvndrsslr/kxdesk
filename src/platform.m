@@ -1147,12 +1147,18 @@ bool kx_browser_open(void) {
 
     /* A summon, not a toggle: an application already in front is left exactly
      * as it is, and one behind something else is raised. */
-    if (target) {
-      if (target.processIdentifier == workspace.frontmostApplication.processIdentifier) return true;
-      return [target activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+    if (target && target.processIdentifier == workspace.frontmostApplication.processIdentifier) {
+      return true;
     }
 
     if (!application_url) return false;
+
+    /* The raise is handed to the workspace instead of asked of the running
+     * application: `activateWithOptions:` blocks this thread for a second on the
+     * activation handshake - a launchd agent has no window-server connection to
+     * activate from - while the workspace's launch-services client brings the
+     * application forward in the time `open -a` takes, and returns at once. The
+     * request is asynchronous either way: the caller has nothing to wait for. */
     NSWorkspaceOpenConfiguration* configuration = [NSWorkspaceOpenConfiguration configuration];
     [workspace openApplicationAtURL:application_url
                       configuration:configuration
