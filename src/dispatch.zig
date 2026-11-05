@@ -8,9 +8,9 @@
 //!
 //! Nothing on this path forks a process, and every event is handled inline except
 //! the ones whose work is slow: a refresh that reaches the network, the brew icon's
-//! click, which runs the upgrade, and the load graphs' click, which starts a
-//! terminal. Those run as `std.Io.async` tasks so the receive loop keeps running
-//! while they work - see `background.zig`.
+//! click, which starts the upgrade in a terminal, and the load graphs' click, which
+//! starts one of their own. Those run as `std.Io.async` tasks so the receive loop
+//! keeps running while they work - see `background.zig`.
 
 const std = @import("std");
 
@@ -243,11 +243,15 @@ pub const Dispatcher = struct {
     fn click(self: *Dispatcher, name: []const u8, env: sb.Env) !void {
         if (std.mem.eql(u8, name, "calendar")) return self.toggleZen();
         if (std.mem.eql(u8, name, pomodoro.item)) return self.clickPomodoro(env);
-        // The brew icon: a failure waiting to be read is what the click opens a
-        // terminal for, and the upgrade runs when there is none. Both are `brew`,
-        // which takes seconds to minutes, so they run as background tasks.
+        // The brew icon: a failure waiting to be read is what the click shows a
+        // terminal for, and the upgrade starts one when there is none. Both are
+        // `brew`, which takes seconds to minutes, so they run as background tasks.
         if (std.mem.eql(u8, name, items_brew.item)) {
-            self.brew.request(self.io, items_brew.clicked, .{ self.io, self.gpa, self.store });
+            self.brew.request(
+                self.io,
+                items_brew.clicked,
+                .{ self.io, self.gpa, self.yabai_items.yabai_client, self.store },
+            );
             return;
         }
         // The load graphs draw what the terminal shows in full, so a click on

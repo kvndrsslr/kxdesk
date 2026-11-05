@@ -183,6 +183,23 @@ on either side of its two upgrades. The event is posted the same way yabai's
 signals post theirs (see above): one block, no reply port, and nothing to report
 when no daemon is listening.
 
+Both the count and the upgrade run through the user's login shell. Homebrew reads
+its trusted taps from `${XDG_CONFIG_HOME}/homebrew/trust.json`, and the daemon is
+started by launchd without the `XDG_CONFIG_HOME` that shell configuration exports;
+it would read `~/.homebrew/trust.json` instead and refuse every tap `brew trust`
+recorded in the user's own file, which is what made an upgrade fail with "taps are
+not trusted". The count is `brew outdated` under that shell, read from a marked
+line so the shell's own startup cannot be counted; the upgrade is the same three
+commands in a quick access terminal the daemon names (`brew`, hidden, with no file
+under `quick-access-terminals`, so `term toggle` does not offer it).
+
+A run that fails keeps its window — the shell at the end of its script holds the
+output — and the item wears its failure mark. The next click shows that window; if
+it has been closed in the meantime, the same output is printed in `brew-error`,
+which is the terminal the daemon already keeps for a failure the store remembered.
+A successful run ends the script, which closes the window, and posts the refresh
+that redraws the count.
+
 ## Quick access terminals: `kxdesk term toggle`
 
 `kxdesk term toggle <name>` shows the named kitty quick access terminal, or hides

@@ -529,7 +529,7 @@ fn linkItem(c: *sb.Client) !void {
 
 /// Homebrew's outdated count and the click that upgrades: `brew outdated` and
 /// `brew upgrade` are both far too slow for the event path, so the daemon runs
-/// them off it and this only asks for the work; see `items_brew.zig`.
+/// the count off it and starts the upgrade in a terminal; see `items_brew.zig`.
 ///
 /// The count is asked for on the item's own hour, and by `kxdesk brew refresh`
 /// when a shell has just upgraded: no `brew_update` event is declared for it, so

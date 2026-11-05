@@ -171,9 +171,7 @@ pub fn toggleNamed(
     // server is the only one that knows which, and `ask` is where the socket that
     // says the terminal is up comes from.
     if (panelPid(io, name)) |pid| {
-        if (move) |request| {
-            if (!platform.kx_has_onscreen_window(pid)) _ = ask(io, arena, name, request) catch false;
-        }
+        if (move) |request| movePanel(io, arena, name, pid, request);
         if (try ask(io, arena, name, toggle_request)) return;
     }
 
@@ -181,6 +179,37 @@ pub fn toggleNamed(
     const terminal = terminalFile(&terminal_buffer, name) orelse return error.NotConfigured;
     try start(io, arena, name, .{ .config = terminal });
     return showWhenReady(io, arena, name, move);
+}
+
+/// Show the named terminal without toggling it, answering whether one was there
+/// to ask. What a window that already holds something - a failed run's output -
+/// is revealed with: hiding it is not what a click that asks for it means.
+pub fn showNamed(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    name: []const u8,
+    display: ?[]const u8,
+) !bool {
+    const pid = panelPid(io, name) orelse return false;
+
+    if (display) |value| {
+        var request_buffer: [max_request]u8 = undefined;
+        if (moveRequest(&request_buffer, value)) |request| movePanel(io, arena, name, pid, request);
+    }
+    return ask(io, arena, name, show_request);
+}
+
+/// Move a panel to a display, unless it is already on screen: the window server
+/// is the only one that knows which, and a move first would be a window the user
+/// watches cross the desk.
+fn movePanel(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    name: []const u8,
+    pid: i32,
+    request: []const u8,
+) void {
+    if (!platform.kx_has_onscreen_window(pid)) _ = ask(io, arena, name, request) catch false;
 }
 
 /// Show `text` in a terminal of the given name: the text is written to a file
@@ -256,8 +285,9 @@ fn showWhenReady(
 }
 
 /// Whether a terminal of this name has a socket yet: the lookup `ask` makes,
-/// without asking anything.
-fn running(io: std.Io, name: []const u8) bool {
+/// without asking anything. A socket left behind by a terminal that is gone is
+/// still a socket here; `ask` is what tells the two apart.
+pub fn running(io: std.Io, name: []const u8) bool {
     var directory_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const directory = socketDirectory(&directory_buffer) orelse return false;
 
@@ -450,6 +480,20 @@ const Launch = struct {
     command: []const []const u8 = &.{},
 };
 
+/// Start a terminal without showing it: a terminal whose command is the daemon's
+/// own work, started for a click that wants the work done rather than a window
+/// to look at. The base configuration's hidden start is what keeps it unseen
+/// until `showNamed` is asked for it.
+pub fn startHidden(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    name: []const u8,
+    command: []const []const u8,
+) !void {
+    if (!isTerminalName(name)) return error.NotConfigured;
+    return start(io, arena, name, .{ .command = command });
+}
+
 /// Start a terminal: the QAT kitten, which is the only thing that can make the
 /// window, with this terminal's configurations and the socket the next key press
 /// reaches it on.
@@ -514,6 +558,21 @@ fn socketDirectoryPath(io: std.Io, buffer: *[std.fs.max_path_bytes]u8) ![]const 
         else => return err,
     };
     return directory;
+}
+
+/// A file in the owner-only directory the terminals' sockets live in, made when
+/// it is not there: the daemon's own scratch, named by the daemon rather than by
+/// the user, and beside the sockets so it shares their permissions.
+pub fn scratchPath(
+    io: std.Io,
+    buffer: *[std.fs.max_path_bytes]u8,
+    name: []const u8,
+    suffix: []const u8,
+) ![]const u8 {
+    var directory_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const directory = try socketDirectoryPath(io, &directory_buffer);
+    return std.fmt.bufPrint(buffer, "{s}/{s}{s}", .{ directory, name, suffix }) catch
+        return error.PathTooLong;
 }
 
 /// The kitty configuration directory: `KITTY_CONFIG_DIRECTORY`, kitty's own
