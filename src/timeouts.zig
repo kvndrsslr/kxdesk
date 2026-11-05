@@ -37,3 +37,10 @@ pub const terminal_timeout_ms: u32 = 2_000;
 /// answers a remote control command at once, so this only elapses when it is
 /// wedged - and a key press must not wait on that.
 pub const socket_reply_timeout_ms: u32 = 1_000;
+
+/// How long to wait for a panel that was asked to move to a display to be seen
+/// there. kitty applies the move on its own thread and the window server has the
+/// new frame within a few milliseconds (measured); this bound is what a process
+/// whose picture of the desk is stale is found out by, and is short enough that
+/// the replacement it costs is not a pause the user sits through.
+pub const move_timeout_ms: u32 = 300;

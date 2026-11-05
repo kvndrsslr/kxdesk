@@ -56,7 +56,7 @@ fn toggleTerminal(
     const arena = arena_state.allocator();
 
     var buffer: [kitty.max_display_name]u8 = undefined;
-    const display = kitty.focusedDisplayName(yabai_client, arena, &buffer);
+    const display = kitty.focusedDisplay(yabai_client, arena, &buffer);
     return kitty.toggleNamed(io, arena, name, display);
 }
 

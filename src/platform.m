@@ -1229,6 +1229,73 @@ bool kx_has_onscreen_window(int32_t pid) {
   }
 }
 
+/* ---- display of a panel's window --------------------------------------- */
+
+/* A panel's `output_name` is matched against the monitors its process saw at
+ * start-up, and a name that is not in that list is accepted and then ignored.
+ * What actually happened is therefore only visible from the window server. */
+
+/// The display whose screen holds this rectangle's centre, in the coordinates
+/// `NSScreen` frames are in: `CGWindowList`' y runs down from the main display's
+/// top-left edge, `NSScreen`' runs up from its bottom-left one.
+static int64_t kx_display_of(CGRect bounds, double main_height) {
+  const double x = CGRectGetMidX(bounds);
+  const double y = main_height - CGRectGetMidY(bounds);
+
+  for (NSScreen* screen in [NSScreen screens]) {
+    const CGRect frame = screen.frame;
+    if (x < CGRectGetMinX(frame) || x >= CGRectGetMaxX(frame)) continue;
+    if (y < CGRectGetMinY(frame) || y >= CGRectGetMaxY(frame)) continue;
+    return [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+  }
+  return -1;
+}
+
+/// The largest window of `pid` in an already fetched list, or nil when the process
+/// has none with an area: a quick access terminal's window is the big one, and its
+/// helpers are small or empty.
+static NSDictionary* kx_largest_window(CFArrayRef windows, int32_t pid) {
+  NSDictionary* largest = nil;
+  double best = 0;
+  const CFIndex count = CFArrayGetCount(windows);
+  for (CFIndex index = 0; index < count; index++) {
+    NSDictionary* window = (__bridge NSDictionary*)CFArrayGetValueAtIndex(windows, index);
+    if ([window[(id)kCGWindowOwnerPID] intValue] != pid) continue;
+
+    CGRect bounds = CGRectZero;
+    CGRectMakeWithDictionaryRepresentation(
+        (__bridge CFDictionaryRef)window[(id)kCGWindowBounds], &bounds);
+    const double area = bounds.size.width * bounds.size.height;
+    if (area <= best) continue;
+    best = area;
+    largest = window;
+  }
+  return largest;
+}
+
+int32_t kx_panel_display(int32_t pid) {
+  @autoreleasepool {
+    NSArray<NSScreen*>* screens = [NSScreen screens];
+    const double main_height = screens.count > 0 ? screens[0].frame.size.height : 0;
+
+    CFArrayRef windows = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID);
+    if (!windows) return -1;
+
+    NSDictionary* window = kx_largest_window(windows, pid);
+    CGRect bounds = CGRectZero;
+    if (window) {
+      CGRectMakeWithDictionaryRepresentation(
+          (__bridge CFDictionaryRef)window[(id)kCGWindowBounds], &bounds);
+    }
+    CFRelease(windows);
+
+    if (!window) return -1;
+    return (int32_t)kx_display_of(bounds, main_height);
+  }
+}
+
 /* ---- blackout overlay ------------------------------------------------- */
 
 /* One helper process owns the overlay: `wm blackout` starts it, a second press

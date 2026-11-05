@@ -149,7 +149,7 @@ pub fn clicked(
     }
 
     var display_buffer: [kitty.max_display_name]u8 = undefined;
-    const display = kitty.focusedDisplayName(yabai_client, arena, &display_buffer);
+    const display = kitty.focusedDisplay(yabai_client, arena, &display_buffer);
 
     // A run in progress, or the window of a failure that has been read already:
     // showing it is what a click asks for. A socket left behind by a terminal
@@ -176,7 +176,7 @@ fn showFailure(
     failure: []const u8,
 ) !void {
     var display_buffer: [kitty.max_display_name]u8 = undefined;
-    const display = kitty.focusedDisplayName(yabai_client, arena, &display_buffer);
+    const display = kitty.focusedDisplay(yabai_client, arena, &display_buffer);
 
     const revealed = kitty.showNamed(io, arena, run_terminal, display) catch false;
     if (!revealed) try kitty.showText(io, arena, error_terminal, failure);

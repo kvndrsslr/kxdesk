@@ -87,6 +87,11 @@ const close_request =
 /// display, a handful of words at most.
 pub const max_display_name = 128;
 
+/// A display a panel can be brought to: the id the window server gives it, which
+/// is what says whether a move happened, and the name kitty's panel takes, which
+/// is what the move is asked by.
+pub const Display = struct { id: u32, name: []const u8 };
+
 /// Largest request this builds - the move below with a name of that length in it.
 const max_request = 512;
 
@@ -134,27 +139,28 @@ fn moveRequest(buffer: []u8, display: []const u8) ?[]const u8 {
 }
 
 /// The display a terminal should be brought to: the one the focused window is on,
-/// named the way kitty names displays. Null when nothing can say - yabai not
-/// running, nothing focused, or a display kitty has no name for - which leaves
-/// the panel where it is rather than refusing the toggle over it.
-pub fn focusedDisplayName(
+/// as the id the window server names it by and the name kitty's panel takes. Null
+/// when nothing can say - yabai not running, nothing focused, or a display kitty
+/// has no name for - which leaves the panel where it is rather than refusing the
+/// toggle over it.
+pub fn focusedDisplay(
     client: *yabai.Client,
     scratch: std.mem.Allocator,
     buffer: *[max_display_name]u8,
-) ?[]const u8 {
+) ?Display {
     const display = (client.focusedDisplay(scratch) catch return null) orelse return null;
     if (!platform.kx_display_name(display, buffer, buffer.len)) return null;
-    return std.mem.sliceTo(buffer, 0);
+    return .{ .id = display, .name = std.mem.sliceTo(buffer, 0) };
 }
 
 /// Show or hide the named terminal: what the `term toggle` command runs, and what
-/// the load graphs' click runs. `display` is the display to bring it to, or null
-/// to leave it where it is.
+/// the load graphs' click runs. `target` is the display to bring it to, or null to
+/// leave it where it is.
 pub fn toggleNamed(
     io: std.Io,
     arena: std.mem.Allocator,
     name: []const u8,
-    display: ?[]const u8,
+    target: ?Display,
 ) !void {
     // Checked here as well as by `cli.validate`, which is what a client's word
     // and a binding's word are refused by: a terminal this would start is a
@@ -163,7 +169,7 @@ pub fn toggleNamed(
     if (!configured(io, name)) return error.NotConfigured;
 
     var request_buffer: [max_request]u8 = undefined;
-    const move = if (display) |value| moveRequest(&request_buffer, value) else null;
+    const move = if (target) |value| moveRequest(&request_buffer, value.name) else null;
 
     // A terminal that is running is either on screen - where a toggle hides it,
     // and a move first would be a window the user watches cross the desk - or
@@ -171,8 +177,22 @@ pub fn toggleNamed(
     // server is the only one that knows which, and `ask` is where the socket that
     // says the terminal is up comes from.
     if (panelPid(io, name)) |pid| {
-        if (move) |request| movePanel(io, arena, name, pid, request);
-        if (try ask(io, arena, name, toggle_request)) return;
+        const brought = if (target) |wanted| blk: {
+            // A name that cannot be spelled into a request leaves the panel
+            // where it is, which is also where it is when it is not to be moved.
+            const request = move orelse break :blk true;
+            break :blk bringTo(io, arena, name, pid, wanted.id, request);
+        } else true;
+
+        if (brought) {
+            if (try ask(io, arena, name, toggle_request)) return;
+        } else {
+            // A panel that would not move is one whose process has a stale
+            // picture of the desk - kitty matches a panel's `output_name` against
+            // the monitors it saw at start-up, and answers ok for a name it does
+            // not have - so it is replaced by a process that has the current one.
+            closePanel(io, arena, name);
+        }
     }
 
     var terminal_buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -188,28 +208,61 @@ pub fn showNamed(
     io: std.Io,
     arena: std.mem.Allocator,
     name: []const u8,
-    display: ?[]const u8,
+    target: ?Display,
 ) !bool {
     const pid = panelPid(io, name) orelse return false;
 
-    if (display) |value| {
+    if (target) |value| {
         var request_buffer: [max_request]u8 = undefined;
-        if (moveRequest(&request_buffer, value)) |request| movePanel(io, arena, name, pid, request);
+        if (moveRequest(&request_buffer, value.name)) |request| {
+            // No replacement here: this reveals a window that holds a run in
+            // progress, and a process that cannot be brought to another display
+            // is left where it is rather than ended.
+            _ = bringTo(io, arena, name, pid, value.id, request);
+        }
     }
     return ask(io, arena, name, show_request);
 }
 
-/// Move a panel to a display, unless it is already on screen: the window server
-/// is the only one that knows which, and a move first would be a window the user
-/// watches cross the desk.
-fn movePanel(
+/// Bring a hidden panel to the display of `display_id`, answering whether it got
+/// there.
+///
+/// A panel that is on screen is left where it is: the toggle that follows hides
+/// it, and a move first would be a window the user watches cross the desk. A
+/// hidden one is moved by name and then looked for, because kitty answers ok for
+/// a name its start-up picture of the desk does not have and moves nothing - the
+/// window server, not the reply, is what says a panel changed display.
+fn bringTo(
     io: std.Io,
     arena: std.mem.Allocator,
     name: []const u8,
     pid: i32,
+    display_id: u32,
     request: []const u8,
-) void {
-    if (!platform.kx_has_onscreen_window(pid)) _ = ask(io, arena, name, request) catch false;
+) bool {
+    if (platform.kx_has_onscreen_window(pid)) return true;
+    if (platform.kx_panel_display(pid) == display_id) return true;
+
+    _ = ask(io, arena, name, request) catch false;
+
+    var waited: u32 = 0;
+    while (waited < timeouts.move_timeout_ms) : (waited += timeouts.start_poll_ms) {
+        if (platform.kx_panel_display(pid) == display_id) return true;
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(timeouts.start_poll_ms), .awake) catch {};
+    }
+
+    return false;
+}
+
+/// Close a running terminal's window and wait for its socket to go: how a panel
+/// whose process is to be replaced is ended. A refusal, or a socket that lingers
+/// a moment too long, is the next start's problem rather than this call's.
+fn closePanel(io: std.Io, arena: std.mem.Allocator, name: []const u8) void {
+    _ = ask(io, arena, name, close_request) catch |err| log.warn(
+        "quick access terminal {s} did not close: {s}",
+        .{ name, @errorName(err) },
+    );
+    awaitClosed(io, name);
 }
 
 /// Show `text` in a terminal of the given name: the text is written to a file
@@ -236,13 +289,9 @@ pub fn showText(io: std.Io, arena: std.mem.Allocator, name: []const u8, text: []
     }
 
     // A panel that refuses to close is the next start's problem rather than this
-    // call's: the log line says why, and the wait below gives it its moment to go
+    // call's: the log line says why, and the wait gives it its moment to go
     // whether it answered or not.
-    _ = ask(io, arena, name, close_request) catch |err| log.warn(
-        "quick access terminal {s} did not close: {s}",
-        .{ name, @errorName(err) },
-    );
-    awaitClosed(io, name);
+    closePanel(io, arena, name);
 
     try start(io, arena, name, .{
         .command = &.{ "/bin/sh", "-c", print_then_shell, name, path },
@@ -325,7 +374,7 @@ pub fn toggle(context: *Context, args: []const []const u8) ![]const u8 {
     const name = if (args.len > 1) args[1] else return error.MissingArgument;
 
     var buffer: [max_display_name]u8 = undefined;
-    const display = focusedDisplayName(context.yabai, context.arena, &buffer);
+    const display = focusedDisplay(context.yabai, context.arena, &buffer);
     try toggleNamed(context.io, context.arena, name, display);
     return "";
 }

@@ -136,6 +136,10 @@ pub extern "c" fn kx_display_name(display_id: u32, out: [*]u8, cap: usize) bool;
 /// access terminal's panel is shown or hidden in.
 pub extern "c" fn kx_has_onscreen_window(pid: i32) bool;
 
+/// The display the panel window of `pid` is on, or -1 when it has none: what says
+/// a move happened - see `src/platform.h`.
+pub extern "c" fn kx_panel_display(pid: i32) i32;
+
 /// Stop the blackout helper listening on `path`, if one is up.
 pub extern "c" fn kx_blackout_stop(path: [*:0]const u8) bool;
 

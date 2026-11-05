@@ -325,6 +325,16 @@ bool kx_display_name(uint32_t display_id, char* out, size_t cap);
 /// would see.
 bool kx_has_onscreen_window(int32_t pid);
 
+/// The `CGDirectDisplayID` of the display the panel window of `pid` is on, or -1
+/// when it has no window with an area. The panel window is the largest one the
+/// process owns: a quick access terminal's other windows are its own small or
+/// empty helpers.
+///
+/// This is the only word on whether a panel was moved: kitty answers ok to an
+/// `output_name` its start-up picture of the desk does not have, and then moves
+/// nothing.
+int32_t kx_panel_display(int32_t pid);
+
 /// Ask the blackout helper listening on `socket_path` to stop, if one is up.
 /// True when a helper answered. The helper exits by itself, so this does not
 /// wait for it.
