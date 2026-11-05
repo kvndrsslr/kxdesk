@@ -75,8 +75,14 @@ const max_failure_bytes = 4 * 1024 * 1024;
 /// A failure hands the window to a login shell, so the output stays readable and
 /// the panel stays alive for the click that reveals it. Success ends the script,
 /// which closes the panel.
+///
+/// `HOMEBREW_COLOR` is set because `tee` makes the commands' standard output a
+/// pipe: Homebrew colours a TTY and would leave the window - and the log the
+/// failure is kept in - plain. The variable is Homebrew's own switch for exactly
+/// that, and it colours both sides of the tee.
 const run_script =
     \\brew=$1 log_file=$2 state_file=$3 kx=$4
+    \\export HOMEBREW_COLOR=1
     \\"$brew" update 2>&1 | tee "$log_file"
     \\code=$pipestatus[1]
     \\if (( code == 0 )); then
