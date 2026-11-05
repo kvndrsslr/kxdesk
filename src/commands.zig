@@ -671,7 +671,7 @@ fn kanataCommand(context: *Context, args: []const []const u8) ![]const u8 {
 fn appCommand(context: *Context, args: []const []const u8) ![]const u8 {
     if (args.len < 2) return error.MissingArgument;
     const application = yabai_ops.wordToEnum(exec.App, args[1]) orelse return error.InvalidValue;
-    try exec.openApp(context.arena, application);
+    try exec.openApp(context.io, context.arena, application);
     return "";
 }
 

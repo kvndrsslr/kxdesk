@@ -544,7 +544,7 @@ fn start(io: std.Io, arena: std.mem.Allocator, name: []const u8, launch: Launch)
     if (launch.config) |config| try arguments.appendSlice(arena, &.{ "-c", config });
     try arguments.appendSlice(arena, launch.command);
 
-    try exec.spawn(arena, arguments.items);
+    try exec.spawn(io, arena, arguments.items);
 }
 
 /// The socket directory, making it when it is not there, in `buffer`: kitty binds

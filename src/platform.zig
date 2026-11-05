@@ -65,6 +65,8 @@ pub extern "c" fn kx_unix_reply(
 
 pub extern "c" fn kx_spawn_detached(argv: [*]const ?[*:0]const u8) i32;
 
+pub extern "c" fn kx_reap(pid: i32) bool;
+
 pub extern "c" fn kx_which(name: [*:0]const u8, out: [*]u8, cap: usize) bool;
 
 pub extern "c" fn kx_env(name: [*:0]const u8, out: [*]u8, cap: usize) bool;

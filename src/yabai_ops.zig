@@ -850,7 +850,7 @@ pub fn blackout(context: *Context, args: []const []const u8) anyerror![]const u8
     if (!platform.kx_self_path(&executable_buffer, executable_buffer.len)) return error.LaunchFailed;
     const executable = std.mem.sliceTo(&executable_buffer, 0);
 
-    try exec.spawn(arena, &.{
+    try exec.spawn(context.io, arena, &.{
         executable,
         "__blackout",
         try numArg(arena, display.id),

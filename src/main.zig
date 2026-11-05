@@ -19,6 +19,7 @@ const commands = @import("commands.zig");
 const context = @import("context.zig");
 const control = @import("control.zig");
 const dispatch = @import("dispatch.zig");
+const exec = @import("exec.zig");
 const items_audio = @import("items_audio.zig");
 const items_brew = @import("items_brew.zig");
 const items_system = @import("items_system.zig");
@@ -206,7 +207,11 @@ fn onBlock(block: [*:0]const u8, reply_port: u32) callconv(.c) void {
 /// the item, and say how long the loop may block next. The loop is the only thread
 /// that runs this; the commands take the timer's own lock to touch it from theirs.
 fn onTimer() callconv(.c) u32 {
+    // Detached helpers that have exited are reaped before the wait this loop is
+    // about to commit to; nobody else waits for them, so a zombie would otherwise
+    // be as long-lived as this process.
     const daemon = active_daemon orelse return 0;
+    exec.reap(daemon.io);
 
     // Nothing is pushed to a bar that is not there; the ring does not depend on
     // the bar at all, which is the point of the timer living in the daemon.

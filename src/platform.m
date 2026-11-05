@@ -386,6 +386,20 @@ int32_t kx_spawn_detached(const char* const argv[]) {
   return (int32_t)pid;
 }
 
+bool kx_reap(int32_t pid) {
+  if (pid <= 0) return true;
+
+  int status = 0;
+  pid_t reaped;
+  do {
+    reaped = waitpid((pid_t)pid, &status, WNOHANG);
+  } while (reaped < 0 && errno == EINTR);
+
+  // ECHILD is a child that is not this process's any more - reparented, or already
+  // reaped by whoever started it - which is as gone as one reaped here.
+  return reaped == (pid_t)pid || (reaped < 0 && errno == ECHILD);
+}
+
 bool kx_which(const char* name, char* out, size_t cap) {
   if (!name || !out || cap == 0) return false;
 

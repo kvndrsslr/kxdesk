@@ -108,6 +108,11 @@ int32_t kx_exec_status(const char* const argv[]);
 /// ssh-agent of server mode - and not for commands.
 int32_t kx_spawn_detached(const char* const argv[]);
 
+/// Reap the detached child `pid` if it has exited, without waiting for one that
+/// has not. Returns true when the child is gone: reaped now, or no longer this
+/// process's child.
+bool kx_reap(int32_t pid);
+
 /// Resolve an executable name to an absolute path, searching `PATH` followed by
 /// the usual Homebrew prefixes. Returns false when it cannot be found.
 bool kx_which(const char* name, char* out, size_t cap);
