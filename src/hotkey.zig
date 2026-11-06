@@ -246,14 +246,11 @@ pub fn serve() !void {
 
     self.engine.run(true) catch |err| {
         // The engine's own permission advice is upstream's, and it names another
-        // install; this is the one that applies here.
+        // install: its path is right, its commands are not. What kxdesk needs is
+        // one toggle in the same pane, and a restart to pick the tap up - the
+        // engine creates it once and does not retry after a refusal.
         if (err == error.AccessibilityPermissionDenied) {
-            var buffer: [std.fs.max_path_bytes]u8 = undefined;
-            if (std.process.executablePath(self.io, &buffer)) |len| {
-                log.warn("grant Accessibility to {s}, then: brew services restart kxdesk", .{
-                    buffer[0..len],
-                });
-            } else |_| {}
+            log.warn("grant Accessibility to kxdesk.app, then: brew services restart kxdesk", .{});
         }
         return err;
     };
