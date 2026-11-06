@@ -475,6 +475,27 @@ const ipc_delta = [_]Edit{
     },
     .{
         .from =
+        \\        } else if (std.mem.eql(u8, kind, "bye")) {
+        \\            try sendOk(allocator, &sw);
+        \\            return .closed;
+        ,
+        .to =
+        \\        } else if (std.mem.eql(u8, kind, "bye")) {
+        \\            try sendOk(allocator, &sw);
+        \\            return .closed;
+        \\        } else if (std.mem.eql(u8, kind, "restart")) {
+        \\            // Exit, so that launchd starts the binary that is on disk now.
+        \\            // A LaunchDaemon keeps the image it was started with, and no
+        \\            // process but the job itself can replace it: this is the one
+        \\            // restart a caller without root can ask for. Rules go with it;
+        \\            // the agent re-forwards them when its socket goes EOS.
+        \\            try sendOk(allocator, &sw);
+        \\            log.warn("restart requested by uid={d}; exiting for launchd", .{client_uid orelse 0});
+        \\            std.process.exit(0);
+        ,
+    },
+    .{
+        .from =
         \\    // Reply ok with our build version so the status path can read the
         \\    // running grabber's version (extra field; older agents ignore it).
         \\    try protocol.writeMessage(&sw.interface, allocator, .{ .type = "ok", .grabber_version = grabber_version });

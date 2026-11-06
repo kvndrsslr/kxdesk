@@ -132,9 +132,15 @@ the Input Monitoring pane and a panel beside it, the app on the panel is the thi
 drag into the list, and the panel closes by itself once the grant lands — the grabber
 is then restarted with it, no second password. Nothing about that is inferred from a
 log: the grant is reported in the grabber's own IPC reply, because TCC answers
-`IOHIDCheckAccess` only for the process that asks. `kxdesk guide` reopens the panel
-when it was dismissed, and a daemon whose `skhdrc` asks for `.remap` rules but whose
-grabber cannot seize shows it once per build on its own.
+`IOHIDCheckAccess` only for the process that asks.
+
+The daemon checks that half on every start, and does not ask: a grabber that answers
+without the grant is a process older than the binary — `brew upgrade` replaces the
+file, launchd keeps the image — so it is asked to exit and `KeepAlive` starts the new
+one; an unapproved one gets the panel with the drag; a missing one gets the panel
+whose Install button runs the privileged install in a terminal. The loop stops as
+soon as the grabber says it may seize, and `kxdesk guide` reopens the panel when it
+was dismissed.
 
 The rules that use it live in `skhdrc` under `.device builtin { vendor: 0x0,
 product: 0x0 }` — that is how the internal keyboard identifies itself — so the QMK

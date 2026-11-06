@@ -557,11 +557,13 @@ fn runDaemon(init: std.process.Init) !void {
         return err;
     };
 
-    // A machine whose bindings ask for tap-hold rules but whose grabber is
-    // missing or unapproved is one where those keys silently do nothing about
-    // them; the panel that fixes it is worth showing once. Before `serve`, which
-    // never returns - and cheap: one socket round trip and one file read.
-    nudgeGrabber(&daemon, &store);
+    // The grabber the bindings need, checked and driven to green off this thread:
+    // the one below it becomes the engine's run loop and never comes back.
+    if (std.Thread.spawn(.{}, convergeGrabber, .{&daemon})) |thread| {
+        thread.detach();
+    } else |err| {
+        log.warn("the grabber check not started: {s}", .{@errorName(err)});
+    }
 
     // Blocks until the engine's run loop stops, which takes a stop request; when it
     // does, there is nothing left but to keep the bar served.
@@ -571,43 +573,103 @@ fn runDaemon(init: std.process.Init) !void {
     server.join();
 }
 
-/// The store key that remembers which build asked: a nudge per build and no more,
-/// so a machine that has decided against the grabber is not asked again on every
-/// login.
-const grabber_asked_key = "grabber.asked";
+/// How long the loop keeps looking: long enough for a person to read a panel and
+/// drag one row, short enough that a daemon left alone stops asking.
+const converge_deadline_ms: u32 = 600_000;
 
-/// Show the grabber guide when a fresh machine needs it: bindings that ask for a
-/// `.remap`, and either no grabber answering or one that TCC has not let seize.
+/// Long enough for launchd to bring the grabber back after it exits for an
+/// upgrade: its job carries a ten-second `ThrottleInterval`.
+const restart_settle_ms: u32 = 12_000;
+
+/// The grabber, driven to green on every start.
 ///
-/// Nothing here fails the daemon: a guide that cannot be shown costs the panel and
-/// a line in the log, and the keys keep being wrong until someone runs `kxdesk
-/// grabber install`.
-fn nudgeGrabber(daemon: *Daemon, store: *state.Store) void {
+/// A daemon that owns the key bindings is the only thing placed to notice that the
+/// half they need is missing, stale or unapproved: `brew upgrade` replaces the
+/// grabber's file without restarting the process that holds the old image, a grant
+/// is given by a drag nobody is told about, and neither shows up as an error
+/// anywhere. So it probes and acts - asks a stale process to exit, so launchd
+/// starts the binary on disk; shows the panel that installs a missing one; shows
+/// the panel that carries the drag for an unapproved one - and stops as soon as
+/// the grabber says it may seize.
+///
+/// A thread of its own, because the main thread becomes the engine's run loop and
+/// this waits on a person rather than on a socket.
+fn convergeGrabber(daemon: *Daemon) void {
     const io = daemon.io;
     var scratch = std.heap.ArenaAllocator.init(daemon.gpa);
     defer scratch.deinit();
-    const arena = scratch.allocator();
+    if (!hotkey.configWantsTapHold(io, scratch.allocator())) return;
 
-    if (!hotkey.configWantsTapHold(io, arena)) return;
+    var waited: u32 = 0;
+    var restarted = false;
+    var guided = false;
+    while (waited < converge_deadline_ms) {
+        // A probe of its own each time: this loop can run for ten minutes, and the
+        // reply it parses is dead the moment the answer is read.
+        var call = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer call.deinit();
 
-    var asked_buffer: [64]u8 = undefined;
-    const asked = store.getText(io, grabber_asked_key, &asked_buffer) catch null;
-    if (asked) |version| {
-        if (std.mem.eql(u8, version, build_options.version)) return;
+        switch (grabber.state(call.allocator(), io)) {
+            // Green: the engine's own reconnect asks the grabber to seize after
+            // the fact, within two seconds of it coming back, and a reload here
+            // would only reset the mode the bar is showing.
+            .green => return,
+            // Older than the binary on disk. Nothing but the job itself can
+            // replace it, so ask it to exit and give launchd its throttle
+            // interval to bring the file up.
+            .stale => {
+                if (!restarted) {
+                    restarted = grabber.restart();
+                    if (!restarted and !guided) {
+                        guided = true;
+                        showGuide(daemon, scratch.allocator());
+                    }
+                    waited += sleepMs(io, restart_settle_ms);
+                    continue;
+                }
+                if (!guided) {
+                    guided = true;
+                    showGuide(daemon, scratch.allocator());
+                }
+                waited += sleepMs(io, 2000);
+                continue;
+            },
+            // Answering, and TCC has not let it seize: the drag is the only fix.
+            .unapproved => {
+                if (!guided) {
+                    guided = true;
+                    showGuide(daemon, scratch.allocator());
+                }
+                waited += sleepMs(io, 2000);
+                continue;
+            },
+            // Not installed, or launchd has it down. Both are install's work.
+            .absent => {
+                if (!guided) {
+                    guided = true;
+                    showGuide(daemon, scratch.allocator());
+                }
+                waited += sleepMs(io, 3000);
+                continue;
+            },
+        }
     }
+}
 
-    if (grabber.probe(arena)) |report| {
-        if (report.access == .granted) return;
-    } else |_| {}
-
-    // Recorded before it is shown, not after: a panel that never appeared is still
-    // a question asked once, and `kxdesk guide` is there for the second look.
-    store.setText(io, grabber_asked_key, build_options.version) catch {};
-
+/// The panel, asked for the way a client asks: the same command, the same choice
+/// between the drag and the install.
+fn showGuide(daemon: *Daemon, arena: std.mem.Allocator) void {
     var context_value = daemon.commandContext(arena, daemon.bar);
     _ = commands.guide(&context_value, &.{}) catch |err| {
         log.warn("the grabber guide could not be shown: {s}", .{@errorName(err)});
     };
+}
+
+/// Sleep, and answer how long was waited: the loop's own clock, so that a probe
+/// failing instantly cannot turn it into a spin.
+fn sleepMs(io: std.Io, milliseconds: u32) u32 {
+    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(milliseconds), .awake) catch {};
+    return milliseconds;
 }
 
 /// The receive loop, on the thread the engine does not own.

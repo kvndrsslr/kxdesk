@@ -743,18 +743,18 @@ pub fn guide(context: *Context, args: []const []const u8) anyerror![]const u8 {
     _ = args;
     const arena = context.arena;
 
-    if (grabber.probe(arena)) |running| switch (running.access) {
-        .granted => return "input monitoring: granted",
-        .denied => return spawnGuide(context, &.{
+    switch (grabber.state(arena, context.io)) {
+        .green => return "input monitoring: granted",
+        .unapproved => return spawnGuide(context, &.{
             "drag", grabber.bundle, grabber.pane_url, grabber.drag_instruction,
         }),
-        // A grabber built before the reply carried the grant cannot say whether
-        // it has one - and a panel that waits for an answer the process will
-        // never give would sit there after the drag with nothing to close it.
-        // The install panel restarts the daemon, and the drag is asked for again
-        // from the new process, which can answer.
-        .unknown => {},
-    } else |_| {}
+        // A process older than the binary cannot be trusted to report anything -
+        // not the grant, not the restart verb it would take to replace it - and a
+        // panel that waits for an answer it will never give would sit there with
+        // nothing to close it. The install panel does the restart, and asks for
+        // the drag again from a process that can answer.
+        .stale, .absent => {},
+    }
 
     const script = grabber.writeInstallScript(context.io) catch |err| {
         log.warn("the guide's install script could not be written: {s}", .{@errorName(err)});

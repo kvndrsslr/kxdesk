@@ -115,36 +115,94 @@ pub const Report = struct {
 /// Errors rather than a fourth state: nothing answering is the answer for a
 /// grabber that is not installed, and the caller decides what to do about it.
 pub fn probe(arena: std.mem.Allocator) !Report {
-    var body_buffer: [128]u8 = undefined;
-    const body = try std.fmt.bufPrint(
-        &body_buffer,
+    var body: [128]u8 = undefined;
+    const hello = try std.fmt.bufPrint(
+        &body,
         "{{\"type\":\"hello\",\"uid\":{d},\"version\":{d}}}",
         .{ platform.kx_uid(), protocol_version },
     );
+    var reply: [1024]u8 = undefined;
+    return parseReport(arena, try exchange(hello, &reply));
+}
 
+/// What the daemon has to act on, and the order it acts in: green is the only
+/// answer that needs nothing.
+pub const State = union(enum) {
+    /// Answering, approved, and the process is the binary on disk.
+    green: Report,
+    /// Answering, but TCC has not let it seize: the drag is missing.
+    unapproved: Report,
+    /// Answering, but from an image older than the file on disk. `brew upgrade`
+    /// replaces the grabber's file and launchd keeps the process it started, so
+    /// this is what every upgrade looks like from the outside - and only a fresh
+    /// process can report the grant or the build's own protocol.
+    stale: Report,
+    /// Nothing answering: not installed, or launchd has it down.
+    absent,
+};
+
+/// The grabber as it stands: probe it, then check the process is the file on disk.
+///
+/// Staleness is read off the socket the grabber binds at startup: its timestamp is
+/// the process's own, and the binary's is when the upgrade landed - neither needs
+/// root, a launchctl query or the process to cooperate, which matters exactly when
+/// the running process is too old to say anything about itself.
+pub fn state(arena: std.mem.Allocator, io: std.Io) State {
+    const report = probe(arena) catch return .absent;
+    if (stale(io)) return .{ .stale = report };
+    if (report.access != .granted) return .{ .unapproved = report };
+    return .{ .green = report };
+}
+
+/// Whether the grabber the socket belongs to started before the binary was last
+/// written. Both timestamps are unprivileged, and the socket's is created with the
+/// process: `bind` after an `unlink`.
+fn stale(io: std.Io) bool {
+    const socket = std.Io.Dir.cwd().statFile(io, socket_path, .{}) catch return false;
+    const binary = std.Io.Dir.cwd().statFile(io, program, .{}) catch return false;
+    return binary.mtime.nanoseconds > socket.ctime.nanoseconds;
+}
+
+/// Ask the running grabber to exit, so launchd starts the build that is on disk.
+///
+/// This is the one restart a caller without root has: the job is root's, but it
+/// can end itself, and `KeepAlive` starts it again - which is what makes an
+/// upgraded grabber take effect without a password, and the only way a daemon
+/// that is not root can replace the process. True when it answered, so a caller
+/// can tell "asked" from "nothing there".
+pub fn restart() bool {
+    var reply: [1024]u8 = undefined;
+    const body = exchange("{\"type\":\"restart\"}", &reply) catch return false;
+    // The body is framed, and `ok` is the only answer that means it will go:
+    // a grabber built without the verb says `unknown_type` and stays up.
+    return std.mem.indexOf(u8, body, "\"type\":\"ok\"") != null;
+}
+
+/// One request and its reply, framed and read the way the shared protocol does.
+///
+/// The reply is read to the closing brace rather than to a length: its body is
+/// JSON, and a terminator is what lets the wait be bounded - a frame read has no
+/// timeout to give.
+fn exchange(body: []const u8, out: []u8) ![]const u8 {
     // The frame the shared protocol declares: four big-endian length bytes, then
-    // the body.
-    var frame: [4 + body_buffer.len]u8 = undefined;
-    std.mem.writeInt(u32, frame[0..4], @intCast(body.len), .big);
-    @memcpy(frame[4..][0..body.len], body);
-    const request = frame[0 .. 4 + body.len];
+    // the body. Bounded by the request built above, never by a caller's.
+    var request: [4 + 128]u8 = undefined;
+    std.debug.assert(body.len <= request.len - 4);
+    std.mem.writeInt(u32, request[0..4], @intCast(body.len), .big);
+    @memcpy(request[4..][0..body.len], body);
 
-    // Read to the closing brace rather than to a length: the reply is one frame,
-    // its body is JSON, and a terminator is what lets the wait be bounded - a
-    // frame read has no timeout to give.
-    var reply_buffer: [1024]u8 = undefined;
     const received = platform.kx_unix_reply(
         socket_path,
-        request.ptr,
-        request.len,
+        &request,
+        4 + body.len,
         "}",
         1,
-        &reply_buffer,
-        reply_buffer.len,
+        out.ptr,
+        out.len,
         500,
     );
     if (received < 5) return error.GrabberUnavailable;
-    return parseReport(arena, reply_buffer[0..@intCast(received)]);
+    return out[0..@intCast(received)];
 }
 
 /// One hello reply: the shared frame's length prefix, then the body. Split out of
@@ -294,11 +352,15 @@ fn status(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
     const installed = if (driverPresent(io)) "installed" else "not installed";
     const serving = if (try launchdKnows(io, vhidd_label)) "running" else "stopped";
     // The grant is the half nothing else can report: the socket says whether the
-    // grabber is answering at all, and its own reply says the rest.
-    const report = probe(arena) catch {
-        return arena.print("grabber: {s}  driver: {s}, {s}  api: no answer  log: {s}", .{
-            daemon, installed, serving, log_path,
-        });
+    // grabber is answering at all, its own reply says what it is, and the socket's
+    // timestamp says whether that process is still the file on disk.
+    const current = state(arena, io);
+    const report = switch (current) {
+        .green, .unapproved, .stale => |running| running,
+        .absent => return arena.print(
+            "grabber: {s}  driver: {s}, {s}  api: no answer  log: {s}",
+            .{ daemon, installed, serving, log_path },
+        ),
     };
     return arena.print(
         "grabber: {s}  driver: {s}, {s}  api: {s} (build {s})  input monitoring: {s}{s}  log: {s}",
@@ -309,13 +371,14 @@ fn status(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
             "ok",
             report.version,
             report.access.text(),
-            // `unknown` is the running process declining to answer, and only a
-            // restart gets an answer out of it: launchd keeps the old image after
-            // `brew upgrade` replaces the file.
-            if (report.access == .unknown)
-                " (not reported: the running process is older than this build; `sudo kxdesk grabber install` restarts it)"
-            else
-                "",
+            switch (current) {
+                // A process older than the binary cannot report the grant this
+                // build asks for: only a restart gets an answer out of it, and
+                // the daemon does that on its own from the socket.
+                .stale => " (from a process older than the binary on disk; the daemon restarts it)",
+                .unapproved => " (drag kxdesk-grabber into Input Monitoring: `kxdesk guide`)",
+                else => "",
+            },
             log_path,
         },
     );
