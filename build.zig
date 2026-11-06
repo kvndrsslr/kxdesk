@@ -14,6 +14,8 @@ pub fn build(b: *std.Build) void {
         "Optimization mode (default: fast)",
     ) orelse .fast;
 
+    const src = sources(b, b.dependency("skhd_zig", .{}));
+
     const exe = b.addExecutable(.{
         .name = "kxdesk",
         .root_module = b.createModule(.{
@@ -23,7 +25,15 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    wire(b, exe.root_module, target, optimize);
+    wire(b, exe.root_module, target, optimize, &src);
+
+    // The root daemon the tap-hold rules need; inert unless one is declared in
+    // `skhdrc`, and installed by `grabber.sh`, not by the daemon itself.
+    const grabber_exe = b.addExecutable(.{
+        .name = "kxdesk-grabber",
+        .root_module = grabber(b, target, optimize, &src),
+    });
+    b.installArtifact(grabber_exe);
 
     // `kxdesk version` reports the version the binary was built from, so it is
     // read out of the manifest here and injected as a build option: build.zig.zon
@@ -43,7 +53,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    wire(b, t.root_module, target, optimize);
+    wire(b, t.root_module, target, optimize, &src);
 
     const run = b.addRunArtifact(t);
     b.step("test", "Run unit tests").dependOn(&run.step);
@@ -52,7 +62,13 @@ pub fn build(b: *std.Build) void {
 /// Everything a kxdesk module is built against: the platform seam in
 /// `platform.m`, the frameworks it and the bar client use, SQLite, and the
 /// embedded hotkey engine.
-fn wire(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+fn wire(
+    b: *std.Build,
+    mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    src: *const Sources,
+) void {
     // SQLite is bound through its C interface: the standard library has no
     // SQLite any more, so the SDK header is translated into a Zig module here
     // and linked against the copy macOS ships - which needs no dependency, and
@@ -88,7 +104,7 @@ fn wire(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget,
     // link icon; it is the store `scutil` prints, not a probe.
     mod.linkFramework("SystemConfiguration", .{});
 
-    mod.addImport("skhd", engine(b, target, optimize));
+    mod.addImport("skhd", engine(b, target, optimize, src));
 }
 
 /// The hotkey engine: upstream skhd.zig, built as a module of this binary.
@@ -100,36 +116,25 @@ fn wire(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget,
 /// supplied is recreated here: the `grabber_protocol` module, the `VERSION` and
 /// `build_options` anonymous imports, and the frameworks the event tap and its
 /// Carbon glue link against.
-fn engine(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
-    const dep = b.dependency("skhd_zig", .{});
-
-    const tree = b.addWriteFiles();
-    _ = tree.addCopyDirectory(dep.path("src"), "src", .{});
-    const source = tree.add("src/engine.zig", applyDelta(b, dep));
-
+fn engine(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    src: *const Sources,
+) *std.Build.Module {
     const module = b.createModule(.{
-        .root_source_file = source,
+        .root_source_file = src.agent,
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     module.addImport("grabber_protocol", b.createModule(.{
-        .root_source_file = tree.getDirectory().path(b, "src/grabber_protocol.zig"),
+        .root_source_file = src.protocol,
         .target = target,
         .optimize = optimize,
     }));
-    module.addAnonymousImport("VERSION", .{
-        .root_source_file = tree.add("VERSION", engine_pin ++ "\n"),
-    });
-    // Upstream writes these into its own builds; nothing in the engine's
-    // analysis path reads more than `track_alloc`, and the grabber's pinned
-    // dext is not installed by this binary at all.
-    const options = b.addOptions();
-    options.addOption(bool, "track_alloc", false);
-    options.addOption([]const u8, "karabiner_dext_version", "");
-    options.addOption([]const u8, "karabiner_dext_url", "");
-    options.addOption([]const u8, "karabiner_dext_sha256", "");
-    module.addOptions("build_options", options);
+    module.addAnonymousImport("VERSION", .{ .root_source_file = src.version });
+    module.addOptions("build_options", src.options);
 
     // The agent's set: the tap is CoreGraphics through ApplicationServices, the
     // hotkey registration is Carbon's, and the service queries are
@@ -140,6 +145,79 @@ fn engine(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Op
     module.linkFramework("ServiceManagement", .{});
     module.linkFramework("IOKit", .{});
     return module;
+}
+
+/// The grabber: the root daemon upstream builds beside the agent, and the half
+/// that implements tap-hold. It is only needed for `.remap … { tap, hold }`
+/// rules, which an event tap cannot do - seizing the keyboard and injecting
+/// through a virtual HID device is what they take.
+///
+/// Its install plumbing is upstream's own binary's (`--install-grabber`, whose
+/// plists live in the `scripts/` the pinned package omits), so how it is started
+/// is this repo's business: see `grabber.sh`.
+fn grabber(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    src: *const Sources,
+) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = src.grabber,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    module.addImport("grabber_protocol", b.createModule(.{
+        .root_source_file = src.protocol,
+        .target = target,
+        .optimize = optimize,
+    }));
+    module.addAnonymousImport("VERSION", .{ .root_source_file = src.version });
+    module.addOptions("build_options", src.options);
+
+    // Upstream's set for this half: IOKit to seize and to enumerate, CoreGraphics
+    // for the virtual-HID injection, SystemConfiguration for the console user.
+    module.linkFramework("IOKit", .{});
+    module.linkFramework("CoreFoundation", .{});
+    module.linkFramework("CoreGraphics", .{});
+    module.linkFramework("SystemConfiguration", .{});
+    return module;
+}
+
+/// The pinned engine materialized once for both binaries: its `src/` copied into
+/// the build cache, one file rewritten, a `VERSION` file, and the
+/// `build_options` upstream's own build would have generated.
+const Sources = struct {
+    /// The agent's root: upstream's `src/skhd.zig` with `engine_delta` applied.
+    agent: std.Build.LazyPath,
+    /// The grabber's root, taken from the same copy.
+    grabber: std.Build.LazyPath,
+    protocol: std.Build.LazyPath,
+    version: std.Build.LazyPath,
+    options: *std.Build.Step.Options,
+};
+
+fn sources(b: *std.Build, dep: *std.Build.Dependency) Sources {
+    const tree = b.addWriteFiles();
+    _ = tree.addCopyDirectory(dep.path("src"), "src", .{});
+    const directory = tree.getDirectory();
+
+    // Upstream's build writes these into its own builds; nothing in the agent's
+    // or the grabber's analysis path reads more than `track_alloc`, and the
+    // pinned dext is not installed by this binary.
+    const options = b.addOptions();
+    options.addOption(bool, "track_alloc", false);
+    options.addOption([]const u8, "karabiner_dext_version", "");
+    options.addOption([]const u8, "karabiner_dext_url", "");
+    options.addOption([]const u8, "karabiner_dext_sha256", "");
+
+    return .{
+        .agent = tree.add("src/engine.zig", applyDelta(b, dep)),
+        .grabber = directory.path(b, "src/grabber/main.zig"),
+        .protocol = directory.path(b, "src/grabber_protocol.zig"),
+        .version = tree.add("VERSION", engine_pin ++ "\n"),
+        .options = options,
+    };
 }
 
 /// One edit the embedded copy carries over the pinned source: `from` must occur
