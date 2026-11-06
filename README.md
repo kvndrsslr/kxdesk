@@ -106,6 +106,23 @@ kxdesk hotkey inject "wm window-swap west"  # run a binding without pressing its
 kxdesk hotkey reload                        # re-read the config, as saving it does
 ```
 
+There is one thing the tap cannot do, and it is the internal keyboard's home-row
+mods: deciding tap-versus-hold means swallowing a key before anything else sees it,
+and delivering the hold means typing a modifier back. That takes a seized keyboard
+(root) and a virtual HID device to type through — pqrs's Karabiner driver plus
+upstream's grabber daemon. `brew` installs the binaries; one privileged command
+installs both of those, pins the driver to a version and a sha256, and registers the
+daemon with launchd:
+
+```sh
+sudo kxdesk grabber install     # the driver extension and the grabber daemon
+kxdesk grabber status           # both halves, or which one is missing
+```
+
+The rules that use it live in `skhdrc` under `.device builtin { vendor: 0x0,
+product: 0x0 }` — that is how the internal keyboard identifies itself — so the QMK
+boards, which mod-tap in firmware, never see them.
+
 `inject` runs the same lookup, the same check and the same command the tap runs,
 which is what makes a binding testable without pressing its keys. `reload` sends
 the engine the signal it already handles; saving the file does the same on its own,
@@ -310,7 +327,8 @@ daemon that it was.
 ```sh
 brew install kvndrsslr/formulae/kxdesk
 brew services start kxdesk
-chezmoi apply     # ~/.config/kxdesk/skhdrc among the rest
+chezmoi apply                    # ~/.config/kxdesk/skhdrc among the rest
+sudo kxdesk grabber install      # home-row mods: the driver extension + grabber daemon
 ```
 
 Then grant Accessibility to `kxdesk` once, when macOS asks (System Settings >

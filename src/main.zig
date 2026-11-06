@@ -20,6 +20,7 @@ const context = @import("context.zig");
 const control = @import("control.zig");
 const dispatch = @import("dispatch.zig");
 const exec = @import("exec.zig");
+const grabber = @import("grabber.zig");
 const items_audio = @import("items_audio.zig");
 const items_brew = @import("items_brew.zig");
 const items_system = @import("items_system.zig");
@@ -278,6 +279,7 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, mode, "completions") or
         std.mem.eql(u8, mode, "version") or
         std.mem.eql(u8, mode, "server-mode") or
+        std.mem.eql(u8, mode, "grabber") or
         std.mem.eql(u8, mode, "yabai") or
         std.mem.eql(u8, mode, "brew"))
     {
@@ -325,6 +327,12 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
 
     if (std.mem.eql(u8, mode, "yabai") or std.mem.eql(u8, mode, "brew")) {
         return postClientEvent(mode, args);
+    }
+
+    if (std.mem.eql(u8, mode, "grabber")) {
+        const payload = grabber.grabber(arena, init.io, args) catch |err| return fail(init.io, err);
+        if (payload.len > 0) emit(init.io, .stdout, payload);
+        return;
     }
 
     if (std.mem.eql(u8, mode, "server-mode")) {

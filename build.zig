@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     wire(b, exe.root_module, target, optimize, &src);
 
     // The root daemon the tap-hold rules need; inert unless one is declared in
-    // `skhdrc`, and installed by `grabber.sh`, not by the daemon itself.
+    // `skhdrc`, installed by `kxdesk grabber install` (root), not by the daemon itself.
     const grabber_exe = b.addExecutable(.{
         .name = "kxdesk-grabber",
         .root_module = grabber(b, target, optimize, &src),
@@ -154,7 +154,7 @@ fn engine(
 ///
 /// Its install plumbing is upstream's own binary's (`--install-grabber`, whose
 /// plists live in the `scripts/` the pinned package omits), so how it is started
-/// is this repo's business: see `grabber.sh`.
+/// is this repo's business: `kxdesk grabber install`, in `src/grabber.zig`.
 fn grabber(
     b: *std.Build,
     target: std.Build.ResolvedTarget,

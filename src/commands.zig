@@ -482,6 +482,18 @@ pub const all = [_]Command{
         .run = kitty.toggle,
     },
 
+    // Installs the root daemon tap-hold rules need, and the driver it types
+    // through. No `run` for a different reason than server-mode's: `sudo` and
+    // `installer` want the terminal, and the daemon has none.
+    .{
+        .name = "grabber",
+        .summary = "install, remove or report the root daemon tap-hold rules need",
+        .subcommands = &.{
+            .{ .name = "install", .summary = "install the driver extension and the grabber daemon (root)" },
+            .{ .name = "uninstall", .summary = "stop and remove the grabber daemon (root)" },
+            .{ .name = "status", .summary = "say whether both halves are in place", .default = true },
+        },
+    },
     // The one command with no `run`: it drives `op`, whose 1Password unlock is
     // granted to the session that asked, not to launchd's daemon.
     .{
