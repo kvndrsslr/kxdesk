@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    kxdesk's icon: lowercase "kx" in one weight, with two contour rings following
+    the letters - an echo of the mark rather than a frame around it.
+
+    The letters are set in Helvetica Neue Bold, kerned until they touch: the k's
+    leg and the x's upper arm meet, and the arm runs on into a single bar across
+    the top, so the pair reads as one ligature. Where they meet, a black stroke
+    cuts a seam, which is what leaves the diamond counter in the middle - the
+    letters interlock instead of fusing into a blob.
+
+    Each ring is a white glyph outline at one offset with a black one just inside
+    it: the black stroke is plate-coloured, so what survives is a band of constant
+    width that follows every counter of the letters, including the diamond. They
+    are drawn outside-in, because each ring's black cut would otherwise erase the
+    ring outside it.
+
+    The plate is a full-bleed rounded square (r=228, the macOS proportion): macOS
+    does not mask a third-party icon, so the shape is part of the artwork.
+
+    Regenerate the .icns with (rsvg-convert comes with librsvg, iconutil with macOS):
+
+      for s in 16 32 64 128 256 512 1024; do rsvg-convert -w $s -h $s kxdesk.svg -o raw_$s.png; done
+      # copy raw_N into kxdesk.iconset/icon_MxM[@2x].png at the sizes iconutil expects
+      iconutil -c icns kxdesk.iconset -o kxdesk.icns
+
+    The SVG names a font, so rasterizing it needs Helvetica Neue; the committed
+    .icns is the artifact, this file is the design.
+
+  -->
+<rect x="0" y="0" width="1024" height="1024" rx="228" ry="228" fill="#000000"/>
+<g transform="translate(17.87,-22.33) scale(0.9804)"><text x="340" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="none" stroke="#ffffff" stroke-width="160" stroke-linejoin="round">k</text><text x="640" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="none" stroke="#ffffff" stroke-width="160" stroke-linejoin="round">x</text><text x="340" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="none" stroke="#000000" stroke-width="128" stroke-linejoin="round">k</text><text x="640" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="none" stroke="#000000" stroke-width="128" stroke-linejoin="round">x</text><text x="340" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="none" stroke="#ffffff" stroke-width="96" stroke-linejoin="round">k</text><text x="640" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="none" stroke="#ffffff" stroke-width="96" stroke-linejoin="round">x</text><text x="340" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="none" stroke="#000000" stroke-width="64" stroke-linejoin="round">k</text><text x="640" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="none" stroke="#000000" stroke-width="64" stroke-linejoin="round">x</text><text x="340" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="#ffffff" stroke="#000000" stroke-width="40" stroke-linejoin="round">k</text><text x="640" y="760" font-family="Helvetica Neue" font-weight="bold" font-size="600" text-anchor="middle" fill="#ffffff" stroke="#000000" stroke-width="40" stroke-linejoin="round">x</text></g>
+</svg>

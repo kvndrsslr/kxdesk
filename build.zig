@@ -410,6 +410,10 @@ fn bundle(b: *std.Build, exe: *std.Build.Step.Compile) void {
         \\    <!-- An agent: no Dock icon, no menu bar, no window. -->
         \\    <key>LSUIElement</key>
         \\    <true/>
+        \\    <!-- The icon the Accessibility pane and the Dock-less app show; the
+        \\         file lands in Contents/Resources below. -->
+        \\    <key>CFBundleIconFile</key>
+        \\    <string>kxdesk</string>
         \\</dict>
         \\</plist>
         \\
@@ -435,6 +439,20 @@ fn bundle(b: *std.Build, exe: *std.Build.Step.Compile) void {
     install_info.addFileArg(bundle_dir.path(b, "Contents").path(b, "Info.plist"));
     install_info.step.dependOn(&copy.step);
 
+    // The icon: `assets/kxdesk.icns`, composed from the SVG beside it (`iconutil`,
+    // recipe in the SVG's comment). A committed asset rather than something the
+    // build renders, because rendering it needs a rasterizer Homebrew's build
+    // sandbox has no reason to have.
+    const resources = b.addSystemCommand(&.{"mkdir"});
+    resources.addArg("-p");
+    resources.addFileArg(bundle_dir.path(b, "Contents").path(b, "Resources"));
+    resources.step.dependOn(&install_info.step);
+
+    const install_icon = b.addSystemCommand(&.{"cp"});
+    install_icon.addFileArg(b.path("assets/kxdesk.icns"));
+    install_icon.addFileArg(bundle_dir.path(b, "Contents").path(b, "Resources").path(b, "kxdesk.icns"));
+    install_icon.step.dependOn(&resources.step);
+
     // `sign.sh`, not `codesign -` here: an ad-hoc signature's identity is the
     // binary's cdhash, so every build would be a different application as far as
     // macOS is concerned and the Accessibility grant the tap needs would not carry
@@ -443,7 +461,7 @@ fn bundle(b: *std.Build, exe: *std.Build.Step.Compile) void {
     const sign = b.addSystemCommand(&.{"bash"});
     sign.addFileArg(b.path("sign.sh"));
     sign.addFileArg(bundle_dir);
-    sign.step.dependOn(&install_info.step);
+    sign.step.dependOn(&install_icon.step);
 
     b.getInstallStep().dependOn(&sign.step);
 }
