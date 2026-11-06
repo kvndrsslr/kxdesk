@@ -42,5 +42,8 @@ brew upgrade --fetch-HEAD kxdesk
 # identity that survives it.
 installed=$(brew --prefix kxdesk)
 bash sign.sh "$installed/kxdesk.app"
+# The grabber's bundle carries the other grant - Input Monitoring, which the
+# seize needs - so it is signed the same way and for the same reason.
+bash sign.sh "$installed/kxdesk-grabber.app"
 
 brew services restart kxdesk

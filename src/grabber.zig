@@ -24,7 +24,11 @@ const std = @import("std");
 /// is why the plist names it rather than a Cellar path.
 const label = "org.kdressler.kxdesk.grabber";
 const plist_path = "/Library/LaunchDaemons/" ++ label ++ ".plist";
-const program = "/opt/homebrew/opt/kxdesk/bin/kxdesk-grabber";
+// The bundle's inner binary, not `bin/kxdesk-grabber`: the seize needs an Input
+// Monitoring grant, a root LaunchDaemon cannot raise that dialog, and an app is what
+// the pane can be told to trust - signed with the same certificate as the daemon, so
+// the grant survives upgrades.
+const program = "/opt/homebrew/opt/kxdesk/kxdesk-grabber.app/Contents/MacOS/kxdesk-grabber";
 const log_path = "/opt/homebrew/var/log/kxdesk-grabber.log";
 
 /// The pinned driver extension, verbatim from upstream skhd.zig: its grabber's
@@ -66,7 +70,9 @@ fn install(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
     try startDriver(arena, io);
     try installDaemon(arena, io);
 
-    return "installed: the grabber daemon; rules in skhdrc take effect on the next kxdesk start";
+    return "installed: the grabber daemon. If it cannot seize the keyboard it needs\n" ++
+        "Input Monitoring for kxdesk-grabber in System Settings > Privacy & Security,\n" ++
+        "and one more `kxdesk grabber install` to restart it with that grant.";
 }
 
 fn uninstall(arena: std.mem.Allocator, io: std.Io) ![]const u8 {

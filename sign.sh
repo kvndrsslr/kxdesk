@@ -19,11 +19,15 @@
 # after each deploy, which is the behaviour this script exists to avoid.
 set -euo pipefail
 
-bundle=${1:?usage: sign.sh <kxdesk.app>}
-identifier=org.kdressler.kxdesk
+bundle=${1:?usage: sign.sh <name.app>}
 certificate=kxdesk-cert
 
-executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist")
+# Both the identifier and the inner binary come from the bundle itself, so the
+# daemon's and the grabber's bundles are signed by the same script with their own
+# identities - which is the whole point of the bundle.
+plist="$bundle/Contents/Info.plist"
+identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
+executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")
 inner="$bundle/Contents/MacOS/$executable"
 
 if ! security find-certificate -c "$certificate" >/dev/null 2>&1; then

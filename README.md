@@ -119,6 +119,15 @@ sudo kxdesk grabber install     # the driver extension and the grabber daemon
 kxdesk grabber status           # both halves, or which one is missing
 ```
 
+The daemon needs one more grant than the rest of kxdesk: **Input Monitoring**, for
+`kxdesk-grabber` in System Settings > Privacy & Security. Seizing a keyboard is what
+tap-hold costs, and macOS refuses it to an unapproved process with
+`kIOReturnNotPermitted` — which is exactly what a root LaunchDaemon cannot ask for,
+because the approval dialog needs a session to appear in. That is also why the
+grabber ships as a `.app`: the pane wants an app to add, and the bundle identifier
+plus the signing certificate are what make the grant survive an upgrade. Grant it,
+then `sudo kxdesk grabber install` once more to restart the daemon with it.
+
 The rules that use it live in `skhdrc` under `.device builtin { vendor: 0x0,
 product: 0x0 }` — that is how the internal keyboard identifies itself — so the QMK
 boards, which mod-tap in firmware, never see them.

@@ -15,6 +15,10 @@ pub fn build(b: *std.Build) void {
     ) orelse .fast;
 
     const src = sources(b, b.dependency("skhd_zig", .{}));
+    // The two bundles' Info.plists, written from here rather than shipped as files:
+    // each holds the identifier the grants are keyed to, which belongs next to the
+    // bundle layout it describes.
+    const plists = b.addWriteFiles();
 
     const exe = b.addExecutable(.{
         .name = "kxdesk",
@@ -35,6 +39,32 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(grabber_exe);
 
+    // The grabber's bundle: the shape its Input Monitoring grant needs. A root
+    // LaunchDaemon cannot raise the approval dialog, so the entry is added by hand,
+    // and the pane needs an app to add.
+    app(b, "kxdesk-grabber", grabber_exe, plists.add("grabber.plist",
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\    <key>CFBundleIdentifier</key>
+        \\    <string>org.kdressler.kxdesk.grabber</string>
+        \\    <key>CFBundleName</key>
+        \\    <string>kxdesk-grabber</string>
+        \\    <key>CFBundleExecutable</key>
+        \\    <string>kxdesk-grabber</string>
+        \\    <key>CFBundlePackageType</key>
+        \\    <string>APPL</string>
+        \\    <key>LSMinimumSystemVersion</key>
+        \\    <string>13.0</string>
+        \\    <!-- A daemon: launchd starts it, and nothing about it is a UI. -->
+        \\    <key>LSUIElement</key>
+        \\    <true/>
+        \\</dict>
+        \\</plist>
+        \\
+    ), null);
+
     // `kxdesk version` reports the version the binary was built from, so it is
     // read out of the manifest here and injected as a build option: build.zig.zon
     // stays the one place it is written down.
@@ -43,7 +73,33 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addOptions("build_options", options);
 
     b.installArtifact(exe);
-    bundle(b, exe);
+
+    app(b, "kxdesk", exe, plists.add("kxdesk.plist",
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\    <key>CFBundleIdentifier</key>
+        \\    <string>org.kdressler.kxdesk</string>
+        \\    <key>CFBundleName</key>
+        \\    <string>kxdesk</string>
+        \\    <key>CFBundleExecutable</key>
+        \\    <string>kxdesk</string>
+        \\    <key>CFBundlePackageType</key>
+        \\    <string>APPL</string>
+        \\    <key>LSMinimumSystemVersion</key>
+        \\    <string>13.0</string>
+        \\    <!-- An agent: no Dock icon, no menu bar, no window. -->
+        \\    <key>LSUIElement</key>
+        \\    <true/>
+        \\    <!-- The icon the Accessibility pane shows; `assets/kxdesk.icns` is
+        \\         composed from the SVG beside it, recipe in that file. -->
+        \\    <key>CFBundleIconFile</key>
+        \\    <string>kxdesk</string>
+        \\</dict>
+        \\</plist>
+        \\
+    ), b.path("assets/kxdesk.icns"));
 
     const t = b.addTest(.{
         .root_module = b.createModule(.{
@@ -384,46 +440,29 @@ fn applyDelta(b: *std.Build, dep: *std.Build.Dependency) []const u8 {
     return patched;
 }
 
-/// `kxdesk.app`: the daemon's bundle, installed next to the bare binary.
+/// A `.app` around one of the binaries, staged in the prefix and signed by
+/// `sign.sh`.
 ///
-/// macOS keys an Accessibility grant to a bundle identifier, and a bare Mach-O to
-/// a hash of the binary - which every build changes, so the grant would be asked
-/// for again after each deploy. The bundle is why the grant sticks: `bin/kxdesk`
-/// stays a plain executable for one-shot commands, which need no identity at all.
-fn bundle(b: *std.Build, exe: *std.Build.Step.Compile) void {
-    const plist = b.addWriteFiles();
-    const info = plist.add("Info.plist",
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        \\<plist version="1.0">
-        \\<dict>
-        \\    <key>CFBundleIdentifier</key>
-        \\    <string>org.kdressler.kxdesk</string>
-        \\    <key>CFBundleName</key>
-        \\    <string>kxdesk</string>
-        \\    <key>CFBundleExecutable</key>
-        \\    <string>kxdesk</string>
-        \\    <key>CFBundlePackageType</key>
-        \\    <string>APPL</string>
-        \\    <key>LSMinimumSystemVersion</key>
-        \\    <string>13.0</string>
-        \\    <!-- An agent: no Dock icon, no menu bar, no window. -->
-        \\    <key>LSUIElement</key>
-        \\    <true/>
-        \\    <!-- The icon the Accessibility pane and the Dock-less app show; the
-        \\         file lands in Contents/Resources below. -->
-        \\    <key>CFBundleIconFile</key>
-        \\    <string>kxdesk</string>
-        \\</dict>
-        \\</plist>
-        \\
-    );
-
+/// Both bundles exist for the same reason: macOS keys a privacy grant to a code
+/// identity, and a bare Mach-O's identity is a hash of itself that every build
+/// changes. The daemon's Accessibility grant is one; the grabber's Input Monitoring
+/// grant is the other, which is also why it cannot be a bare binary - a root
+/// LaunchDaemon cannot show the approval dialog, so the entry has to be addable by
+/// hand from a bundle. `bin/kxdesk` and `bin/kxdesk-grabber` stay plain executables
+/// for the command line, where no identity is wanted.
+fn app(
+    b: *std.Build,
+    name: []const u8,
+    exe: *std.Build.Step.Compile,
+    info: std.Build.LazyPath,
+    icon: ?std.Build.LazyPath,
+) void {
     // The install prefix rather than the build root: what a build stages in the
-    // prefix is what `brew` copies out of it, so the bundle is assembled there.
-    // The inner binary is a copy, not a link, because a signature covers the file.
-    const bundle_dir = b.graph.path(.install_prefix, "kxdesk.app");
-    const macos = bundle_dir.path(b, "Contents").path(b, "MacOS");
+    // prefix is what `brew` copies out of it. The inner binary is a copy, not a
+    // link, because a signature covers the file.
+    const directory = b.graph.path(.install_prefix, b.fmt("{s}.app", .{name}));
+    const contents = directory.path(b, "Contents");
+    const macos = contents.path(b, "MacOS");
 
     const stage = b.addSystemCommand(&.{"mkdir"});
     stage.addArg("-p");
@@ -436,32 +475,32 @@ fn bundle(b: *std.Build, exe: *std.Build.Step.Compile) void {
 
     const install_info = b.addSystemCommand(&.{"cp"});
     install_info.addFileArg(info);
-    install_info.addFileArg(bundle_dir.path(b, "Contents").path(b, "Info.plist"));
+    install_info.addFileArg(contents.path(b, "Info.plist"));
     install_info.step.dependOn(&copy.step);
 
-    // The icon: `assets/kxdesk.icns`, composed from the SVG beside it (`iconutil`,
-    // recipe in the SVG's comment). A committed asset rather than something the
-    // build renders, because rendering it needs a rasterizer Homebrew's build
-    // sandbox has no reason to have.
-    const resources = b.addSystemCommand(&.{"mkdir"});
-    resources.addArg("-p");
-    resources.addFileArg(bundle_dir.path(b, "Contents").path(b, "Resources"));
-    resources.step.dependOn(&install_info.step);
+    var last: *std.Build.Step = &install_info.step;
+    if (icon) |file| {
+        const resources = b.addSystemCommand(&.{"mkdir"});
+        resources.addArg("-p");
+        resources.addFileArg(contents.path(b, "Resources"));
+        resources.step.dependOn(&install_info.step);
 
-    const install_icon = b.addSystemCommand(&.{"cp"});
-    install_icon.addFileArg(b.path("assets/kxdesk.icns"));
-    install_icon.addFileArg(bundle_dir.path(b, "Contents").path(b, "Resources").path(b, "kxdesk.icns"));
-    install_icon.step.dependOn(&resources.step);
+        const install_icon = b.addSystemCommand(&.{"cp"});
+        install_icon.addFileArg(file);
+        install_icon.addFileArg(contents.path(b, "Resources").path(b, b.fmt("{s}.icns", .{name})));
+        install_icon.step.dependOn(&resources.step);
+        last = &install_icon.step;
+    }
 
     // `sign.sh`, not `codesign -` here: an ad-hoc signature's identity is the
     // binary's cdhash, so every build would be a different application as far as
-    // macOS is concerned and the Accessibility grant the tap needs would not carry
-    // over. The script creates a self-signed identity on first use and signs every
-    // build with it.
+    // macOS is concerned and the grants would not carry over. The script reads the
+    // identifier from the plist, creates a self-signed certificate on first use, and
+    // signs every build with that.
     const sign = b.addSystemCommand(&.{"bash"});
     sign.addFileArg(b.path("sign.sh"));
-    sign.addFileArg(bundle_dir);
-    sign.step.dependOn(&install_icon.step);
+    sign.addFileArg(directory);
+    sign.step.dependOn(last);
 
     b.getInstallStep().dependOn(&sign.step);
 }
