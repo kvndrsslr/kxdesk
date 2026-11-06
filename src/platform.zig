@@ -114,6 +114,9 @@ pub extern "c" fn kx_browser_open() bool;
 
 pub extern "c" fn kx_clipboard_set(text: [*:0]const u8) bool;
 
+/// Whether this process holds the Accessibility grant an event tap needs.
+pub extern "c" fn kx_ax_trusted() bool;
+
 /// The name the system gives a display, which is the name kitty knows it by;
 /// false when no display of that id is attached or the name does not fit `out`.
 pub extern "c" fn kx_display_name(display_id: u32, out: [*]u8, cap: usize) bool;

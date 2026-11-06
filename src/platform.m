@@ -563,6 +563,14 @@ int64_t kx_unix_reply(const char* path, const void* request, size_t request_size
   return total;
 }
 
+bool kx_ax_trusted(void) {
+  /* The same question the engine's watchdog asks once a second. Asked here so
+     that `kxdesk hotkey status` can answer it for the daemon's own code identity,
+     which is the identity an Accessibility grant has to match: a grant given to an
+     earlier build is a grant this process does not have. */
+  return AXIsProcessTrusted();
+}
+
 bool kx_app_font_path(char* out, size_t cap) {
   // A descriptor match, rather than CTFontCreateWithName, because the latter
   // silently substitutes a different font when the requested one is missing.

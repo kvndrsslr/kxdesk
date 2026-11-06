@@ -357,11 +357,13 @@ fn bundle(b: *std.Build, exe: *std.Build.Step.Compile) void {
     install_info.addFileArg(bundle_dir.path(b, "Contents").path(b, "Info.plist"));
     install_info.step.dependOn(&copy.step);
 
-    // Ad-hoc, with the identifier spelled out: an ad-hoc signature otherwise
-    // carries the binary's own name only, and the identifier is what TCC keys the
-    // grant to.
-    const sign = b.addSystemCommand(&.{"codesign"});
-    sign.addArgs(&.{ "--force", "--sign", "-", "--identifier", "org.kdressler.kxdesk" });
+    // `sign.sh`, not `codesign -` here: an ad-hoc signature's identity is the
+    // binary's cdhash, so every build would be a different application as far as
+    // macOS is concerned and the Accessibility grant the tap needs would not carry
+    // over. The script creates a self-signed identity on first use and signs every
+    // build with it.
+    const sign = b.addSystemCommand(&.{"bash"});
+    sign.addFileArg(b.path("sign.sh"));
     sign.addFileArg(bundle_dir);
     sign.step.dependOn(&install_info.step);
 

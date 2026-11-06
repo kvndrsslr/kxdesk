@@ -351,8 +351,12 @@ pub fn dispatch(context: *Context, line: []const u8, refusal: ?*?[]const u8) any
 pub fn status(arena: std.mem.Allocator) ![]const u8 {
     const self = host orelse return "hotkey engine: not started";
 
-    return arena.print("hotkey engine: {s} handled={d} config={s}", .{
+    // The grant is asked separately from the run loop's own view: an engine that
+    // never got its tap and one whose grant was given to another build look the
+    // same from here, and they are fixed differently.
+    return arena.print("hotkey engine: {s} accessibility={s} handled={d} config={s}", .{
         if (self.running.load(.monotonic)) "running" else "stopped",
+        if (platform.kx_ax_trusted()) "granted" else "denied",
         self.handled.load(.monotonic),
         self.config,
     });

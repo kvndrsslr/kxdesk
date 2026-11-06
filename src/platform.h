@@ -165,6 +165,11 @@ int64_t kx_unix_reply(
     uint32_t timeout_ms
 );
 
+/// Whether this process holds the Accessibility grant an event tap needs, as the
+/// engine asks it. False for a build whose grant was stored against a different
+/// code identity - a rebuild with an ad-hoc signature is exactly that.
+bool kx_ax_trusted(void);
+
 /// Filesystem path of the installed sketchybar-app-font, resolved through
 /// CoreText so it is the same file the bar renders with. Returns false when the
 /// font is not installed.
