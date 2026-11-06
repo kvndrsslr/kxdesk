@@ -8,15 +8,16 @@
 const std = @import("std");
 
 const cli = @import("cli.zig");
+const hotkey = @import("hotkey.zig");
 const config = @import("config.zig");
 const items_audio = @import("items_audio.zig");
 const items_tern = @import("items_tern.zig");
 const items_system = @import("items_system.zig");
 const items_usage = @import("items_usage.zig");
-const kanata = @import("kanata.zig");
 const kitty = @import("kitty.zig");
 const log = @import("log.zig");
 const pomodoro = @import("pomodoro.zig");
+const skhd = @import("skhd");
 const Props = @import("props.zig").Props;
 const sb = @import("sb.zig");
 const server_mode = @import("server_mode.zig");
@@ -751,7 +752,7 @@ test "wm is validated by the registry's own description of it" {
 
     // The argument left out, one outside the words the verb takes, a flag no
     // verb declares, and no verb at all. Each names what was expected, which is
-    // what the bound-in-`kanata.kbd` spelling is refused with.
+    // what the bound-in-`skhdrc` spelling is refused with.
     const missing = (try cli.validate(arena, std.testing.io, wm, &.{"window-swap"})).?;
     try std.testing.expect(std.mem.indexOf(u8, missing, "missing <direction>") != null);
 
@@ -832,95 +833,60 @@ test "the wm verb table and the registry's subcommands are the same list" {
     }
 }
 
-test "a pushed message is read in the shape kanata sends, and in the documented one" {
-    // `push-msg` arrives as a JSON array - kanata converts the action's
-    // arguments with `simple_sexpr_to_json_array`, so a config cannot produce
-    // the bare string its protocol documents - and a name that is not one name
-    // is refused, since what is pushed is a name and not a command.
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const cases = [_]struct { payload: []const u8, name: ?[]const u8 }{
-        .{ .payload = "[\"wm window-swap west\"]", .name = "wm window-swap west" },
-        .{ .payload = "\"wm cycle-displays --reverse\"", .name = "wm cycle-displays --reverse" },
-        .{ .payload = "[\"app open kitty\"]", .name = "app open kitty" },
-        .{ .payload = "[\"a\",\"b\"]", .name = null },
-        .{ .payload = "[[\"a\"]]", .name = null },
-        .{ .payload = "[]", .name = null },
-        .{ .payload = "7", .name = null },
+test "a `!` line is an in-process action, and every other spelling is a shell command" {
+    // The one rule of the form kxdesk adds to upstream's grammar: the prefix is
+    // the two bytes `! ` at the start. A missing space, a bare `!`, or an
+    // ordinary line is upstream's shell command, which is what keeps a config
+    // written for stock skhd behaving as it did.
+    const kxdesk = [_]struct { line: []const u8, argv: []const u8 }{
+        .{ .line = "! wm window-swap west", .argv = "wm window-swap west" },
+        .{ .line = "! term toggle music", .argv = "term toggle music" },
+        .{ .line = "! !nested arg", .argv = "!nested arg" },
     };
-
-    for (cases) |case| {
-        const message = try std.json.parseFromSliceLeaky(std.json.Value, arena, case.payload, .{});
-        if (case.name) |name| {
-            try std.testing.expectEqualStrings(name, try kanata.pushedName(message));
-        } else {
-            try std.testing.expectError(error.InvalidMessage, kanata.pushedName(message));
-        }
+    for (kxdesk) |case| {
+        try std.testing.expectEqualStrings(case.argv, hotkey.route(case.line).kxdesk);
     }
+
+    const shell = [_][]const u8{
+        "wm window-swap west",
+        "!wm window-swap west",
+        "!",
+        "notify-send ! hi",
+    };
+    for (shell) |line| try std.testing.expect(hotkey.route(line) == .shell);
 }
 
-test "kanata framing keeps messages apart across read boundaries" {
-    var framer = kanata.Framer{};
+test "the Mission Control fallback spells a bare ctrl+arrow, not ctrl+fn+arrow" {
+    // `wm cycle-display-spaces` synthesizes ctrl+left/right when yabai will not
+    // focus the neighbouring space, and which chord that is depends on the
+    // engine's key table: `left` and `right` are in the literal group that
+    // carries the implicit fn modifier, so `ctrl - left` would post ctrl+fn+left
+    // - home, not Mission Control. The hex form has no implicit modifier, which
+    // is why the call site spells the keycode.
+    var parser = try skhd.Parser.init(std.testing.allocator, std.testing.io);
+    defer parser.deinit();
 
-    // A socket has no idea where a message ends: one line can arrive in two
-    // reads, and two lines in one. This is both, in order.
-    framer.feed("{\"MessagePush\":{\"mess");
-    try std.testing.expect(framer.next() == null);
-    framer.feed("age\":[\"wm window-swap west\"]}}\n{\"LayerChange\":{\"new\":\"op\"}}\n");
+    const hex = try parser.parseKeySpec("ctrl - 0x7B");
+    try std.testing.expect(hex.flags.control);
+    try std.testing.expect(!hex.flags.@"fn");
+    try std.testing.expect(hex.key == 0x7B);
 
-    try std.testing.expectEqualStrings(
-        "{\"MessagePush\":{\"message\":[\"wm window-swap west\"]}}",
-        framer.next().?,
-    );
-    try std.testing.expectEqualStrings("{\"LayerChange\":{\"new\":\"op\"}}", framer.next().?);
-    try std.testing.expect(framer.next() == null);
-
-    // A read that ends exactly on the newline is the same as one that carries
-    // the start of the next message.
-    framer.feed("{\"a\":1}\n");
-    try std.testing.expectEqualStrings("{\"a\":1}", framer.next().?);
-    try std.testing.expect(framer.next() == null);
+    const literal = try parser.parseKeySpec("ctrl - left");
+    try std.testing.expect(literal.flags.@"fn");
 }
 
-test "kanata framing drops a line that outgrows its buffer" {
-    // Half a message is not a message. The overlong line is dropped whole - and
-    // so is the fragment of it that was already buffered, or everything after it
-    // would be glued onto that fragment and lost with it.
-    var framer = kanata.Framer{};
-    var long: [5000]u8 = undefined;
-    @memset(long[0..4999], 'x');
-    long[4999] = '\n';
+test "the mode indicator follows the mode the engine reports" {
+    // The indices are the ones the mode indicator takes; the names are the ones
+    // `skhdrc` declares, and `default` is also what a reload's reset reports.
+    try std.testing.expectEqualStrings("1", hotkey.indicatorFor("op").?);
+    try std.testing.expectEqualStrings("2", hotkey.indicatorFor("wmode").?);
+    try std.testing.expectEqualStrings("3", hotkey.indicatorFor("smode").?);
+    try std.testing.expectEqualStrings("-", hotkey.indicatorFor("default").?);
 
-    framer.feed(&long);
-    framer.feed("{\"LayerChange\":{\"new\":\"op\"}}\n");
-    try std.testing.expectEqualStrings("{\"LayerChange\":{\"new\":\"op\"}}", framer.next().?);
-    try std.testing.expect(framer.next() == null);
-
-    // The same when the newline that ends the long line arrives in a later read
-    // than the line itself.
-    var framer_again = kanata.Framer{};
-    var head: [4500]u8 = undefined;
-    @memset(&head, 'y');
-    framer_again.feed(&head);
-    try std.testing.expect(framer_again.next() == null);
-    framer_again.feed("tail\n{\"a\":1}\n");
-    try std.testing.expectEqualStrings("{\"a\":1}", framer_again.next().?);
-    try std.testing.expect(framer_again.next() == null);
-}
-
-test "the mode indicator follows the layer kanata reports" {
-    // The indices are the ones the skhd config passed to `set_mode_indicator` on
-    // entering each mode; the layer names are the ones kanata.kbd defines.
-    try std.testing.expectEqualStrings("1", kanata.indicatorFor("op").?);
-    try std.testing.expectEqualStrings("2", kanata.indicatorFor("wmode").?);
-    try std.testing.expectEqualStrings("3", kanata.indicatorFor("smode").?);
-    try std.testing.expectEqualStrings("-", kanata.indicatorFor("default").?);
-
-    // A layer nobody colours is not an error: the config may define layers of
-    // its own, and the highlight simply stays as it was.
-    try std.testing.expect(kanata.indicatorFor("nav") == null);
+    // A mode nobody colours is not an error: the config may declare modes of its
+    // own, and the highlight simply stays as it was.
+    try std.testing.expect(hotkey.indicatorFor("nav") == null);
+    try std.testing.expect(hotkey.indicatorFor("bypass") == null);
 }
 
 // Pinned spellings of every leaf kind `props.write` flattens, in field order.

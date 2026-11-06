@@ -24,7 +24,7 @@ const items_audio = @import("items_audio.zig");
 const items_brew = @import("items_brew.zig");
 const items_system = @import("items_system.zig");
 const items_yabai = @import("items_yabai.zig");
-const kanata = @import("kanata.zig");
+const hotkey = @import("hotkey.zig");
 const log = @import("log.zig");
 const platform = @import("platform.zig");
 const pomodoro = @import("pomodoro.zig");
@@ -480,24 +480,47 @@ fn runDaemon(init: std.process.Init) !void {
         }
     } else |_| {}
 
-    // kanata's channel, started last because it is a client of everything above
-    // it: losing it costs the key bindings and nothing else, so a failure is said
-    // once and the daemon carries on.
-    kanata.Listener.start(gpa, .{
-        .io = init.io,
-        .store = &store,
-        .yabai_client = &yabai_client,
-        .pomodoro = &timer,
-        .bar_present = &daemon.present,
-        .event_service = event_service,
-        .started = daemon.started,
-    }) catch |err| {
-        log.warn("kanata channel not started: {s}", .{@errorName(err)});
+    // The key bindings, set up last and in two parts, because the engine's tap has
+    // to be on this thread while the receive loop needs one of its own: the engine
+    // is parsed and its hooks installed here, the loop is handed to a thread, and
+    // this thread then runs the engine's run loop. Losing the bindings costs them
+    // and nothing else, so a failure is said once and the bar keeps being served.
+    const bindings = blk: {
+        hotkey.init(gpa, .{
+            .io = init.io,
+            .store = &store,
+            .yabai_client = &yabai_client,
+            .pomodoro = &timer,
+            .bar_present = &daemon.present,
+            .event_service = event_service,
+            .started = daemon.started,
+        }) catch |err| {
+            log.warn("hotkey engine not started: {s}", .{@errorName(err)});
+            break :blk false;
+        };
+        break :blk true;
     };
 
-    // Never returns: the process ends when launchd or a signal ends it, not when
-    // SketchyBar does.
-    platform.kx_server_serve(server_port, onBlock, onTimer);
+    // The receive loop never returns: the process ends when launchd or a signal
+    // ends it, not when SketchyBar does. Every handler it runs was already
+    // thread-agnostic - commands run on their own workers - so a thread of its own
+    // costs nothing and leaves this one to the engine.
+    const server = std.Thread.spawn(.{}, receiveLoop, .{server_port}) catch |err| {
+        log.warn("receive loop not started: {s}", .{@errorName(err)});
+        return err;
+    };
+
+    // Blocks until the engine's run loop stops, which takes a stop request; when it
+    // does, there is nothing left but to keep the bar served.
+    if (bindings) hotkey.serve() catch |err| {
+        log.warn("hotkey engine stopped: {s}", .{@errorName(err)});
+    };
+    server.join();
+}
+
+/// The receive loop, on the thread the engine does not own.
+fn receiveLoop(port: u32) void {
+    platform.kx_server_serve(port, onBlock, onTimer);
 }
 
 /// Every other mode: ask the daemon to run one of its commands. The request is

@@ -11,7 +11,7 @@ const std = @import("std");
 
 const Context = @import("context.zig").Context;
 const exec = @import("exec.zig");
-const kanata = @import("kanata.zig");
+const hotkey = @import("hotkey.zig");
 const log = @import("log.zig");
 const platform = @import("platform.zig");
 const yabai = @import("yabai.zig");
@@ -304,8 +304,8 @@ pub fn cycleSpaceWindows(context: *Context, args: []const []const u8) anyerror![
 }
 
 /// Move focus to the neighbouring space on the current display, falling back
-/// to Mission Control's arrow keys - pressed through kanata - for the
-/// native-fullscreen spaces yabai cannot focus.
+/// to Mission Control's arrow keys - posted through the event tap's synthesizer -
+/// for the native-fullscreen spaces yabai cannot focus.
 pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
     const reverse = hasFlag(args, "--reverse");
@@ -336,9 +336,12 @@ pub fn cycleDisplaySpaces(context: *Context, args: []const []const u8) anyerror!
     context.yabai.command(arena, &.{ "-m", "space", "--focus", index_argument }) catch |err| switch (err) {
         // Native-fullscreen spaces refuse to be focused by yabai, and so does
         // re-focusing the current one; the fallback is Mission Control's
-        // shortcut, pressed through kanata.
+        // shortcut, synthesizing the chord the tap would have matched. Spelled as
+        // a hex keycode because the engine's `left`/`right` literals carry the
+        // implicit fn modifier (they are Home/End-class keys there), which would
+        // post ctrl+fn+left - not the chord Mission Control wants.
         error.YabaiFailed => {
-            try kanata.tapFakeKey(context, if (reverse) "ctrl-left" else "ctrl-right");
+            try hotkey.synthTap(if (reverse) "ctrl - 0x7B" else "ctrl - 0x7C");
             return "";
         },
         else => return err,

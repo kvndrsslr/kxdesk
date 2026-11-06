@@ -8,5 +8,17 @@
     // not checked by Zig itself - an older compiler simply fails with an
     // unrelated link error.
     .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // The hotkey engine (`src/hotkey.zig`): upstream skhd.zig at one commit,
+        // hash-pinned so a bump is deliberate and upstream movement cannot reach
+        // a build. The tarball carries `build.zig`, `build.zig.zon` and `src/`;
+        // `build.zig` copies that `src/` into the cache and rewrites one of its
+        // files rather than forking (see `engine_delta`), so this is the only
+        // upstream copy in the build.
+        .skhd_zig = .{
+            .url = "https://github.com/jackielii/skhd.zig/archive/f359304ac5c3cffffd7105368bba0cbed21f7041.tar.gz",
+            .hash = "skhd_zig-0.0.0-JtTPFdUsEABJbmggSxJZ0Cf-dZKr-wMj4v9UsgBMMlIc",
+        },
+    },
     .paths = .{""},
 }

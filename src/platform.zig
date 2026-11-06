@@ -112,20 +112,6 @@ pub extern "c" fn kx_dark_mode() bool;
 pub extern "c" fn kx_open_url(url: [*:0]const u8) bool;
 pub extern "c" fn kx_browser_open() bool;
 
-/// Connect to a TCP peer and keep the descriptor, for a channel that stays open;
-/// -1 while the peer is not listening, which is the caller's cue to try again.
-pub extern "c" fn kx_tcp_connect(host: [*:0]const u8, port: u16) i32;
-
-/// Read up to `cap` bytes: the number read, 0 when the peer closed the connection,
-/// or -1 on a read error.
-pub extern "c" fn kx_tcp_read(fd: i32, out: [*]u8, cap: usize) i64;
-
-/// Send `buffer` whole; false means the peer went away first, which for a message
-/// to kanata is a tap that did not happen.
-pub extern "c" fn kx_tcp_write(fd: i32, buffer: [*]const u8, len: usize) bool;
-
-pub extern "c" fn kx_tcp_close(fd: i32) void;
-
 pub extern "c" fn kx_clipboard_set(text: [*:0]const u8) bool;
 
 /// The name the system gives a display, which is the name kitty knows it by;

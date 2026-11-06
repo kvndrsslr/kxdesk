@@ -165,43 +165,6 @@ int64_t kx_unix_reply(
     uint32_t timeout_ms
 );
 
-/// Connect to `host`:`port` over TCP and keep the descriptor, for a channel
-/// that stays open. `kx_socket_message` above is one message and gone, which is
-/// what yabai wants and the opposite of what kanata's server is: it broadcasts
-/// its events to whoever is connected, whenever they happen.
-///
-/// `host` is an IPv4 literal or a name the resolver answers without a round
-/// trip; the channel is a loopback one in practice.
-///
-/// The descriptor has `SO_NOSIGPIPE` set, like the unix socket above and for
-/// the same reason: a peer that goes away must fail the read rather than kill
-/// the daemon.
-///
-/// Returns the descriptor, or -1 when it could not be opened or connected -
-/// the ordinary answer while the peer is not running yet, and the caller's cue
-/// to try again.
-int32_t kx_tcp_connect(const char* host, uint16_t port);
-
-/// Read up to `cap` bytes from a descriptor `kx_tcp_connect` returned.
-///
-/// Returns the number of bytes read, 0 when the peer closed the connection, or
-/// -1 on a read error. Blocks until one of those three happens: the caller is a
-/// thread of its own, and a peer that goes away closes the socket, so there is
-/// nothing here to time out on.
-int64_t kx_tcp_read(int32_t fd, char* out, size_t cap);
-
-/// Write all of `buffer` to a descriptor `kx_tcp_connect` returned.
-///
-/// Returns true when every byte went out, false when the peer went away first.
-/// A short write is a failure rather than a partial success: kanata reads
-/// newline-delimited JSON, and half a line is not a message. Blocks like the
-/// read above, and for the same reason - a loopback peer that accepts the
-/// connection accepts the message.
-bool kx_tcp_write(int32_t fd, const void* buffer, size_t len);
-
-/// Close a descriptor from `kx_tcp_connect`.
-void kx_tcp_close(int32_t fd);
-
 /// Filesystem path of the installed sketchybar-app-font, resolved through
 /// CoreText so it is the same file the bar renders with. Returns false when the
 /// font is not installed.

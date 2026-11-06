@@ -1,5 +1,9 @@
 const std = @import("std");
 
+/// The commit `build.zig.zon` pins the hotkey engine at, reported by
+/// `kxdesk hotkey status` so a running daemon says which code it is.
+const engine_pin = "f359304";
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     // kxdesk sits on the bar's event path, so an optimized build is the default;
@@ -19,6 +23,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    wire(b, exe.root_module, target, optimize);
 
     // `kxdesk version` reports the version the binary was built from, so it is
     // read out of the manifest here and injected as a build option: build.zig.zon
@@ -27,42 +32,8 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "version", manifestVersion(b));
     exe.root_module.addOptions("build_options", options);
 
-    // SQLite is bound through its C interface: the standard library has no
-    // SQLite any more, so the SDK header is translated into a Zig module here
-    // and linked against the copy macOS ships - which needs no dependency, and
-    // is newer than the Homebrew one besides.
-    const sqlite = b.addTranslateC(.{
-        .root_source_file = b.path("vendor/sqlite.h"),
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.addImport("sqlite", sqlite.createModule());
-    exe.root_module.linkSystemLibrary("sqlite3", .{});
-
-    // The upstream SketchyBar header is compiled into the helper: it defines the
-    // mach wire format as `static inline` functions, so `platform.m` including it
-    // statically links it here.
-    exe.root_module.addIncludePath(b.path("vendor"));
-    exe.root_module.addIncludePath(b.path("src"));
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/platform.m"),
-        .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" },
-    });
-    exe.root_module.linkFramework("AppKit", .{});
-    // The audio spectrum's tap: a process tap on the machine's own output, which
-    // is one HAL object and one aggregate device carrying it.
-    exe.root_module.linkFramework("CoreAudio", .{});
-    exe.root_module.linkFramework("CoreFoundation", .{});
-    // CoreText locates the installed app font; the font itself describes the
-    // application -> icon mapping that the helper reads at startup.
-    exe.root_module.linkFramework("CoreText", .{});
-    exe.root_module.linkFramework("Foundation", .{});
-    exe.root_module.linkFramework("IOKit", .{});
-    // SystemConfiguration answers which interface carries the internet, for the
-    // link icon; it is the store `scutil` prints, not a probe.
-    exe.root_module.linkFramework("SystemConfiguration", .{});
-
     b.installArtifact(exe);
+    bundle(b, exe);
 
     const t = b.addTest(.{
         .root_module = b.createModule(.{
@@ -72,24 +43,329 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    t.root_module.addImport("sqlite", sqlite.createModule());
-    t.root_module.linkSystemLibrary("sqlite3", .{});
-    t.root_module.addIncludePath(b.path("vendor"));
-    t.root_module.addIncludePath(b.path("src"));
-    t.root_module.addCSourceFile(.{
-        .file = b.path("src/platform.m"),
-        .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" },
-    });
-    t.root_module.linkFramework("AppKit", .{});
-    t.root_module.linkFramework("CoreAudio", .{});
-    t.root_module.linkFramework("CoreFoundation", .{});
-    t.root_module.linkFramework("CoreText", .{});
-    t.root_module.linkFramework("Foundation", .{});
-    t.root_module.linkFramework("IOKit", .{});
-    t.root_module.linkFramework("SystemConfiguration", .{});
+    wire(b, t.root_module, target, optimize);
 
     const run = b.addRunArtifact(t);
     b.step("test", "Run unit tests").dependOn(&run.step);
+}
+
+/// Everything a kxdesk module is built against: the platform seam in
+/// `platform.m`, the frameworks it and the bar client use, SQLite, and the
+/// embedded hotkey engine.
+fn wire(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+    // SQLite is bound through its C interface: the standard library has no
+    // SQLite any more, so the SDK header is translated into a Zig module here
+    // and linked against the copy macOS ships - which needs no dependency, and
+    // is newer than the Homebrew one besides.
+    const sqlite = b.addTranslateC(.{
+        .root_source_file = b.path("vendor/sqlite.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addImport("sqlite", sqlite.createModule());
+    mod.linkSystemLibrary("sqlite3", .{});
+
+    // The upstream SketchyBar header is compiled into the helper: it defines the
+    // mach wire format as `static inline` functions, so `platform.m` including it
+    // statically links it here.
+    mod.addIncludePath(b.path("vendor"));
+    mod.addIncludePath(b.path("src"));
+    mod.addCSourceFile(.{
+        .file = b.path("src/platform.m"),
+        .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" },
+    });
+    mod.linkFramework("AppKit", .{});
+    // The audio spectrum's tap: a process tap on the machine's own output, which
+    // is one HAL object and one aggregate device carrying it.
+    mod.linkFramework("CoreAudio", .{});
+    mod.linkFramework("CoreFoundation", .{});
+    // CoreText locates the installed app font; the font itself describes the
+    // application -> icon mapping that the helper reads at startup.
+    mod.linkFramework("CoreText", .{});
+    mod.linkFramework("Foundation", .{});
+    mod.linkFramework("IOKit", .{});
+    // SystemConfiguration answers which interface carries the internet, for the
+    // link icon; it is the store `scutil` prints, not a probe.
+    mod.linkFramework("SystemConfiguration", .{});
+
+    mod.addImport("skhd", engine(b, target, optimize));
+}
+
+/// The hotkey engine: upstream skhd.zig, built as a module of this binary.
+///
+/// Zig cannot write into a dependency, so the pinned `src/` is copied into the
+/// build cache and one file of the copy is rewritten - `engine_delta` is the
+/// whole difference, kept small so it reads as the upstream patch it is meant to
+/// become. A dependency's own `build.zig` is not run, so the glue it would have
+/// supplied is recreated here: the `grabber_protocol` module, the `VERSION` and
+/// `build_options` anonymous imports, and the frameworks the event tap and its
+/// Carbon glue link against.
+fn engine(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
+    const dep = b.dependency("skhd_zig", .{});
+
+    const tree = b.addWriteFiles();
+    _ = tree.addCopyDirectory(dep.path("src"), "src", .{});
+    const source = tree.add("src/engine.zig", applyDelta(b, dep));
+
+    const module = b.createModule(.{
+        .root_source_file = source,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    module.addImport("grabber_protocol", b.createModule(.{
+        .root_source_file = tree.getDirectory().path(b, "src/grabber_protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    module.addAnonymousImport("VERSION", .{
+        .root_source_file = tree.add("VERSION", engine_pin ++ "\n"),
+    });
+    // Upstream writes these into its own builds; nothing in the engine's
+    // analysis path reads more than `track_alloc`, and the grabber's pinned
+    // dext is not installed by this binary at all.
+    const options = b.addOptions();
+    options.addOption(bool, "track_alloc", false);
+    options.addOption([]const u8, "karabiner_dext_version", "");
+    options.addOption([]const u8, "karabiner_dext_url", "");
+    options.addOption([]const u8, "karabiner_dext_sha256", "");
+    module.addOptions("build_options", options);
+
+    // The agent's set: the tap is CoreGraphics through ApplicationServices, the
+    // hotkey registration is Carbon's, and the service queries are
+    // ServiceManagement's.
+    module.linkFramework("Cocoa", .{});
+    module.linkFramework("Carbon", .{});
+    module.linkFramework("CoreServices", .{});
+    module.linkFramework("ServiceManagement", .{});
+    module.linkFramework("IOKit", .{});
+    return module;
+}
+
+/// One edit the embedded copy carries over the pinned source: `from` must occur
+/// exactly once, so a pin bump that moves a patched line fails the build here
+/// rather than as a compiler error in a copy nobody wrote.
+const Edit = struct { from: []const u8, to: []const u8 };
+
+/// Where the engine calls the shell, and where it changes mode, a host gets to
+/// run the call itself instead. That is the whole delta: nothing in the parser,
+/// the mappings or the event tap moves, so upstream's grammar is exactly what
+/// `skhdrc` gets.
+const engine_delta = [_]Edit{
+    .{
+        .from = "var hotload_refresh_pending: std.atomic.Value(bool) = .init(false);",
+        .to =
+        \\var hotload_refresh_pending: std.atomic.Value(bool) = .init(false);
+        \\
+        \\/// The way an action a hotkey matched is run. `shell` and `verbose` are
+        \\/// what `Mappings` parsed and how this process was started, and `cmd` is
+        \\/// the action line as the config wrote it. `cmd` is borrowed for the
+        \\/// duration of the call only - the mappings it points into are freed by
+        \\/// the next reload - so a hook that defers the work must copy it.
+        \\pub const Dispatch = struct {
+        \\    pub var run: *const fn (shell: [:0]const u8, verbose: bool, cmd: [:0]const u8) anyerror!void = defaultRun;
+        \\
+        \\    /// Upstream's behavior: hand the line to the user's shell.
+        \\    pub fn defaultRun(shell: [:0]const u8, verbose: bool, cmd: [:0]const u8) anyerror!void {
+        \\        return forkAndExec(shell, cmd, verbose);
+        \\    }
+        \\};
+        \\
+        \\/// The way a host hears that the current mode changed, so that what the
+        \\/// engine reports can be shown somewhere else. Called after every write of
+        \\/// the mode, with the mode's name, or "default" when there is none - which
+        \\/// is what a config reload's reset says. The name is borrowed for the
+        \\/// duration of the call only, for the same reason `Dispatch.run`'s line is.
+        \\pub const ModeNotify = struct {
+        \\    pub var run: *const fn (name: []const u8) void = noop;
+        \\
+        \\    fn noop(_: []const u8) void {}
+        \\};
+        \\
+        \\/// The tap's key synthesizer, which upstream's own binary imports
+        \\/// directly: a chord posted into the session, for a fallback that needs a
+        \\/// key rather than a command.
+        \\pub const synthesize = @import("synthesize.zig");
+        ,
+    },
+    .{
+        // The chord parser, so a host can say what its own keyspecs mean:
+        // `ctrl - left` is not `ctrl - 0x7B`, and the difference is one
+        // implicit-modifier table away.
+        .from = "const Parser = @import(\"Parser.zig\");",
+        .to = "pub const Parser = @import(\"Parser.zig\");",
+    },
+    .{
+        .from = "try forkAndExec(self.mappings.shell, cmd, self.verbose);",
+        .to = "try Dispatch.run(self.mappings.shell, self.verbose, cmd);",
+    },
+    .{
+        .from = "try forkAndExec(self.mappings.shell, activation_cmd, self.verbose);",
+        .to = "try Dispatch.run(self.mappings.shell, self.verbose, activation_cmd);",
+    },
+    .{
+        .from = "try forkAndExec(self.mappings.shell, mode_cmd, self.verbose);",
+        .to = "try Dispatch.run(self.mappings.shell, self.verbose, mode_cmd);",
+    },
+    .{
+        .from =
+        \\        if (self.mappings.mode_map.getPtr("default")) |m| {
+        \\            self.current_mode = m;
+        \\            log.info("layer push: exited to default", .{});
+        \\        } else {
+        \\            self.current_mode = null;
+        \\        }
+        ,
+        .to =
+        \\        if (self.mappings.mode_map.getPtr("default")) |m| {
+        \\            self.setMode(m);
+        \\            log.info("layer push: exited to default", .{});
+        \\        } else {
+        \\            self.setMode(null);
+        \\        }
+        ,
+    },
+    .{
+        .from =
+        \\    if (self.mappings.mode_map.getPtr(mode_name)) |m| {
+        \\        self.current_mode = m;
+        \\        log.info("layer push: entered '{s}'", .{mode_name});
+        ,
+        .to =
+        \\    if (self.mappings.mode_map.getPtr(mode_name)) |m| {
+        \\        self.setMode(m);
+        \\        log.info("layer push: entered '{s}'", .{mode_name});
+        ,
+    },
+    .{
+        .from = "                self.current_mode = self.mappings.mode_map.getPtr(act.mode_name);",
+        .to = "                self.setMode(self.mappings.mode_map.getPtr(act.mode_name));",
+    },
+    .{
+        .from = "                    self.current_mode = self.mappings.mode_map.getPtr(\"default\");",
+        .to = "                    self.setMode(self.mappings.mode_map.getPtr(\"default\"));",
+    },
+    .{
+        .from =
+        \\    // Reset to default mode
+        \\    if (self.mappings.mode_map.getPtr("default")) |default_mode| {
+        \\        self.current_mode = default_mode;
+        \\    } else {
+        \\        self.current_mode = null;
+        \\    }
+        ,
+        .to =
+        \\    // Reset to default mode
+        \\    self.setMode(self.mappings.mode_map.getPtr("default"));
+        ,
+    },
+    .{
+        .from = "/// Poll AXIsProcessTrusted on a 1s timer and reconcile the event tap with",
+        .to =
+        \\/// The one place the current mode is written, so that every change is
+        \\/// reported: entering a mode, a reload's reset and a layer the grabber
+        \\/// pushed alike.
+        \\fn setMode(self: *Skhd, mode: ?*Mode) void {
+        \\    self.current_mode = mode;
+        \\    ModeNotify.run(if (mode) |m| m.name else "default");
+        \\}
+        \\
+        \\/// Poll AXIsProcessTrusted on a 1s timer and reconcile the event tap with
+        ,
+    },
+};
+
+/// The pinned engine source with `engine_delta` applied.
+fn applyDelta(b: *std.Build, dep: *std.Build.Dependency) []const u8 {
+    // Read at configure time, and say so: the copy above would otherwise be
+    // built from a file this build script never looked at.
+    b.dependOnFileContents(dep.path("src/skhd.zig"));
+    const path = dep.builder.root.joinStringZ(b.allocator, "src/skhd.zig") catch
+        @panic("engine source path could not be resolved");
+    const source = std.Io.Dir.cwd().readFileAllocOptions(
+        b.graph.io,
+        path,
+        b.allocator,
+        .unlimited,
+        .of(u8),
+        0,
+    ) catch @panic("engine source could not be read");
+
+    var patched: []const u8 = source;
+    for (engine_delta, 0..) |edit, index| {
+        const at = std.mem.indexOf(u8, patched, edit.from) orelse
+            @panic(b.fmt("engine delta {d} does not fit the pinned source", .{index}));
+        // Applied once, or the rest of the delta would silently address the
+        // wrong copy of a line.
+        if (std.mem.indexOfPos(u8, patched, at + edit.from.len, edit.from) != null)
+            @panic(b.fmt("engine delta {d} matches more than once", .{index}));
+        patched = b.fmt("{s}{s}{s}", .{
+            patched[0..at], edit.to, patched[at + edit.from.len ..],
+        });
+    }
+    return patched;
+}
+
+/// `kxdesk.app`: the daemon's bundle, installed next to the bare binary.
+///
+/// macOS keys an Accessibility grant to a bundle identifier, and a bare Mach-O to
+/// a hash of the binary - which every build changes, so the grant would be asked
+/// for again after each deploy. The bundle is why the grant sticks: `bin/kxdesk`
+/// stays a plain executable for one-shot commands, which need no identity at all.
+fn bundle(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    const plist = b.addWriteFiles();
+    const info = plist.add("Info.plist",
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\    <key>CFBundleIdentifier</key>
+        \\    <string>org.kdressler.kxdesk</string>
+        \\    <key>CFBundleName</key>
+        \\    <string>kxdesk</string>
+        \\    <key>CFBundleExecutable</key>
+        \\    <string>kxdesk</string>
+        \\    <key>CFBundlePackageType</key>
+        \\    <string>APPL</string>
+        \\    <key>LSMinimumSystemVersion</key>
+        \\    <string>13.0</string>
+        \\    <!-- An agent: no Dock icon, no menu bar, no window. -->
+        \\    <key>LSUIElement</key>
+        \\    <true/>
+        \\</dict>
+        \\</plist>
+        \\
+    );
+
+    // The install prefix rather than the build root: what a build stages in the
+    // prefix is what `brew` copies out of it, so the bundle is assembled there.
+    // The inner binary is a copy, not a link, because a signature covers the file.
+    const bundle_dir = b.graph.path(.install_prefix, "kxdesk.app");
+    const macos = bundle_dir.path(b, "Contents").path(b, "MacOS");
+
+    const stage = b.addSystemCommand(&.{"mkdir"});
+    stage.addArg("-p");
+    stage.addFileArg(macos);
+
+    const copy = b.addSystemCommand(&.{"cp"});
+    copy.addFileArg(exe.getEmittedBin());
+    copy.addFileArg(macos.path(b, exe.name));
+    copy.step.dependOn(&stage.step);
+
+    const install_info = b.addSystemCommand(&.{"cp"});
+    install_info.addFileArg(info);
+    install_info.addFileArg(bundle_dir.path(b, "Contents").path(b, "Info.plist"));
+    install_info.step.dependOn(&copy.step);
+
+    // Ad-hoc, with the identifier spelled out: an ad-hoc signature otherwise
+    // carries the binary's own name only, and the identifier is what TCC keys the
+    // grant to.
+    const sign = b.addSystemCommand(&.{"codesign"});
+    sign.addArgs(&.{ "--force", "--sign", "-", "--identifier", "org.kdressler.kxdesk" });
+    sign.addFileArg(bundle_dir);
+    sign.step.dependOn(&install_info.step);
+
+    b.getInstallStep().dependOn(&sign.step);
 }
 
 /// The version build.zig.zon declares.

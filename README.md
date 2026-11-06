@@ -3,8 +3,9 @@
 A personal desktop daemon for macOS. It serves SketchyBar's item events and a
 command channel over one mach port, so the bar's items are configured in Zig
 instead of shell, clicks arrive as events instead of forked processes, and the
-commands that kanata's key bindings, `~/.yabairc`, yabai signals and the bar's
-config script name are answered by one long-lived process.
+commands that the key bindings, `~/.yabairc`, yabai signals and the bar's config
+script name are answered by one long-lived process. It also owns the keyboard: the
+key bindings are skhd bindings, parsed and run in this process (see below).
 
 It also owns the state those things share: one SQLite database at
 `~/Library/Application Support/kxdesk/state.db`, reachable from outside with
@@ -66,76 +67,61 @@ eval "$(kxdesk completions zsh)"      # or bash
 Fish is not supported: it is not installed here, so its script would ship
 untested.
 
-## The key bindings: kanata's channel
+## The key bindings: the embedded engine
 
-The bindings themselves live in kanata, in
-`~/Library/Application Support/kanata/kanata.kbd`. What they *run* does not: each
-binding pushes a message, and the message is a `kxdesk` argv line with the binary
-name left off — `wm window-swap west`, `wm cycle-displays --reverse`,
-`app open kitty`, `term toggle btop` — which this daemon receives, checks against
-the same command description a request from a shell is checked against, and runs.
+The bindings live in `~/.config/kxdesk/skhdrc`, in skhd's grammar, and this daemon
+runs them itself: upstream [skhd.zig](https://github.com/jackielii/skhd.zig) is
+compiled into the binary (`src/hotkey.zig` hosts it), so its event tap owns the
+keyboard, its parser reads the config, and a key press runs a command with no
+process in between. There is no root service and no driver extension — one
+Accessibility grant for `kxdesk.app` is the whole setup — and stopping the daemon
+gives the keyboard back, because an event tap dies with the process that
+installed it.
 
-That is the whole vocabulary: every window, space and display verb is a
-subcommand of `kxdesk wm`, together with yabai's provisioning (`wm apply-settings`,
-`wm refresh-rules`, `wm refresh-signals`), so a binding and the command a script
-writes are the same words — `~/.yabairc` calls `kxdesk wm apply-settings`.
+An action is a shell command, as in skhd. The one addition is `! ` at the start:
+the rest of the line is a `kxdesk` argv line with the binary name left off, which
+is the whole vocabulary — every window, space and display verb is a subcommand of
+`kxdesk wm`, together with yabai's provisioning (`wm apply-settings`,
+`wm refresh-rules`, `wm refresh-signals`) — so a binding and the command
+`~/.yabairc` writes are the same words:
 
-The split between the bindings and the commands they run is both forced and
-deliberate. kanata's own `cmd` action is compiled out of the Homebrew bottle, and
-on macOS kanata has to run as root to seize the keyboard through the Karabiner
-driver — so a config file, which is the user's to write, would be able to run
-anything as root. Upstream ships `cmd` in a separate binary for exactly that
-reason. A pushed name cannot execute anything: the vocabulary is the command
-registry and nothing else, every argument is checked before anything runs, and the
-command is carried out here, as the user, in the user's session.
-
-It is cheaper too. kanata's documentation puts `cmd` at around 100 ms per
-keypress against sub-millisecond for a pushed message: one forks a process, the
-other is a line on a socket.
-
-The channel is kanata's TCP server on `127.0.0.1:4038`. The port is not a knob to
-guess at — the launchd job passes it to kanata with `-p` and this daemon reads the
-same default:
-
-```sh
-kxdesk kanata status                              # is the channel up, and what has it carried
-kxdesk kanata inject "wm window-swap west"        # run a command as if a key had pushed it
+```
+hyper - t : ! term toggle btop
 ```
 
-`inject` takes an argv line (one quoted argument containing its spaces) or a raw
-JSON line, which is what makes a binding testable without pressing its keys — and
-the channel testable with kanata not running at all, since the lookup, the check
-and the run are the same code the socket path runs.
+A binding is checked when it fires, against the same command description a request
+from a shell is checked against, so a typo is a line in the log with the reason in
+it rather than a key that does nothing. The payload a command answers with has
+nobody to answer, so it is dropped.
 
-Three kinds of message are acted on, out of the several kanata sends:
+Modes are skhd's, declared in the config, and they isolate: an untagged binding
+belongs to `default` and is inert in every other mode. No binding sets the bar's
+mode indicator — the engine reports the mode change and the daemon colours the
+space icons from it (`op`, `wmode` and `smode` are the three colours, `default`
+clears them), and a config reload resets both, which is the highlight's one reset.
 
-- **`MessagePush`** — a binding. kanata sends the name inside a one-element JSON
-  array (`{"message":["wm window-swap west"]}`), because it converts the
-  action's arguments with `simple_sexpr_to_json_array`; a bare string is read
-  too, since the field is a `serde_json::Value` on kanata's side. The name is
-  split on spaces, looked up in the registry in `src/commands.zig` and validated
-  by `src/cli.zig`, exactly as a client's request is, and refused with the reason
-  when it does not fit — so a typo in the config is a line in the log rather than
-  a key that does nothing.
-- **`LayerChange`** — kanata switched layer, which is what colours the bar's
-  space icons. `op`, `wmode` and `smode` are the indices the skhd config used to
-  pass to `set_mode_indicator` on entering each mode, and `default` clears them.
-  The layer is the state and the event says it changed, so no binding has to
-  remember to set the indicator.
-- **`ConfigFileReload`** — the config was reloaded, which returns to the default
-  layer, so the highlight goes with it.
+```sh
+kxdesk hotkey status                        # which config, and how many actions it has run
+kxdesk hotkey inject "wm window-swap west"  # run a binding without pressing its keys
+kxdesk hotkey reload                        # re-read the config, as saving it does
+```
 
-The reader is a thread of its own, because the serve loop only ever waits on its
-mach port and because kanata restarts: the connection is made, lost and made
-again for as long as this daemon lives. Neither a kanata that is down nor a
-binding that fails is a reason for the daemon to stop serving the bar — both are
-lines in the log, the first failure of a run once and not once per retry.
+`inject` runs the same lookup, the same check and the same command the tap runs,
+which is what makes a binding testable without pressing its keys. `reload` sends
+the engine the signal it already handles; saving the file does the same on its own,
+because the engine watches it with FSEvents.
 
-To move the two ends apart, `kxdesk state set kanata.port <port>` (and
-`kanata.host`) changes this side without a rebuild; the other side is the `-p`
-argument in the launcher the `kxkanata` formula installs, which is what
-`brew services` starts (`/opt/homebrew/bin/kxkanata`, `brew services info
-kxkanata`).
+The engine is upstream's source at a commit pinned in `build.zig.zon`, with one
+small delta applied at build time (`engine_delta` in `build.zig`) and nothing else
+changed: the two hooks that hand a matched action, and a mode change, to this
+daemon. Nothing in the parser, the mappings or the tap moves, so the grammar is
+upstream's exactly, and the delta stays a candidate for an upstream pull request.
+
+The tap's callback decides and returns — an action is copied into a queue and run
+in order by one worker — because macOS disables an event tap whose callback takes
+too long, and a disabled tap is a keyboard that looks broken. Neither a failed
+binding nor an engine that cannot start takes the daemon down: both are lines in
+the log, the first of a repeating one reported once, and the bar carries on.
 
 ## The yabai signals: `kxdesk yabai changed`
 
@@ -161,8 +147,8 @@ loop's own clock rather than dropped.
 The event goes straight to the daemon rather than through the bar, which would
 otherwise be a relay for it: a bar event would have to be triggered, delivered to
 an item that exists only to receive it, and handed on. A process per event is
-unavoidable — yabai runs an action through a shell, the fork kanata's channel is
-built to avoid — so the client posts one block and exits, naming no reply port,
+unavoidable — yabai runs an action through a shell, the fork the embedded engine
+is built to avoid — so the client posts one block and exits, naming no reply port,
 rather than waiting out the yabai queries and the bar rebuild it started. A daemon
 that is not listening is not an error: the event is dropped in silence, since the
 signal's shell has nowhere to report and the next event to arrive with a daemon up
@@ -318,6 +304,21 @@ answered the item is a flat line and the log says so once. It keeps asking every
 thirty seconds, because the answer can be changed in System Settings > Privacy &
 Security > System Audio Recording while the daemon runs, and nothing tells the
 daemon that it was.
+
+## Installing on a new machine
+
+```sh
+brew install kvndrsslr/formulae/kxdesk
+brew services start kxdesk
+chezmoi apply     # ~/.config/kxdesk/skhdrc among the rest
+```
+
+Then grant Accessibility to `kxdesk` once, when macOS asks (System Settings >
+Privacy & Security > Accessibility). No root, no driver extension, no kanata. The
+install is a `.app` bundle (`kxdesk.app`) precisely so that grant survives an
+upgrade: macOS keys it to the bundle identifier, where a bare binary's grant is
+keyed to a hash that every build changes. `bin/kxdesk` is still installed as a
+plain executable for the command line, which needs no identity at all.
 
 ## Installing: currently from HEAD, temporarily
 

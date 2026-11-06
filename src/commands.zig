@@ -12,7 +12,7 @@ const bar_config = @import("bar.zig");
 const Context = @import("context.zig").Context;
 const exec = @import("exec.zig");
 const items_usage = @import("items_usage.zig");
-const kanata = @import("kanata.zig");
+const hotkey = @import("hotkey.zig");
 const kitty = @import("kitty.zig");
 const log = @import("log.zig");
 const mode_indicator = @import("mode_indicator.zig");
@@ -164,24 +164,29 @@ pub const all = [_]Command{
         .run = status,
     },
 
-    // The one command that both reports on kanata's channel and can stand in for it.
+    // The one command that both reports on the key bindings and can stand in for
+    // them.
     .{
-        .name = "kanata",
-        .summary = "report on the kanata channel, or act on a message from it",
+        .name = "hotkey",
+        .summary = "report on the key bindings, or act on one of their commands",
         .subcommands = &.{
-            .{ .name = "status", .summary = "say whether the channel is up", .default = true },
+            .{ .name = "status", .summary = "say which config the engine read, and what it has run", .default = true },
             .{
                 .name = "inject",
-                .summary = "act on a message as if kanata had pushed it",
+                .summary = "run an argv line as if a key had pressed it",
                 .args = &.{
                     .{
                         .name = "<message>",
-                        .summary = "an argv line like 'wm window-swap west', or a raw JSON line",
+                        .summary = "an argv line like 'wm window-swap west'",
                     },
                 },
             },
+            .{
+                .name = "reload",
+                .summary = "re-read the binding config, as saving it does",
+            },
         },
-        .run = kanataCommand,
+        .run = hotkeyCommand,
     },
     .{
         .name = "zen",
@@ -242,7 +247,7 @@ pub const all = [_]Command{
     },
 
     // Every window, space and display verb, and yabai's provisioning: the one
-    // vocabulary a client types and a key binding in `kanata.kbd` pushes.
+    // vocabulary a client types and a key binding in `skhdrc` names.
     .{
         .name = "wm",
         .summary = "the window, space and display verbs, and yabai's provisioning",
@@ -651,18 +656,22 @@ fn status(context: *Context, _: []const []const u8) ![]const u8 {
     });
 }
 
-/// Report on the kanata channel, or act on a message as if kanata had pushed it:
-/// the injection runs the same lookup, the same check and the same command the
-/// socket path does, which is what makes a binding testable without pressing its
-/// keys.
-fn kanataCommand(context: *Context, args: []const []const u8) ![]const u8 {
-    const verb = if (args.len > 0) args[0] else return kanata.status(context.arena);
+/// Report on the key bindings, act on one of their commands as a key press would,
+/// or reload them: an injection runs the same lookup, the same check and the same
+/// command the tap runs, which is what makes a binding testable without pressing
+/// its keys.
+fn hotkeyCommand(context: *Context, args: []const []const u8) ![]const u8 {
+    const verb = if (args.len > 0) args[0] else return hotkey.status(context.arena);
     const values = if (args.len > 0) args[1..] else args;
 
-    if (std.mem.eql(u8, verb, "status")) return kanata.status(context.arena);
+    if (std.mem.eql(u8, verb, "status")) return hotkey.status(context.arena);
     if (std.mem.eql(u8, verb, "inject")) {
         if (values.len == 0) return error.MissingArgument;
-        return kanata.inject(context, values[0]);
+        return hotkey.inject(context, values[0]);
+    }
+    if (std.mem.eql(u8, verb, "reload")) {
+        try hotkey.reload();
+        return "reloaded";
     }
     return error.UnknownArgument;
 }
