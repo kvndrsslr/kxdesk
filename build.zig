@@ -325,13 +325,9 @@ const engine_delta = [_]Edit{
     .{
         // The chord parser, so a host can say what its own keyspecs mean:
         // `ctrl - left` is not `ctrl - 0x7B`, and the difference is one
-        // implicit-modifier table away. And the chord shape plus its flag
-        // matcher, so a host can pin that what it writes by hand parses to
-        // exactly what an identical live key press carries - including that
-        // empty-flags config chords and no-modifier presses compare equal,
-        // which is what the prefix lookup relies on.
+        // implicit-modifier table away.
         .from = "const Parser = @import(\"Parser.zig\");",
-        .to = "pub const Parser = @import(\"Parser.zig\");\npub const HotkeyPress = @import(\"Hotkey.zig\").KeyPress;\npub const hotkeyFlagsMatch = @import(\"Hotkey.zig\").hotkeyFlagsMatch;",
+        .to = "pub const Parser = @import(\"Parser.zig\");",
     },
     .{
         .from = "try forkAndExec(self.mappings.shell, cmd, self.verbose);",

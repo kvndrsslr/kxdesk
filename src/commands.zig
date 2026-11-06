@@ -112,8 +112,6 @@ const window_toggles = yabai_ops.hyphenTags(yabai_ops.WindowToggle);
 const applications = yabai_ops.hyphenTags(exec.App);
 const display_indices = [_][]const u8{ "1", "2", "3", "4" };
 const show_desktop_words = [_][]const u8{"show-desktop"};
-const brightness_steps = [_][]const u8{ "up", "down" };
-const brightness_step_argument = Arg{ .name = "<step>", .summary = "up or down", .source = .fixed, .values = &brightness_steps };
 
 // One argument per word list, shared by the verbs that take it.
 const direction_argument = Arg{
@@ -485,21 +483,6 @@ pub const all = [_]Command{
         .run = kitty.toggle,
     },
 
-    // The one thing a key binding cannot do by itself: an external keyboard's
-    // brightness keys are consumer-page usages macOS ignores, so the board sends a
-    // plain key and this moves the panel.
-    .{
-        .name = "display",
-        .summary = "the built-in panel's brightness",
-        .subcommands = &.{
-            .{
-                .name = "brightness",
-                .summary = "step the internal display one sixteenth, as the fn row does",
-                .args = &.{brightness_step_argument},
-            },
-        },
-        .run = brightnessCommand,
-    },
     // Installs the root daemon tap-hold rules need, and the driver it types
     // through. No `run` for a different reason than server-mode's: `sudo` and
     // `installer` want the terminal, and the daemon has none.
@@ -704,17 +687,6 @@ fn hotkeyCommand(context: *Context, args: []const []const u8) ![]const u8 {
         return "reloaded";
     }
     return error.UnknownArgument;
-}
-
-/// Step the built-in panel's brightness. A key binding on a board whose firmware
-/// sends a consumer usage cannot reach the event tap at all - the usage never
-/// becomes a CGEvent - so the board sends a plain key and this is what it runs.
-fn brightnessCommand(context: *Context, args: []const []const u8) ![]const u8 {
-    _ = context;
-    if (args.len < 2) return error.MissingArgument;
-    const steps: i32 = if (std.mem.eql(u8, args[1], "up")) 1 else -1;
-    if (!platform.kx_brightness_step(steps)) return error.BrightnessUnavailable;
-    return "";
 }
 
 /// Open one of the applications the bindings open.
