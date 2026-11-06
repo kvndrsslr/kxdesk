@@ -43,7 +43,6 @@ const vhidd_label = "org.pqrs.service.daemon.Karabiner-VirtualHIDDevice-Daemon";
 const vhidd_plist_path = "/Library/LaunchDaemons/" ++ vhidd_label ++ ".plist";
 const vhidd_program = "/Library/Application Support/org.pqrs/Karabiner-DriverKit-VirtualHIDDevice" ++
     "/Applications/Karabiner-VirtualHIDDevice-Daemon.app/Contents/MacOS/Karabiner-VirtualHIDDevice-Daemon";
-const vhidd_server_dir = "/Library/Application Support/org.pqrs/tmp/rootonly/vhidd_server";
 
 /// One line about the daemon, or an empty string after acting: the shape
 /// `server_mode.serverMode` answers with, so the client can print it and go.
@@ -63,7 +62,8 @@ pub fn grabber(arena: std.mem.Allocator, io: std.Io, args: []const []const u8) !
 fn install(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
     if (std.c.geteuid() != 0) return elevate(arena, io, "install");
 
-    if (!try driverInstalled(io)) try installDriver(arena, io);
+    if (!driverPresent(io)) try installDriver(arena, io);
+    try startDriver(arena, io);
     try installDaemon(arena, io);
 
     return "installed: the grabber daemon; rules in skhdrc take effect on the next kxdesk start";
@@ -74,7 +74,7 @@ fn uninstall(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
 
     // Only our daemon: the driver extension is pqrs's, it may predate kxdesk, and
     // removing it would take any other client of it with it.
-    _ = run(io, &.{ "/bin/launchctl", "bootout", "system/" ++ label }) catch {};
+    quiet(io, &.{ "/bin/launchctl", "bootout", "system/" ++ label });
     std.Io.Dir.deleteFileAbsolute(io, plist_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
@@ -84,9 +84,10 @@ fn uninstall(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
 
 fn status(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
     const daemon = if (try launchdKnows(io, label)) "running" else "not installed";
-    const driver = if (try driverInstalled(io)) "listening" else "not installed";
-    return arena.print("grabber: {s}  driver extension: {s}  log: {s}", .{
-        daemon, driver, log_path,
+    const installed = if (driverPresent(io)) "installed" else "not installed";
+    const serving = if (try launchdKnows(io, vhidd_label)) "running" else "stopped";
+    return arena.print("grabber: {s}  driver: {s}, {s}  log: {s}", .{
+        daemon, installed, serving, log_path,
     });
 }
 
@@ -132,16 +133,6 @@ fn installDriver(arena: std.mem.Allocator, io: std.Io) !void {
 
     std.debug.print("installing it (the system extension may ask to be approved)\n", .{});
     try run(io, &.{ "/usr/sbin/installer", "-pkg", package, "-target", "/" });
-
-    // The package lays down the app and nothing that starts it: this is the job
-    // that would have come with Karabiner-Elements.
-    if (!exists(io, vhidd_plist_path)) {
-        var file = try std.Io.Dir.createFileAbsolute(io, vhidd_plist_path, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io, try daemonPlist(arena, vhidd_label, vhidd_program));
-    }
-    _ = run(io, &.{ "/bin/launchctl", "bootstrap", "system", vhidd_plist_path }) catch {};
-    _ = run(io, &.{ "/bin/launchctl", "kickstart", "system/" ++ vhidd_label }) catch {};
 }
 
 /// Write our daemon's job and start it. Bootout first, so a re-run replaces the
@@ -152,7 +143,7 @@ fn installDaemon(arena: std.mem.Allocator, io: std.Io) !void {
     defer file.close(io);
     try file.writeStreamingAll(io, try daemonPlist(arena, label, program));
 
-    _ = run(io, &.{ "/bin/launchctl", "bootout", "system/" ++ label }) catch {};
+    quiet(io, &.{ "/bin/launchctl", "bootout", "system/" ++ label });
     try run(io, &.{ "/bin/launchctl", "bootstrap", "system", plist_path });
 }
 
@@ -186,18 +177,34 @@ fn daemonPlist(arena: std.mem.Allocator, job: []const u8, executable: []const u8
     , .{ job, executable, log_path, log_path });
 }
 
-/// Whether the driver's daemon is up: its listening socket is what the grabber
-/// looks for, so that is the question worth asking rather than a version number.
-fn driverInstalled(io: std.Io) !bool {
-    var directory = std.Io.Dir.openDirAbsolute(io, vhidd_server_dir, .{ .iterate = true }) catch
-        return false;
-    defer directory.close(io);
+/// Whether the driver's payload is on disk. Asked of the daemon's own executable
+/// rather than of the socket directory: a `.sock` file outlives the process that
+/// listened there, so a machine whose driver was removed still shows one, and
+/// trusting it would skip the install that is needed.
+fn driverPresent(io: std.Io) bool {
+    return exists(io, vhidd_program);
+}
 
-    var walker = directory.iterate();
-    while (try walker.next(io)) |entry| {
-        if (std.mem.endsWith(u8, entry.name, ".sock")) return true;
+/// Write the driver's job if it is missing and start it if it is not loaded,
+/// which is also the whole of what an already-installed payload needs after a
+/// logout, a macOS update, or an extension approval.
+fn startDriver(arena: std.mem.Allocator, io: std.Io) !void {
+    if (!driverPresent(io)) {
+        std.debug.print("the driver daemon is missing from {s}\n", .{vhidd_program});
+        return error.InstallerFailed;
     }
-    return false;
+
+    if (!exists(io, vhidd_plist_path)) {
+        var file = try std.Io.Dir.createFileAbsolute(io, vhidd_plist_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, try daemonPlist(arena, vhidd_label, vhidd_program));
+    }
+    if (!try launchdKnows(io, vhidd_label)) {
+        try run(io, &.{ "/bin/launchctl", "bootstrap", "system", vhidd_plist_path });
+    }
+    // A loaded job whose daemon has not spawned yet still answers `launchctl
+    // print`; kicking it is what makes the socket exist now rather than later.
+    quiet(io, &.{ "/bin/launchctl", "kickstart", "system/" ++ vhidd_label });
 }
 
 /// Whether launchd has the job loaded. `launchctl print` answers non-zero for a
@@ -217,6 +224,18 @@ fn launchdKnows(io: std.Io, comptime job: []const u8) !bool {
 fn run(io: std.Io, argv: []const []const u8) !void {
     var child = try std.process.spawn(io, .{ .argv = argv });
     if (!(try child.wait(io)).success()) return error.CommandFailed;
+}
+
+/// Run a probe whose failure is a normal answer - "was not loaded", "already
+/// gone" - with its output dropped rather than shown. `launchctl` writes the
+/// reason to stderr, and none of it is the caller's business.
+fn quiet(io: std.Io, argv: []const []const u8) void {
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return;
+    _ = child.wait(io) catch {};
 }
 
 fn exists(io: std.Io, path: []const u8) bool {
