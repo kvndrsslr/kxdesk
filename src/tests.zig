@@ -1325,3 +1325,25 @@ test "the configured terminals are the conf files in the terminals directory" {
     const problem = (try cli.validate(arena.allocator(), io, command, &.{ "toggle", "bto" })).?;
     try std.testing.expect(std.mem.indexOf(u8, problem, "configured: alpha, btop") != null);
 }
+
+test "a hex chord matches a plain identical key press" {
+    // Genuine risk: hex chords parse to KeyPress{.flags = .{}, .key = N}, but
+    // the engine's prefix lookup could still reject a live chord whose flags
+    // the bit-level matcher reads differently from what the parser built - an
+    // empty-flags config chord vs a no-modifier live chord must be equal and
+    // must stay that way across pin bumps.
+    var parser = try skhd.Parser.init(std.testing.allocator, std.testing.io);
+    defer parser.deinit();
+
+    const cfg_f13 = try parser.parseKeySpec("0x69");
+    const cfg_f14 = try parser.parseKeySpec("0x6B");
+    try std.testing.expect(cfg_f13.flags.isEmpty());
+    try std.testing.expect(cfg_f14.flags.isEmpty());
+
+    const live_f13: skhd.HotkeyPress = .{ .key = 0x69, .flags = .{} };
+    const live_f14: skhd.HotkeyPress = .{ .key = 0x6B, .flags = .{} };
+    try std.testing.expect(cfg_f13.key == live_f13.key);
+    try std.testing.expect(cfg_f14.key == live_f14.key);
+    try std.testing.expect(skhd.hotkeyFlagsMatch(cfg_f13.flags, live_f13.flags));
+    try std.testing.expect(skhd.hotkeyFlagsMatch(cfg_f14.flags, live_f14.flags));
+}
