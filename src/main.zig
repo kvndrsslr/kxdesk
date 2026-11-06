@@ -320,23 +320,34 @@ fn runGuide(init: std.process.Init, args: []const []const u8) !void {
     );
     const pane = try arena.dupeSentinel(u8, grabber.pane_url, 0);
 
+    guide_io = init.io;
     _ = platform.kx_guide_run(
         if (drag) bundle.ptr else null,
         instruction.ptr,
         pane.ptr,
         if (drag) null else script.ptr,
-        &guideGranted,
+        &guideDone,
     );
 }
 
-/// Whether the grabber may seize now, asked from the panel's poll thread until
-/// it can. Its own arena each time: this runs for as long as the panel is open,
-/// and a shared one would grow half a second at a time.
-fn guideGranted() callconv(.c) bool {
+/// The guide's polling loop has no context of its own, and `state` needs an io.
+var guide_io: ?std.Io = null;
+
+/// Whether the panel has nothing left to ask for: the same "green" the daemon
+/// waits for, not merely "approved" - a panel opened for an unapproved grabber
+/// must not close on a grant a stale process reports, and one opened for a stale
+/// grabber must not close on the grant the stale process already carries.
+///
+/// Its own arena each time: this runs for as long as the panel is open, and a
+/// shared one would grow half a second at a time.
+fn guideDone() callconv(.c) bool {
+    const io = guide_io orelse return false;
     var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer scratch.deinit();
-    const report = grabber.probe(scratch.allocator()) catch return false;
-    return report.access == .granted;
+    return switch (grabber.state(scratch.allocator(), io)) {
+        .green => true,
+        else => false,
+    };
 }
 
 /// The commands this binary answers itself, each checked against its own
