@@ -115,8 +115,8 @@ installs both of those, pins the driver to a version and a sha256, and registers
 daemon with launchd:
 
 ```sh
-sudo kxdesk grabber install     # the driver extension and the grabber daemon
-kxdesk grabber status           # both halves, or which one is missing
+sudo kxdesk grabber install     # the driver extension, the grabber daemon, then the drag
+kxdesk grabber status           # both halves, the grant, and the grabber's build
 ```
 
 The daemon needs one more grant than the rest of kxdesk: **Input Monitoring**, for
@@ -125,8 +125,16 @@ tap-hold costs, and macOS refuses it to an unapproved process with
 `kIOReturnNotPermitted` — which is exactly what a root LaunchDaemon cannot ask for,
 because the approval dialog needs a session to appear in. That is also why the
 grabber ships as a `.app`: the pane wants an app to add, and the bundle identifier
-plus the signing certificate are what make the grant survive an upgrade. Grant it,
-then `sudo kxdesk grabber install` once more to restart the daemon with it.
+plus the signing certificate are what make the grant survive an upgrade.
+
+An install ends with that grant, so it does not end in instructions: `install` opens
+the Input Monitoring pane and a panel beside it, the app on the panel is the thing to
+drag into the list, and the panel closes by itself once the grant lands — the grabber
+is then restarted with it, no second password. Nothing about that is inferred from a
+log: the grant is reported in the grabber's own IPC reply, because TCC answers
+`IOHIDCheckAccess` only for the process that asks. `kxdesk guide` reopens the panel
+when it was dismissed, and a daemon whose `skhdrc` asks for `.remap` rules but whose
+grabber cannot seize shows it once per build on its own.
 
 The rules that use it live in `skhdrc` under `.device builtin { vendor: 0x0,
 product: 0x0 }` — that is how the internal keyboard identifies itself — so the QMK
@@ -337,11 +345,12 @@ daemon that it was.
 brew install kvndrsslr/formulae/kxdesk
 brew services start kxdesk
 chezmoi apply                    # ~/.config/kxdesk/skhdrc among the rest
-sudo kxdesk grabber install      # home-row mods: the driver extension + grabber daemon
+sudo kxdesk grabber install      # home-row mods: driver, daemon, then the tile to drag
 ```
 
 Then grant Accessibility to `kxdesk` once, when macOS asks (System Settings >
-Privacy & Security > Accessibility). No root, no driver extension, no kanata. The
+Privacy & Security > Accessibility, named *Device Control and Data Access* on macOS
+27). No root, no driver extension, no kanata. The
 install is a `.app` bundle (`kxdesk.app`) precisely so that grant survives an
 upgrade: macOS keys it to the bundle identifier, where a bare binary's grant is
 keyed to a hash that every build changes. `bin/kxdesk` is still installed as a

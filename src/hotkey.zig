@@ -410,6 +410,40 @@ pub fn inject(context: *Context, line: []const u8) ![]const u8 {
     return context.arena.print("{s}", .{action});
 }
 
+/// Whether the bindings file asks for a `.remap`: the one thing the grabber
+/// exists for, and the only reason a machine without it needs to be told so.
+///
+/// Asked of the file rather than of the parsed mappings, because it has to answer
+/// at startup, before the engine's parse has produced any - so a line counts only
+/// where the engine's grammar would see a directive: the first word of a line that
+/// is not a comment.
+pub fn wantsTapHold(text: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trimStart(u8, line, " \t");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (std.mem.startsWith(u8, trimmed, ".remap ") or
+            std.mem.startsWith(u8, trimmed, ".remap\t")) return true;
+    }
+    return false;
+}
+
+/// `wantsTapHold` for the file the engine reads. Missing or unreadable is a no: an
+/// absent config has no rules, and the engine says so on its own.
+pub fn configWantsTapHold(io: std.Io, arena: std.mem.Allocator) bool {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path = configPath(&buffer) orelse return false;
+    const text = std.Io.Dir.cwd().readFileAllocOptions(
+        io,
+        path,
+        arena,
+        .limited(1 << 20),
+        .of(u8),
+        0,
+    ) catch return false;
+    return wantsTapHold(text);
+}
+
 /// The bindings file: `$HOME/.config/kxdesk/skhdrc`, in `buffer`.
 fn configPath(buffer: *[std.fs.max_path_bytes]u8) ?[]const u8 {
     var environment: [std.fs.max_path_bytes]u8 = undefined;

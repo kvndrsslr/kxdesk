@@ -264,6 +264,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, mode, "__complete")) return runCompletions(init, arguments[2..]);
     if (std.mem.eql(u8, mode, "__blackout")) return runBlackout(init, arguments[2..]);
+    if (std.mem.eql(u8, mode, "__guide")) return runGuide(init, arguments[2..]);
 
     // `kxdesk <command> --help`: answered here so it works with no daemon
     // listening, and before the local commands below, which would refuse a
@@ -298,6 +299,44 @@ fn runBlackout(init: std.process.Init, args: []const []const u8) !void {
     const arena = init.arena.allocator();
     const socket = try arena.dupeSentinel(u8, args[1], 0);
     if (!platform.kx_blackout_run(display_id, socket.ptr)) std.process.exit(1);
+}
+
+/// The process `guide` starts: the panel beside the Input Monitoring pane.
+///
+/// Two modes, and the command that spawns this picks one by what the grabber
+/// answered, never by what it hopes: `drag <bundle>` for the tile, `install
+/// <script>` for the button that runs a root install in a terminal.
+fn runGuide(init: std.process.Init, args: []const []const u8) !void {
+    if (args.len < 2) std.process.exit(1);
+    const arena = init.arena.allocator();
+
+    const drag = std.mem.eql(u8, args[0], "drag");
+    const bundle = try arena.dupeSentinel(u8, if (drag) args[1] else "", 0);
+    const script = try arena.dupeSentinel(u8, if (drag) "" else args[1], 0);
+    const instruction = try arena.dupeSentinel(
+        u8,
+        if (drag) grabber.drag_instruction else grabber.install_instruction,
+        0,
+    );
+    const pane = try arena.dupeSentinel(u8, grabber.pane_url, 0);
+
+    _ = platform.kx_guide_run(
+        if (drag) bundle.ptr else null,
+        instruction.ptr,
+        pane.ptr,
+        if (drag) null else script.ptr,
+        &guideGranted,
+    );
+}
+
+/// Whether the grabber may seize now, asked from the panel's poll thread until
+/// it can. Its own arena each time: this runs for as long as the panel is open,
+/// and a shared one would grow half a second at a time.
+fn guideGranted() callconv(.c) bool {
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+    const report = grabber.probe(scratch.allocator()) catch return false;
+    return report.access == .granted;
 }
 
 /// The commands this binary answers itself, each checked against its own
@@ -518,12 +557,57 @@ fn runDaemon(init: std.process.Init) !void {
         return err;
     };
 
+    // A machine whose bindings ask for tap-hold rules but whose grabber is
+    // missing or unapproved is one where those keys silently do nothing about
+    // them; the panel that fixes it is worth showing once. Before `serve`, which
+    // never returns - and cheap: one socket round trip and one file read.
+    nudgeGrabber(&daemon, &store);
+
     // Blocks until the engine's run loop stops, which takes a stop request; when it
     // does, there is nothing left but to keep the bar served.
     if (bindings) hotkey.serve() catch |err| {
         log.warn("hotkey engine stopped: {s}", .{@errorName(err)});
     };
     server.join();
+}
+
+/// The store key that remembers which build asked: a nudge per build and no more,
+/// so a machine that has decided against the grabber is not asked again on every
+/// login.
+const grabber_asked_key = "grabber.asked";
+
+/// Show the grabber guide when a fresh machine needs it: bindings that ask for a
+/// `.remap`, and either no grabber answering or one that TCC has not let seize.
+///
+/// Nothing here fails the daemon: a guide that cannot be shown costs the panel and
+/// a line in the log, and the keys keep being wrong until someone runs `kxdesk
+/// grabber install`.
+fn nudgeGrabber(daemon: *Daemon, store: *state.Store) void {
+    const io = daemon.io;
+    var scratch = std.heap.ArenaAllocator.init(daemon.gpa);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    if (!hotkey.configWantsTapHold(io, arena)) return;
+
+    var asked_buffer: [64]u8 = undefined;
+    const asked = store.getText(io, grabber_asked_key, &asked_buffer) catch null;
+    if (asked) |version| {
+        if (std.mem.eql(u8, version, build_options.version)) return;
+    }
+
+    if (grabber.probe(arena)) |report| {
+        if (report.access == .granted) return;
+    } else |_| {}
+
+    // Recorded before it is shown, not after: a panel that never appeared is still
+    // a question asked once, and `kxdesk guide` is there for the second look.
+    store.setText(io, grabber_asked_key, build_options.version) catch {};
+
+    var context_value = daemon.commandContext(arena, daemon.bar);
+    _ = commands.guide(&context_value, &.{}) catch |err| {
+        log.warn("the grabber guide could not be shown: {s}", .{@errorName(err)});
+    };
 }
 
 /// The receive loop, on the thread the engine does not own.

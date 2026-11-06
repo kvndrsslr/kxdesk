@@ -240,9 +240,9 @@ fn grabber(
     return module;
 }
 
-/// The pinned engine materialized once for both binaries: its `src/` copied into
-/// the build cache, one file rewritten, a `VERSION` file, and the
-/// `build_options` upstream's own build would have generated.
+/// The pinned engine materialized once for both binaries: its `src/` mirrored
+/// into the build cache with `engine_delta` and `ipc_delta` applied, a `VERSION`
+/// file, and the `build_options` upstream's own build would have generated.
 const Sources = struct {
     /// The agent's root: upstream's `src/skhd.zig` with `engine_delta` applied.
     agent: std.Build.LazyPath,
@@ -255,7 +255,7 @@ const Sources = struct {
 
 fn sources(b: *std.Build, dep: *std.Build.Dependency) Sources {
     const tree = b.addWriteFiles();
-    _ = tree.addCopyDirectory(dep.path("src"), "src", .{});
+    mirrorSources(b, dep, tree);
     const directory = tree.getDirectory();
 
     // Upstream's build writes these into its own builds; nothing in the agent's
@@ -268,12 +268,47 @@ fn sources(b: *std.Build, dep: *std.Build.Dependency) Sources {
     options.addOption([]const u8, "karabiner_dext_sha256", "");
 
     return .{
-        .agent = tree.add("src/engine.zig", applyDelta(b, dep)),
+        .agent = directory.path(b, "src/skhd.zig"),
         .grabber = directory.path(b, "src/grabber/main.zig"),
         .protocol = directory.path(b, "src/grabber_protocol.zig"),
         .version = tree.add("VERSION", engine_pin ++ "\n"),
         .options = options,
     };
+}
+
+/// Upstream's `src/` into `tree`, with the deltas applied to the two files that
+/// carry them.
+///
+/// A file at a time rather than `addCopyDirectory`: a directory copy cannot be
+/// told to leave one of its files out, and a second write to the same path is not
+/// a replacement this build graph promises.
+fn mirrorSources(b: *std.Build, dep: *std.Build.Dependency, tree: *std.Build.Step.WriteFile) void {
+    const io = b.graph.io;
+    const root = dep.builder.root.joinStringZ(b.allocator, "src") catch
+        @panic("engine source directory could not be resolved");
+    var directory = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, root, .{ .iterate = true }) catch
+        @panic("engine source directory could not be opened");
+    defer directory.close(io);
+
+    var walker = directory.walk(b.allocator) catch
+        @panic("engine source directory could not be walked");
+    defer walker.deinit();
+
+    while (walker.next(io) catch @panic("engine source directory could not be walked")) |entry| {
+        if (entry.kind != .file) continue;
+        const file = b.dupe(entry.path);
+
+        // Patched in place rather than renamed: upstream's own `main.zig`
+        // imports `skhd.zig`, and a module tree whose files all resolve is one
+        // fewer way for a pin bump to fail.
+        if (std.mem.eql(u8, file, "skhd.zig")) {
+            _ = tree.add("src/skhd.zig", patchedSource(b, dep, "src/skhd.zig", &engine_delta));
+        } else if (std.mem.eql(u8, file, "grabber/Ipc.zig")) {
+            _ = tree.add("src/grabber/Ipc.zig", patchedSource(b, dep, "src/grabber/Ipc.zig", &ipc_delta));
+        } else {
+            _ = tree.addCopyFile(dep.path(b.fmt("src/{s}", .{file})), b.fmt("src/{s}", .{file}));
+        }
+    }
 }
 
 /// One edit the embedded copy carries over the pinned source: `from` must occur
@@ -409,12 +444,66 @@ const engine_delta = [_]Edit{
     },
 };
 
-/// The pinned engine source with `engine_delta` applied.
-fn applyDelta(b: *std.Build, dep: *std.Build.Dependency) []const u8 {
-    // Read at configure time, and say so: the copy above would otherwise be
+/// The grabber's own answer to "may I seize a keyboard", in the hello reply.
+///
+/// TCC keys Input Monitoring to a code identity, so nothing outside this process
+/// can ask it on the process's behalf: `IOHIDCheckAccess` answers for its caller.
+/// The reply already carries the build version for `--status`; the grant rides
+/// along so that kxdesk's status, its install flow and the panel it shows can all
+/// tell "drag this bundle in" from "already granted" without reading a log.
+const ipc_delta = [_]Edit{
+    .{
+        .from = "const grabber_version = std.mem.trimEnd(u8, @embedFile(\"VERSION\"), \"\\n\\r\\t \");",
+        .to =
+        \\const grabber_version = std.mem.trimEnd(u8, @embedFile("VERSION"), "\n\r\t ");
+        \\
+        \\/// `IOHIDCheckAccess` for this process's Input Monitoring grant. Declared
+        \\/// here rather than in `c.zig` so the delta stays one file: IOKit is linked
+        \\/// for the seize already.
+        \\const IOHIDRequestType = u32;
+        \\const kIOHIDRequestTypeListenEvent: IOHIDRequestType = 1;
+        \\extern fn IOHIDCheckAccess(requestType: IOHIDRequestType) u32;
+        \\
+        \\fn inputMonitoring() []const u8 {
+        \\    return switch (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)) {
+        \\        0 => "granted",
+        \\        1 => "denied",
+        \\        else => "unknown",
+        \\    };
+        \\}
+        ,
+    },
+    .{
+        .from =
+        \\    // Reply ok with our build version so the status path can read the
+        \\    // running grabber's version (extra field; older agents ignore it).
+        \\    try protocol.writeMessage(&sw.interface, allocator, .{ .type = "ok", .grabber_version = grabber_version });
+        ,
+        .to =
+        \\    // Reply ok with our build version so the status path can read the
+        \\    // running grabber's version (extra field; older agents ignore it), and
+        \\    // with this process's Input Monitoring answer, which is the one fact a
+        \\    // caller cannot get any other way.
+        \\    try protocol.writeMessage(&sw.interface, allocator, .{
+        \\        .type = "ok",
+        \\        .grabber_version = grabber_version,
+        \\        .input_monitoring = inputMonitoring(),
+        \\    });
+        ,
+    },
+};
+
+/// One file of the pinned source with `delta` applied.
+fn patchedSource(
+    b: *std.Build,
+    dep: *std.Build.Dependency,
+    source_path: []const u8,
+    delta: []const Edit,
+) []const u8 {
+    // Read at configure time, and say so: the mirror above would otherwise be
     // built from a file this build script never looked at.
-    b.dependOnFileContents(dep.path("src/skhd.zig"));
-    const path = dep.builder.root.joinStringZ(b.allocator, "src/skhd.zig") catch
+    b.dependOnFileContents(dep.path(source_path));
+    const path = dep.builder.root.joinStringZ(b.allocator, source_path) catch
         @panic("engine source path could not be resolved");
     const source = std.Io.Dir.cwd().readFileAllocOptions(
         b.graph.io,
@@ -426,13 +515,13 @@ fn applyDelta(b: *std.Build, dep: *std.Build.Dependency) []const u8 {
     ) catch @panic("engine source could not be read");
 
     var patched: []const u8 = source;
-    for (engine_delta, 0..) |edit, index| {
+    for (delta, 0..) |edit, index| {
         const at = std.mem.indexOf(u8, patched, edit.from) orelse
-            @panic(b.fmt("engine delta {d} does not fit the pinned source", .{index}));
+            @panic(b.fmt("{s} delta {d} does not fit the pinned source", .{ source_path, index }));
         // Applied once, or the rest of the delta would silently address the
         // wrong copy of a line.
         if (std.mem.indexOfPos(u8, patched, at + edit.from.len, edit.from) != null)
-            @panic(b.fmt("engine delta {d} matches more than once", .{index}));
+            @panic(b.fmt("{s} delta {d} matches more than once", .{ source_path, index }));
         patched = b.fmt("{s}{s}{s}", .{
             patched[0..at], edit.to, patched[at + edit.from.len ..],
         });

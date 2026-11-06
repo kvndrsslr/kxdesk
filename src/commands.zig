@@ -11,6 +11,7 @@ const std = @import("std");
 const bar_config = @import("bar.zig");
 const Context = @import("context.zig").Context;
 const exec = @import("exec.zig");
+const grabber = @import("grabber.zig");
 const items_usage = @import("items_usage.zig");
 const hotkey = @import("hotkey.zig");
 const kitty = @import("kitty.zig");
@@ -188,6 +189,14 @@ pub const all = [_]Command{
             },
         },
         .run = hotkeyCommand,
+    },
+
+    // The grabber's one manual step, shown rather than described: `grabber
+    // install` and the daemon's own startup nudge both land here.
+    .{
+        .name = "guide",
+        .summary = "open the Input Monitoring pane and show what to do there",
+        .run = guide,
     },
     .{
         .name = "zen",
@@ -720,4 +729,49 @@ fn itemCount(context: *Context) !usize {
     const parsed = context.bar.query(Bar, context.arena, "bar") catch
         return error.InvalidSketchyBarResponse;
     return parsed.items.len;
+}
+
+/// Show the panel that answers the grabber's one manual step: the tile to drag
+/// into Input Monitoring, or - when nothing answers its socket - the install
+/// command, with a button that runs it in a terminal.
+///
+/// A process of its own, for `wm blackout`'s reason: the panel needs AppKit on the
+/// main thread, and the daemon's main thread belongs to the hotkey engine. Which
+/// panel it is decided here rather than by the caller, so a caller that has not
+/// looked cannot ask for the wrong one, and `guide` is safe to type at any time.
+pub fn guide(context: *Context, args: []const []const u8) anyerror![]const u8 {
+    _ = args;
+    const arena = context.arena;
+
+    const report = grabber.probe(arena) catch null;
+    if (report) |running| {
+        if (running.access == .granted) return "input monitoring: granted";
+        return spawnGuide(context, &.{
+            "drag", grabber.bundle, grabber.pane_url, grabber.drag_instruction,
+        });
+    }
+
+    const script = grabber.writeInstallScript(context.io) catch |err| {
+        log.warn("the guide's install script could not be written: {s}", .{@errorName(err)});
+        return "the grabber is not installed: sudo kxdesk grabber install";
+    };
+    return spawnGuide(context, &.{
+        "install", script, grabber.pane_url, grabber.install_instruction,
+    });
+}
+
+/// Start the helper: this same binary, out of the `.app` the daemon runs from, so
+/// the panel is drawn by a process whose bundle is an app. The arguments after
+/// `__guide` are the mode and what it varies with.
+fn spawnGuide(context: *Context, arguments: []const []const u8) ![]const u8 {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    if (!platform.kx_self_path(&buffer, buffer.len)) return error.LaunchFailed;
+    const executable = std.mem.sliceTo(&buffer, 0);
+
+    const argv = try context.arena.alloc([]const u8, arguments.len + 2);
+    argv[0] = executable;
+    argv[1] = "__guide";
+    @memcpy(argv[2..], arguments);
+    try exec.spawn(context.io, context.arena, argv);
+    return "";
 }

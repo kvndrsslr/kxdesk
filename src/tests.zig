@@ -10,6 +10,7 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const hotkey = @import("hotkey.zig");
 const config = @import("config.zig");
+const grabber = @import("grabber.zig");
 const items_audio = @import("items_audio.zig");
 const items_tern = @import("items_tern.zig");
 const items_system = @import("items_system.zig");
@@ -1324,4 +1325,62 @@ test "the configured terminals are the conf files in the terminals directory" {
 
     const problem = (try cli.validate(arena.allocator(), io, command, &.{ "toggle", "bto" })).?;
     try std.testing.expect(std.mem.indexOf(u8, problem, "configured: alpha, btop") != null);
+}
+
+test "a bindings file asks for the grabber only where a .remap is a directive" {
+    try std.testing.expect(hotkey.wantsTapHold(".remap a [device builtin] { tap: a, hold: lshift }\n"));
+    try std.testing.expect(hotkey.wantsTapHold("  .remap\tj : rcmd\n"));
+    try std.testing.expect(hotkey.wantsTapHold("hyper - t : ! term toggle btop\n.remap a : b\n"));
+    // What the rest of the file looks like: a comment that mentions one, and a
+    // word that merely begins with it.
+    try std.testing.expect(!hotkey.wantsTapHold("# .remap a : b\n"));
+    try std.testing.expect(!hotkey.wantsTapHold(".remapped a : b\n"));
+    try std.testing.expect(!hotkey.wantsTapHold(""));
+}
+
+fn grabberFrame(buffer: []u8, body: []const u8) []const u8 {
+    std.mem.writeInt(u32, buffer[0..4], @intCast(body.len), .big);
+    @memcpy(buffer[4..][0..body.len], body);
+    return buffer[0 .. 4 + body.len];
+}
+
+test "the grabber's hello reply says what it is and whether it may seize" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var buffer: [512]u8 = undefined;
+
+    const granted = try grabber.parseReport(arena, grabberFrame(
+        &buffer,
+        \\{"type":"ok","grabber_version":"f359304","input_monitoring":"granted"}
+    ));
+    try std.testing.expectEqualStrings("f359304", granted.version);
+    try std.testing.expectEqual(grabber.Report.Access.granted, granted.access);
+
+    // A grabber built before the field existed: it can say what it is and nothing
+    // about the grant, and `unknown` is what a caller must treat as "show the
+    // panel".
+    const older = try grabber.parseReport(arena, grabberFrame(
+        &buffer,
+        \\{"type":"ok","grabber_version":"e000001","extra":true}
+    ));
+    try std.testing.expectEqualStrings("e000001", older.version);
+    try std.testing.expectEqual(grabber.Report.Access.unknown, older.access);
+
+    // A word the pinned source grows later must not be mistaken for a grant.
+    const future = try grabber.parseReport(arena, grabberFrame(
+        &buffer,
+        \\{"type":"ok","input_monitoring":"maybe"}
+    ));
+    try std.testing.expectEqual(grabber.Report.Access.unknown, future.access);
+
+    try std.testing.expectError(error.GrabberRefused, grabber.parseReport(arena, grabberFrame(
+        &buffer,
+        \\{"type":"error","code":"version_mismatch"}
+    )));
+    try std.testing.expectError(error.MalformedReply, grabber.parseReport(arena, grabberFrame(
+        &buffer,
+        \\not json
+    )));
+    try std.testing.expectError(error.MalformedReply, grabber.parseReport(arena, &[_]u8{ 0, 0, 0 }));
 }

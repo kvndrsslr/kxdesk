@@ -317,3 +317,24 @@ bool kx_blackout_stop(const char* socket_path);
 /// Blocks: this is the whole of the helper process `wm blackout` starts. False
 /// when the socket could not be bound or no screen carries that display id.
 bool kx_blackout_run(uint32_t display_id, const char* socket_path);
+
+/// Ask the window server whether Input Monitoring has been granted to the app at
+/// `bundle_path`. Not possible from here - TCC keys the grant to a code identity,
+/// so only the process that wants to seize can ask - which is why the answer
+/// travels in the grabber's own reply and is probed from a socket instead.
+
+/// Show the panel that walks the user through the one privacy grant kxdesk cannot
+/// install: `instruction` is its one line, `pane_url` the System Settings pane it
+/// opens, `bundle_path` the `.app` to drag into that pane's list (NULL for a panel
+/// with no tile), and `install_script` a file a button opens in Terminal (NULL for
+/// no button).
+///
+/// `done`, when given, is polled off the main thread and closes the panel when it
+/// answers true - how a panel beside the pane ends by itself once the grant lands.
+/// It must be safe to call from a thread that is not the main one.
+///
+/// The panel does not activate, join the Dock or take the keyboard: it sits in the
+/// corner of the System Settings window, and the user drags from it into the list.
+/// Blocks until it closes; returns whether `done` was what closed it.
+bool kx_guide_run(const char* bundle_path, const char* instruction, const char* pane_url,
+                  const char* install_script, bool (*done)(void));

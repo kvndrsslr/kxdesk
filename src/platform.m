@@ -1420,3 +1420,384 @@ bool kx_blackout_run(uint32_t display_id, const char* socket_path) {
     return true;
   }
 }
+
+/* =========================================================================
+ * The privacy guide: the panel that walks one drag into the Input Monitoring
+ * list.
+ *
+ * TCC grants Input Monitoring to a code identity, and only the process that
+ * wants to seize can ask for its own. So nothing here can query the grabber's
+ * grant - the panel is told, by a socket probe the caller hands in, whether the
+ * drag has landed yet.
+ *
+ * `anomalyco/hex`'s `native/permission_guide.m` is where this shape comes from:
+ * a non-activating panel parked in the corner of the System Settings window, a
+ * tile that begins a real dragging session for the bundle's URL, and a timer that
+ * follows the window rather than assuming it stays where it was opened.
+ * ====================================================================== */
+
+typedef bool (*kx_guide_done)(void);
+
+static NSPanel* g_guide_panel;
+static NSTimer* g_guide_follow;
+static dispatch_source_t g_guide_watch;
+static _Atomic bool g_guide_granted;
+static bool g_guide_closed_by_grant;
+static NSString* g_guide_script;
+static NSUInteger g_guide_requests;
+
+static NSString* const kx_settings_bundle = @"com.apple.systempreferences";
+
+/* The tile: what System Settings will list, and the source of the drag. */
+@interface KxGuideTile : NSView <NSDraggingSource>
+@property(nonatomic, strong) NSURL* bundle;
+@property(nonatomic, strong) NSImage* icon;
+@property(nonatomic, copy) NSString* name;
+@property(nonatomic, strong) NSEvent* pressed;
+@end
+
+@implementation KxGuideTile
+
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+  return YES;
+}
+
+- (void)resetCursorRects {
+  [self addCursorRect:self.bounds cursor:NSCursor.openHandCursor];
+}
+
+- (void)drawRect:(NSRect)dirty {
+  NSBezierPath* background =
+      [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:8 yRadius:8];
+  [[NSColor colorWithWhite:0.5 alpha:0.12] setFill];
+  [background fill];
+  [self.icon drawInRect:NSMakeRect(10, 6, 32, 32)];
+  [self.name drawAtPoint:NSMakePoint(52, 14)
+          withAttributes:@{
+            NSFontAttributeName : [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
+            NSForegroundColorAttributeName : NSColor.labelColor,
+          }];
+}
+
+- (void)mouseDown:(NSEvent*)event {
+  self.pressed = event;
+}
+
+- (void)mouseDragged:(NSEvent*)event {
+  if (self.pressed == nil) return;
+  CGFloat dx = event.locationInWindow.x - self.pressed.locationInWindow.x;
+  CGFloat dy = event.locationInWindow.y - self.pressed.locationInWindow.y;
+  if (hypot(dx, dy) < 3) return;
+
+  NSDraggingItem* item = [[NSDraggingItem alloc] initWithPasteboardWriter:self.bundle];
+  NSBitmapImageRep* representation = [self bitmapImageRepForCachingDisplayInRect:self.bounds];
+  [self cacheDisplayInRect:self.bounds toBitmapImageRep:representation];
+  NSImage* snapshot = [[NSImage alloc] initWithSize:self.bounds.size];
+  [snapshot addRepresentation:representation];
+  [item setDraggingFrame:self.bounds contents:snapshot];
+
+  NSDraggingSession* session = [self beginDraggingSessionWithItems:@[ item ]
+                                                             event:self.pressed
+                                                            source:self];
+  session.animatesToStartingPositionsOnCancelOrFail = YES;
+  session.draggingFormation = NSDraggingFormationNone;
+  self.pressed = nil;
+}
+
+- (NSDragOperation)draggingSession:(NSDraggingSession*)session
+    sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+  return NSDragOperationCopy;
+}
+
+@end
+
+@interface KxGuideAction : NSObject
+- (void)install:(id)sender;
+- (void)close:(id)sender;
+@end
+
+static void kx_guide_end(bool granted);
+
+@implementation KxGuideAction
+
+- (void)install:(id)sender {
+  if (g_guide_script != nil) {
+    /* Terminal opened on the script, not `osascript`: a `.command` needs no
+     * Automation grant and hands the user a real terminal, which is what the
+     * password prompt inside it wants. */
+    [NSTask launchedTaskWithLaunchPath:@"/usr/bin/open"
+                             arguments:@[ @"-a", @"Terminal", g_guide_script ]];
+  }
+  kx_guide_end(false);
+}
+
+- (void)close:(id)sender {
+  kx_guide_end(false);
+}
+
+@end
+
+static bool kx_guide_settings_open(void) {
+  NSArray<NSRunningApplication*>* apps =
+      [NSRunningApplication runningApplicationsWithBundleIdentifier:kx_settings_bundle];
+  if (apps.count == 0) return NO;
+
+  pid_t pid = apps.firstObject.processIdentifier;
+  NSArray* windows = CFBridgingRelease(CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+  for (NSDictionary* window in windows) {
+    if ([window[(id)kCGWindowOwnerPID] intValue] == pid &&
+        [window[(id)kCGWindowLayer] integerValue] == 0) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
+/* System Settings that is not running yet drops the pane in the URL while it
+ * restores the pane it showed last, so after a cold launch the URL goes again
+ * once its window is up and settled. */
+static void kx_guide_open_pane(NSURL* url) {
+  BOOL cold = [NSRunningApplication runningApplicationsWithBundleIdentifier:kx_settings_bundle]
+                  .count == 0;
+  NSUInteger request = ++g_guide_requests;
+  [[NSWorkspace sharedWorkspace] openURL:url];
+  if (!cold) return;
+
+  __block NSUInteger polls = 0;
+  [NSTimer scheduledTimerWithTimeInterval:0.1
+                                  repeats:YES
+                                    block:^(NSTimer* timer) {
+                                      polls += 1;
+                                      if (request != g_guide_requests || polls > 100) {
+                                        [timer invalidate];
+                                        return;
+                                      }
+                                      if (!kx_guide_settings_open()) return;
+                                      [timer invalidate];
+                                      for (NSNumber* delay in @[ @0.35, @1.2 ]) {
+                                        dispatch_after(
+                                            dispatch_time(DISPATCH_TIME_NOW,
+                                                          (int64_t)(delay.doubleValue *
+                                                                    NSEC_PER_SEC)),
+                                            dispatch_get_main_queue(), ^{
+                                              if (request == g_guide_requests) {
+                                                [[NSWorkspace sharedWorkspace] openURL:url];
+                                              }
+                                            });
+                                      }
+                                    }];
+}
+
+/* The Settings window in the window server's coordinates, largest window first:
+ * a pane's sheet is a window too. */
+static CGRect kx_guide_settings_frame(void) {
+  NSArray<NSRunningApplication*>* apps =
+      [NSRunningApplication runningApplicationsWithBundleIdentifier:kx_settings_bundle];
+  if (apps.count == 0) return CGRectNull;
+  pid_t pid = apps.firstObject.processIdentifier;
+
+  NSArray* windows = CFBridgingRelease(CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+  CGRect best = CGRectNull;
+  for (NSDictionary* window in windows) {
+    if ([window[(id)kCGWindowOwnerPID] intValue] != pid) continue;
+    if ([window[(id)kCGWindowLayer] integerValue] != 0) continue;
+    CGRect frame;
+    if (!CGRectMakeWithDictionaryRepresentation(
+            (__bridge CFDictionaryRef)window[(id)kCGWindowBounds], &frame)) {
+      continue;
+    }
+    if (frame.size.width < 300 || frame.size.height < 200) continue;
+    if (CGRectIsNull(best) ||
+        frame.size.width * frame.size.height > best.size.width * best.size.height) {
+      best = frame;
+    }
+  }
+  return best;
+}
+
+/* The window server counts y down from the top of the primary display; AppKit
+ * counts it up from the bottom of it. */
+static NSRect kx_guide_appkit_frame(CGRect frame) {
+  NSScreen* primary = NSScreen.screens.firstObject;
+  if (primary == nil) return NSRectFromCGRect(frame);
+  return NSMakeRect(frame.origin.x,
+                    primary.frame.size.height - frame.origin.y - frame.size.height,
+                    frame.size.width, frame.size.height);
+}
+
+static void kx_guide_follow_settings(void) {
+  if (g_guide_granted) {
+    kx_guide_end(true);
+    return;
+  }
+  CGRect quartz = kx_guide_settings_frame();
+  if (CGRectIsNull(quartz)) return;
+
+  NSRect settings = kx_guide_appkit_frame(quartz);
+  NSSize size = g_guide_panel.frame.size;
+  NSScreen* screen = nil;
+  for (NSScreen* candidate in NSScreen.screens) {
+    if (NSIntersectsRect(candidate.frame, settings)) {
+      screen = candidate;
+      break;
+    }
+  }
+  if (screen == nil) screen = NSScreen.mainScreen;
+  NSRect visible = screen != nil ? screen.visibleFrame : settings;
+
+  CGFloat x = NSMaxX(settings) - size.width - 16;
+  CGFloat y = NSMinY(settings) + 16;
+  x = MIN(MAX(x, NSMinX(visible) + 8), NSMaxX(visible) - size.width - 8);
+  y = MIN(MAX(y, NSMinY(visible) + 8), NSMaxY(visible) - size.height - 8);
+  [g_guide_panel setFrameOrigin:NSMakePoint(x, y)];
+  [g_guide_panel orderFrontRegardless];
+}
+
+static void kx_guide_end(bool granted) {
+  if (granted) g_guide_closed_by_grant = true;
+  if (g_guide_follow != nil) {
+    [g_guide_follow invalidate];
+    g_guide_follow = nil;
+  }
+  if (g_guide_watch != nil) {
+    dispatch_source_cancel(g_guide_watch);
+    g_guide_watch = nil;
+  }
+  [g_guide_panel orderOut:nil];
+  [NSApp stop:nil];
+  /* `stop` only takes effect when the run loop next turns, and a panel waiting
+   * for a drag has no events of its own to turn it. */
+  NSEvent* wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                     location:NSZeroPoint
+                                modifierFlags:0
+                                    timestamp:0
+                                 windowNumber:0
+                                      context:nil
+                                      subtype:0
+                                        data1:0
+                                        data2:0];
+  [NSApp postEvent:wake atStart:YES];
+}
+
+bool kx_guide_run(const char* bundle_path, const char* instruction, const char* pane_url,
+                  const char* install_script, bool (*done)(void)) {
+  @autoreleasepool {
+    if (instruction == NULL || pane_url == NULL) return false;
+
+    g_guide_granted = false;
+    g_guide_closed_by_grant = false;
+    g_guide_script = install_script != NULL ? [NSString stringWithUTF8String:install_script] : nil;
+
+    NSApplication* application = [NSApplication sharedApplication];
+    /* An accessory may draw windows in front of another application and never
+     * activates: the panel must not take the keyboard away from the System
+     * Settings list the user is about to drag into. */
+    [application setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    [application finishLaunching];
+
+    NSURL* pane = [NSURL URLWithString:[NSString stringWithUTF8String:pane_url]];
+    if (pane != nil) kx_guide_open_pane(pane);
+
+    bool draggable = bundle_path != NULL && bundle_path[0] != '\0';
+    NSSize size = NSMakeSize(480, draggable ? 116 : 92);
+
+    NSPanel* panel = [[NSPanel alloc]
+        initWithContentRect:NSMakeRect(0, 0, size.width, size.height)
+                  styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    panel.floatingPanel = YES;
+    panel.level = NSFloatingWindowLevel;
+    panel.collectionBehavior =
+        NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+    panel.opaque = NO;
+    panel.backgroundColor = NSColor.clearColor;
+    panel.hasShadow = YES;
+    panel.hidesOnDeactivate = NO;
+    panel.releasedWhenClosed = NO;
+    g_guide_panel = panel;
+
+    NSView* content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    content.wantsLayer = YES;
+    content.layer.backgroundColor = NSColor.controlBackgroundColor.CGColor;
+    content.layer.cornerRadius = 20;
+    content.layer.borderWidth = 1;
+    content.layer.borderColor = [NSColor colorWithWhite:0 alpha:0.10].CGColor;
+
+    NSString* text = [NSString stringWithUTF8String:instruction];
+    NSTextField* line = [NSTextField labelWithString:text];
+    line.frame = NSMakeRect(18, draggable ? 73 : 49, size.width - 96, 24);
+    line.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    line.textColor = NSColor.labelColor;
+    [content addSubview:line];
+
+    KxGuideAction* actions = [[KxGuideAction alloc] init];
+
+    NSButton* close = [NSButton buttonWithTitle:@"Close"
+                                         target:actions
+                                         action:@selector(close:)];
+    close.frame = NSMakeRect(size.width - 74, size.height - 32, 56, 20);
+    close.bordered = NO;
+    close.font = [NSFont systemFontOfSize:12];
+    close.contentTintColor = NSColor.secondaryLabelColor;
+    [content addSubview:close];
+
+    if (draggable) {
+      NSURL* bundle = [NSURL fileURLWithPath:[NSString stringWithUTF8String:bundle_path]];
+      KxGuideTile* tile =
+          [[KxGuideTile alloc] initWithFrame:NSMakeRect(18, 16, size.width - 36, 44)];
+      tile.bundle = bundle;
+      tile.icon = [[NSWorkspace sharedWorkspace] iconForFile:bundle.path];
+      tile.icon.size = NSMakeSize(32, 32);
+      tile.name = bundle.URLByDeletingPathExtension.lastPathComponent;
+      [content addSubview:tile];
+    } else if (g_guide_script != nil) {
+      NSButton* install = [NSButton buttonWithTitle:@"Install…"
+                                             target:actions
+                                             action:@selector(install:)];
+      install.frame = NSMakeRect(18, 12, 110, 28);
+      install.bezelStyle = NSBezelStyleRounded;
+      install.controlSize = NSControlSizeSmall;
+      [content addSubview:install];
+    }
+
+    panel.contentView = content;
+
+    /* The grant, polled from a thread of its own: each probe is a socket round
+     * trip, and the main thread is busy following the Settings window. */
+    if (done != NULL) {
+      g_guide_watch = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                             dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+      dispatch_source_set_timer(g_guide_watch, dispatch_time(DISPATCH_TIME_NOW, 0),
+                                500ull * NSEC_PER_MSEC, 200ull * NSEC_PER_MSEC);
+      dispatch_source_set_event_handler(g_guide_watch, ^{
+        if (done()) g_guide_granted = true;
+      });
+      dispatch_resume(g_guide_watch);
+    }
+
+    g_guide_follow = [NSTimer scheduledTimerWithTimeInterval:0.12
+                                                     repeats:YES
+                                                       block:^(NSTimer* timer) {
+                                                         kx_guide_follow_settings();
+                                                       }];
+    kx_guide_follow_settings();
+
+    [application run];
+
+    if (g_guide_follow != nil) {
+      [g_guide_follow invalidate];
+      g_guide_follow = nil;
+    }
+    if (g_guide_watch != nil) {
+      dispatch_source_cancel(g_guide_watch);
+      g_guide_watch = nil;
+    }
+    [g_guide_panel orderOut:nil];
+    g_guide_panel = nil;
+    g_guide_script = nil;
+    return g_guide_closed_by_grant;
+  }
+}

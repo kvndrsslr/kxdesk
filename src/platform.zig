@@ -135,3 +135,17 @@ pub extern "c" fn kx_blackout_stop(path: [*:0]const u8) bool;
 /// Run the blackout overlay over every screen but `display_id`; see
 /// `src/platform.h` for the two ways it ends.
 pub extern "c" fn kx_blackout_run(display_id: u32, path: [*:0]const u8) bool;
+
+/// Whether the grant the guide was shown for has landed; polled from the panel's
+/// own thread, never the caller's.
+pub const GuideDone = *const fn () callconv(.c) bool;
+
+/// Show the guide beside the Input Monitoring pane; see `src/platform.h` for what
+/// each argument means. Blocks until the panel closes.
+pub extern "c" fn kx_guide_run(
+    bundle: ?[*:0]const u8,
+    instruction: [*:0]const u8,
+    pane: [*:0]const u8,
+    script: ?[*:0]const u8,
+    done: ?GuideDone,
+) bool;
