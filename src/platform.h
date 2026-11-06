@@ -165,6 +165,13 @@ int64_t kx_unix_reply(
     uint32_t timeout_ms
 );
 
+/// Step the built-in panel's brightness by `steps` sixteenths, the way the fn row
+/// does. False when the private framework is missing, or when the built-in panel is
+/// not among the active displays (lid closed, clamshell) - an external display
+/// cannot be stepped at all. No permission is involved: this is a display setting,
+/// not an input one.
+bool kx_brightness_step(int32_t steps);
+
 /// Whether this process holds the Accessibility grant an event tap needs, as the
 /// engine asks it. False for a build whose grant was stored against a different
 /// code identity - a rebuild with an ad-hoc signature is exactly that.

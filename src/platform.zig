@@ -114,6 +114,9 @@ pub extern "c" fn kx_browser_open() bool;
 
 pub extern "c" fn kx_clipboard_set(text: [*:0]const u8) bool;
 
+/// Step the built-in panel's brightness by `steps` sixteenths; see `src/platform.h`.
+pub extern "c" fn kx_brightness_step(steps: i32) bool;
+
 /// Whether this process holds the Accessibility grant an event tap needs.
 pub extern "c" fn kx_ax_trusted() bool;
 

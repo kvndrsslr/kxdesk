@@ -11,6 +11,7 @@
 #include <SystemConfiguration/SystemConfiguration.h>
 #include <bootstrap.h>
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <locale.h>
@@ -561,6 +562,42 @@ int64_t kx_unix_reply(const char* path, const void* request, size_t request_size
 
   out[(size_t)total < cap ? (size_t)total : cap - 1] = '\0';
   return total;
+}
+
+/// Step the built-in panel's brightness by `steps` sixteenths.
+///
+/// There is no public API for this and no tool that ships with macOS: the fn row's
+/// brightness keys land in `DisplayServices`, a private framework, and it answers
+/// only for the internal panel - an external display reports kIOReturnUnsupported,
+/// which is why this searches for the built-in one instead of using the main one.
+/// The sixteenth is the step macOS itself moves in.
+bool kx_brightness_step(int32_t steps) {
+  static void* framework;
+  static int (*read_brightness)(CGDirectDisplayID, float*);
+  static int (*write_brightness)(CGDirectDisplayID, float);
+
+  if (framework == NULL) {
+    framework = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY);
+    if (framework == NULL) return false;
+    *(void**)(&read_brightness) = dlsym(framework, "DisplayServicesGetBrightness");
+    *(void**)(&write_brightness) = dlsym(framework, "DisplayServicesSetBrightness");
+  }
+  if (read_brightness == NULL || write_brightness == NULL) return false;
+
+  CGDirectDisplayID displays[8];
+  uint32_t count = 0;
+  if (CGGetActiveDisplayList(8, displays, &count) != kCGErrorSuccess) return false;
+
+  for (uint32_t i = 0; i < count; i++) {
+    if (!CGDisplayIsBuiltin(displays[i])) continue;
+    float value = 0.0f;
+    if (read_brightness(displays[i], &value) != 0) continue;
+    float stepped = value + (float)steps / 16.0f;
+    if (stepped < 0.0f) stepped = 0.0f;
+    if (stepped > 1.0f) stepped = 1.0f;
+    return write_brightness(displays[i], stepped) == 0;
+  }
+  return false;
 }
 
 bool kx_ax_trusted(void) {
