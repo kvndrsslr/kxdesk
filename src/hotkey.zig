@@ -239,8 +239,24 @@ pub fn serve() !void {
     };
     std.posix.sigaction(.USR1, &ignore, null);
     self.running.store(true, .release);
+    // The loop returning is the bindings ending: `hotkey status` says so, and a
+    // reload asked for after it is refused rather than signalled into an engine
+    // that is not there.
+    defer self.running.store(false, .release);
 
-    try self.engine.run(true);
+    self.engine.run(true) catch |err| {
+        // The engine's own permission advice is upstream's, and it names another
+        // install; this is the one that applies here.
+        if (err == error.AccessibilityPermissionDenied) {
+            var buffer: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.process.executablePath(self.io, &buffer)) |len| {
+                log.warn("grant Accessibility to {s}, then: brew services restart kxdesk", .{
+                    buffer[0..len],
+                });
+            } else |_| {}
+        }
+        return err;
+    };
 }
 
 /// Every action the engine runs comes through here, on the main run loop.
@@ -339,7 +355,7 @@ pub fn status(arena: std.mem.Allocator) ![]const u8 {
     const self = host orelse return "hotkey engine: not started";
 
     return arena.print("hotkey engine: {s} handled={d} config={s}", .{
-        if (self.running.load(.monotonic)) "running" else "starting",
+        if (self.running.load(.monotonic)) "running" else "stopped",
         self.handled.load(.monotonic),
         self.config,
     });
