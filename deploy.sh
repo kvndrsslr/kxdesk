@@ -18,6 +18,9 @@
 #   * `kxdesk wm refresh-signals` - a changed signal table reaches yabai only when
 #     something writes it: this command, or the `apply-settings` in `~/.yabairc`
 #     that runs when yabai starts.
+#
+# The one thing here that needs root is the grabber restart at the end: it is a
+# LaunchDaemon, and a replaced file is not a restarted process.
 set -eu
 
 cd "$(dirname "$0")"
@@ -47,3 +50,14 @@ bash sign.sh "$installed/kxdesk.app"
 bash sign.sh "$installed/kxdesk-grabber.app"
 
 brew services restart kxdesk
+
+# `brew upgrade` replaces the file, but launchd keeps the image it started: the
+# grabber is a root LaunchDaemon and would go on answering for a build that is no
+# longer on disk - which is also the only way it reports the Input Monitoring
+# grant its new reply carries. Restarting it is root's, so a deploy asks for the
+# password once; without a terminal to ask in it says what to run instead, and
+# the engine re-forwards the rules by itself once the grabber is back.
+if launchctl print system/org.kdressler.kxdesk.grabber >/dev/null 2>&1; then
+    sudo /bin/launchctl kickstart -k system/org.kdressler.kxdesk.grabber ||
+        echo "deploy: the grabber still runs the old build - run: sudo kxdesk grabber install" >&2
+fi

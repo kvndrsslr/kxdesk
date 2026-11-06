@@ -301,8 +301,23 @@ fn status(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
         });
     };
     return arena.print(
-        "grabber: {s}  driver: {s}, {s}  api: {s} (build {s})  input monitoring: {s}  log: {s}",
-        .{ daemon, installed, serving, "ok", report.version, report.access.text(), log_path },
+        "grabber: {s}  driver: {s}, {s}  api: {s} (build {s})  input monitoring: {s}{s}  log: {s}",
+        .{
+            daemon,
+            installed,
+            serving,
+            "ok",
+            report.version,
+            report.access.text(),
+            // `unknown` is the running process declining to answer, and only a
+            // restart gets an answer out of it: launchd keeps the old image after
+            // `brew upgrade` replaces the file.
+            if (report.access == .unknown)
+                " (not reported: the running process is older than this build; `sudo kxdesk grabber install` restarts it)"
+            else
+                "",
+            log_path,
+        },
     );
 }
 
