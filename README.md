@@ -169,14 +169,19 @@ Everything that changes what the bar draws from yabai — a window focused, move
 created, destroyed, minimized or retitled, an application hidden, a space switched,
 created or destroyed, a display moved — reaches the daemon as an event in the
 process. Nothing is provisioned into yabai and nothing spawns per event: `yabai -m
-signal --list` holds no kxdesk entry, and the daemon reads the same three sources
-yabai itself reads.
+signal --list` holds no kxdesk entry, and the daemon reads the sources yabai itself
+reads.
 
 |source|what it reports|
 |---|---|
 |accessibility observers, one per application|windows created, focused, moved, resized, retitled, minimized, deminimized, destroyed|
 |the workspace's notifications|an application activated, hidden or unhidden, the active space, the active display, wake|
-|the window server's connection notifications|a window ordered or destroyed, a space created or destroyed|
+|the window server's own queries, compared every two seconds|a space created, destroyed or focused|
+
+The window server's *notifications* would be the cheaper source for that last row,
+and they are private SPI whose numbering moves between macOS versions - on this one
+they deliver nothing at all, while the queries behind them answer exactly. Two
+seconds is the whole cost of the comparison.
 
 The display *list* stays the bar's own `display_change` subscription, because the
 bar is what knows the arrangement.
