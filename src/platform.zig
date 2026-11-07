@@ -118,6 +118,29 @@ pub extern "c" fn kx_clipboard_set(text: [*:0]const u8) bool;
 /// Whether this process holds the Accessibility grant an event tap needs.
 pub extern "c" fn kx_ax_trusted() bool;
 
+/// One event the native window observers report; see `src/platform.h` for what
+/// each `kind` means and which thread it arrives on.
+pub const WmHandler = *const fn (
+    kind: [*:0]const u8,
+    window_id: u32,
+    app_name: [*:0]const u8,
+) callconv(.c) void;
+
+/// Start the native window, space and display observers; false when the pipe is
+/// already armed for another handler.
+pub extern "c" fn kx_wm_events_start(handler: WmHandler) bool;
+
+/// Ask for the Accessibility grant the observers need, showing the system's
+/// prompt when it is missing; answers whether it is held now.
+pub extern "c" fn kx_ax_request() bool;
+
+/// Spin this thread's main run loop forever: the loop the observers deliver on.
+pub extern "c" fn kx_run_loop_run() void;
+
+/// A compact signature of the desk's spaces - see `src/platform.h`; comparing two
+/// tells whether a space appeared, disappeared or took the focus.
+pub extern "c" fn kx_space_signature(out: [*]u8, cap: usize) bool;
+
 /// The name the system gives a display, which is the name kitty knows it by;
 /// false when no display of that id is attached or the name does not fit `out`.
 pub extern "c" fn kx_display_name(display_id: u32, out: [*]u8, cap: usize) bool;

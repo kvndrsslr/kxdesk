@@ -15,9 +15,9 @@
 #     subscriptions and every event it has registered for as long as it lives, so
 #     a configuration that retires one of either needs that restart to take
 #     effect. Nothing is removed until then.
-#   * `kxdesk wm refresh-signals` - a changed signal table reaches yabai only when
-#     something writes it: this command, or the `apply-settings` in `~/.yabairc`
-#     that runs when yabai starts.
+#   * `kxdesk wm apply-settings` - once after an upgrade that retires yabai
+#     provisioning: the sweep of the retired signals runs there, and so does the
+#     `apply-settings` in `~/.yabairc` on the next yabai start.
 #
 set -eu
 

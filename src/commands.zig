@@ -10,9 +10,11 @@ const std = @import("std");
 
 const bar_config = @import("bar.zig");
 const Context = @import("context.zig").Context;
+const control = @import("control.zig");
 const exec = @import("exec.zig");
 const grabber = @import("grabber.zig");
 const items_usage = @import("items_usage.zig");
+const items_yabai = @import("items_yabai.zig");
 const hotkey = @import("hotkey.zig");
 const kitty = @import("kitty.zig");
 const log = @import("log.zig");
@@ -195,7 +197,7 @@ pub const all = [_]Command{
     // install` and the daemon's own startup nudge both land here.
     .{
         .name = "guide",
-        .summary = "open the Input Monitoring pane and show what to do there",
+        .summary = "open the privacy pane and show what to do there",
         .run = guide,
     },
     .{
@@ -235,23 +237,6 @@ pub const all = [_]Command{
             .{
                 .name = "refresh",
                 .summary = "re-read `brew outdated`, which the item does hourly anyway",
-            },
-        },
-    },
-
-    // What yabai's own signals report: no window verb, no provisioning, just the
-    // event that says what the bar draws from yabai is stale.
-    .{
-        .name = "yabai",
-        .summary = "the events yabai's signals post",
-        .subcommands = &.{
-            .{
-                .name = "changed",
-                .summary = "refresh what the bar draws from yabai",
-                .args = &.{.{
-                    .name = "[<window>]",
-                    .summary = "the id the signal carries ($YABAI_WINDOW_ID): only that window's title moves",
-                }},
             },
         },
     },
@@ -300,12 +285,9 @@ pub const all = [_]Command{
             },
             .{
                 .name = "apply-settings",
-                .summary = "assert every setting, rule and signal kxdesk manages on yabai",
+                .summary = "assert every setting and rule kxdesk manages on yabai, and sweep the retired signals",
             },
             .{ .name = "refresh-rules", .summary = "re-provision the yabai rules" },
-            .{ .name = "refresh-signals", .summary = "re-provision the yabai signals" },
-            .{ .name = "clear-signals", .summary = "drop every configured yabai signal" },
-            .{ .name = "refresh-yabai", .summary = "re-provision the yabai rules and signals" },
             .{
                 .name = "external-bar-toggle",
                 .summary = "show the bar and reserve its strip, or hide both",
@@ -659,6 +641,11 @@ pub fn restoreState(context: *Context) void {
     // The server item's state lives in the file `enter` wrote rather than in the
     // store, since the daemon never runs that command; see `server_mode.restore`.
     server_mode.restore(context);
+
+    // The strips' first paint: with no signal left to run, it is this event that
+    // draws them - on a start and on every `apply`, and it queues on the receive
+    // port until the loop is there to take it.
+    _ = control.postEvent(&.{ "item", items_yabai.item });
 }
 
 /// Report what the daemon is doing, in one line.
@@ -744,7 +731,12 @@ pub fn guide(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
 
     switch (grabber.state(arena, context.io)) {
-        .green => return "input monitoring: granted",
+        // Nothing is left to drag: the grant that may still be missing is the one
+        // the window observers need, which has no tile.
+        .green => {
+            if (!platform.kx_ax_trusted()) return guideAccessibility(context, &.{});
+            return "input monitoring and accessibility: granted";
+        },
         .unapproved => return spawnGuide(context, &.{
             "drag", grabber.bundle, grabber.pane_url, grabber.drag_instruction,
         }),
@@ -763,6 +755,24 @@ pub fn guide(context: *Context, args: []const []const u8) anyerror![]const u8 {
     return spawnGuide(context, &.{
         "install", script, grabber.pane_url, grabber.install_instruction,
     });
+}
+
+/// Where the Accessibility grant is given: the list itself rather than the Privacy
+/// & Security root, the same URL family as the Input Monitoring one
+/// (`grabber.pane_url`), with the anchor that names this list.
+pub const accessibility_pane = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension" ++
+    "?Privacy_Accessibility";
+
+/// The accessibility panel's one line, kept next to the URL it talks about.
+pub const accessibility_instruction = "Toggle kxdesk in the Accessibility list";
+
+/// Show the panel that asks for the Accessibility grant the window observers need.
+/// Called by `guide` and by the daemon's own converge loop, so it never consults the
+/// grabber's state: this panel is about one grant and nothing else.
+pub fn guideAccessibility(context: *Context, _: []const []const u8) anyerror![]const u8 {
+    // The empty second argument is what `runGuide` reads its mode arguments from:
+    // this panel has none.
+    return spawnGuide(context, &.{ "accessibility", "" });
 }
 
 /// Start the helper: this same binary, out of the `.app` the daemon runs from, so
