@@ -621,17 +621,16 @@ fn runDaemon(init: std.process.Init) !void {
         log.warn("the accessibility check not started: {s}", .{@errorName(err)});
     }
 
-    // Blocks until the engine's run loop stops, which takes a stop request; when it
-    // does, there is nothing left but to keep the bar served. Without bindings this
-    // thread still has to run a loop of its own: the window observers and the
-    // workspace's notifications are serviced from the main run loop.
+    // This thread ends up inside a run loop either way: the engine's while it runs,
+    // and the one the window observers and the workspace's notifications are
+    // serviced from afterwards - or instead, when the engine never started. Nothing
+    // they report is delivered while this thread blocks anywhere else.
     if (bindings) {
         hotkey.serve() catch |err| {
             log.warn("hotkey engine stopped: {s}", .{@errorName(err)});
         };
-    } else {
-        platform.kx_run_loop_run();
     }
+    platform.kx_run_loop_run();
     server.join();
 }
 
