@@ -3,8 +3,8 @@
 A personal desktop daemon for macOS. It serves SketchyBar's item events and a
 command channel over one mach port, so the bar's items are configured in Zig
 instead of shell, clicks arrive as events instead of forked processes, and the
-commands that the key bindings, `~/.yabairc` and the bar's config script name are
-answered by one long-lived process. It also owns the keyboard: the
+commands that the key bindings, `~/.yabairc`, yabai signals and the bar's config
+script name are answered by one long-lived process. It also owns the keyboard: the
 key bindings are skhd bindings, parsed and run in this process (see below).
 
 It also owns the state those things share: one SQLite database at
@@ -82,7 +82,7 @@ An action is a shell command, as in skhd. The one addition is `! ` at the start:
 the rest of the line is a `kxdesk` argv line with the binary name left off, which
 is the whole vocabulary — every window, space and display verb is a subcommand of
 `kxdesk wm`, together with yabai's provisioning (`wm apply-settings`,
-`wm refresh-rules`) — so a binding and the command
+`wm refresh-rules`, `wm refresh-signals`) — so a binding and the command
 `~/.yabairc` writes are the same words:
 
 ```
@@ -163,45 +163,36 @@ too long, and a disabled tap is a keyboard that looks broken. Neither a failed
 binding nor an engine that cannot start takes the daemon down: both are lines in
 the log, the first of a repeating one reported once, and the bar carries on.
 
-## The event pipe: windows, spaces and displays, natively
+## The yabai signals: `kxdesk yabai changed`
 
-Everything that changes what the bar draws from yabai — a window focused, moved,
-created, destroyed, minimized or retitled, an application hidden, a space switched,
-created or destroyed, a display moved — reaches the daemon as an event in the
-process. Nothing is provisioned into yabai and nothing spawns per event: `yabai -m
-signal --list` holds no kxdesk entry, and the daemon reads the sources yabai itself
-reads.
+Everything yabai does that changes what the bar draws — a window focused, moved,
+created or destroyed, a title, a space, a display — is a yabai *signal*, and every
+one of them runs the same line:
 
-|source|what it reports|
-|---|---|
-|accessibility observers, one per application|windows created, focused, moved, resized, retitled, minimized, deminimized, destroyed|
-|the workspace's notifications|an application activated, hidden or unhidden, the active space, the active display, wake|
-|the window server's own queries, compared every two seconds|a space created, destroyed or focused|
+```sh
+kxdesk yabai changed                    # window_focused, space_changed, …
+kxdesk yabai changed $YABAI_WINDOW_ID   # window_title_changed, which names the window
+```
 
-The window server's *notifications* would be the cheaper source for that last row,
-and they are private SPI whose numbering moves between macOS versions - on this one
-they deliver nothing at all, while the queries behind them answer exactly. Two
-seconds is the whole cost of the comparison.
+`kxdesk wm refresh-signals` writes that table (`src/yabai_ops.zig:managed_signals`)
+into yabai, and `yabai -m signal --list` shows what is configured.
 
-The display *list* stays the bar's own `display_change` subscription, because the
-bar is what knows the arrangement.
-
-A title event names its window, which is the cheap path: the daemon asks yabai for
-that one window's record and moves the single label, where any other event rebuilds
-every space strip and front-app pair from the space and window lists. Refreshes are
-held 120 ms apart, so a drag — which reports a move per frame — collapses into one
+Naming the window is the cheap path: the daemon asks yabai for that one window's
+record and moves the single label, where any other event rebuilds every space
+strip and front-app pair from the space and window lists. Refreshes are held 120 ms
+apart, so a drag — which emits `window_resized` per frame — collapses into one
 update, and an event that arrives inside the interval is drained by the receive
 loop's own clock rather than dropped.
 
-The observers need the Accessibility grant, which macOS gives only by a click in
-System Settings, so the daemon asks at every start: the system's own prompt, plus
-the guide panel beside the Accessibility list (`kxdesk guide`) that closes by itself
-once the grant lands. Without it the pipe is off — nothing falls back to a signal —
-and the bar's yabai items keep whatever they last drew; the daemon says so once in
-the log and stops asking after ten minutes.
-
-The Telegram rule runs in-process too: a window that appears with that application's
-name is moved to the main display, focused, a second and a half later.
+The event goes straight to the daemon rather than through the bar, which would
+otherwise be a relay for it: a bar event would have to be triggered, delivered to
+an item that exists only to receive it, and handed on. A process per event is
+unavoidable — yabai runs an action through a shell, the fork the embedded engine
+is built to avoid — so the client posts one block and exits, naming no reply port,
+rather than waiting out the yabai queries and the bar rebuild it started. A daemon
+that is not listening is not an error: the event is dropped in silence, since the
+signal's shell has nowhere to report and the next event to arrive with a daemon up
+refreshes everything anyway.
 
 ## The brew count: `kxdesk brew refresh`
 
@@ -214,9 +205,9 @@ hour apart, and its click starts the upgrade; a shell that has just run
 kxdesk brew refresh
 ```
 
-on either side of its two upgrades. The event is one block with no reply port, like
-the ones the daemon posts for its own window observers: nothing waits for the work it
-starts, and there is nothing to report when no daemon is listening.
+on either side of its two upgrades. The event is posted the same way yabai's
+signals post theirs (see above): one block, no reply port, and nothing to report
+when no daemon is listening.
 
 Both the count and the upgrade run through the user's login shell. Homebrew reads
 its trusted taps from `${XDG_CONFIG_HOME}/homebrew/trust.json`, and the daemon is

@@ -222,10 +222,9 @@ pub fn query(
 const max_event = 256;
 
 /// Post an event to the daemon and return, naming no reply port: the daemon does
-/// the work with nothing waiting on it. The callers are the daemon's own observer
-/// callback, which runs on the main run loop the hotkey engine owns, and the shell
-/// `kxdesk brew refresh` is: neither can wait out the work an event starts - two
-/// yabai queries and a rebuild of every strip.
+/// the work with nothing waiting on it, which is what the caller needs - it is a
+/// signal's shell command, and the work an event starts (two yabai queries and a
+/// rebuild of every strip) is not its to wait for.
 ///
 /// `pairs` is the flat `key`, `value`, `key`, `value` the daemon reads. Returns
 /// false when nothing was posted. Unlike `submit` this never asks launchd to

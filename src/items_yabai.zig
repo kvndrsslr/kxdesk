@@ -24,7 +24,7 @@ const max_spaces = 16;
 
 /// The hidden driver item `bar.zig` declares: the daemon's name for yabai in the
 /// bar's own vocabulary, whether the event about it comes from the bar
-/// (`display_change`) or from the daemon's own window observers.
+/// (`display_change`) or from a signal's shell (`kxdesk yabai changed`).
 pub const item = "system.yabai";
 
 /// A display as SketchyBar sees it.

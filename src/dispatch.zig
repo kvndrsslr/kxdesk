@@ -60,28 +60,6 @@ fn toggleTerminal(
     return kitty.toggleNamed(io, arena, name, display);
 }
 
-/// Where a Telegram window goes: the main display, focused, which is the rule the
-/// retired yabai signal ran (`window_created app=Telegram`). The wait is the
-/// signal's own 1.5 s, long enough for the window to have finished appearing.
-///
-/// A task because it sleeps and then forks yabai, and the receive loop has to keep
-/// serving the bar while it does.
-fn telegramToDisplay(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    yabai_client: *yabai.Client,
-    window_id: u32,
-) background.Result {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(1500), .awake) catch {};
-    var id_buf: [10]u8 = undefined;
-    const id = try std.fmt.bufPrint(&id_buf, "{d}", .{window_id});
-    return yabai_client.command(arena, &.{ "-m", "window", id, "--display", "1", "--focus" });
-}
-
 /// The popup rows under an item are shown and hidden, never toggled: what a
 /// hover means is unambiguous.
 const Popup = enum { show, hide };
@@ -125,14 +103,6 @@ pub const Dispatcher = struct {
     /// The load graphs' terminal toggle, at most one in flight: a click that
     /// arrives while one runs waits for it rather than racing it.
     terminal: background.Slot = .{},
-    /// The Telegram placement rule: a window that appeared is moved to the main
-    /// display a moment later, which is a yabai round trip off the event path.
-    telegram: background.Slot = .{},
-    /// The desk's spaces as the last look found them, and how much of
-    /// `space_signature` is theirs: a space created, destroyed or focused is
-    /// compared for rather than listened to - see `pollSpaces`.
-    space_signature: [space_signature_bytes]u8 = @splat(0),
-    space_signature_len: usize = 0,
     /// A refresh asked for while one ran too recently to repeat. The receive
     /// loop's timer drains it through `pollYabai` once the interval closes.
     yabai_pending: bool = false,
@@ -144,14 +114,6 @@ pub const Dispatcher = struct {
     /// update at a time, so holding refreshes this far apart collapses the stream
     /// into one while a lone event still refreshes at once.
     const yabai_refresh_interval_ms: i64 = 120;
-
-    /// How often the desk's spaces are compared. A space create or destroy is rare
-    /// and there is nothing to be late for: the strips are rebuilt a couple of
-    /// seconds later at worst, and each look is one window server call.
-    const space_poll_ms: u32 = 2000;
-
-    /// Room for the signature: the focused space, and four numbers per space.
-    const space_signature_bytes = 192;
 
     /// Milliseconds since the last full refresh; effectively infinite before the
     /// first one, so that an event with nothing in flight refreshes immediately.
@@ -253,15 +215,13 @@ pub const Dispatcher = struct {
         // only because they were created with that subscription.
     }
 
-    /// An event a client posted for the daemon: the native observers' reports - a
-    /// window's title moved, a window appeared, anything else changed - and
-    /// `kxdesk brew refresh`, which is what a shell runs after upgrading Homebrew.
-    /// Both name the item they are about: unlike a bar event, neither carries an
-    /// item's own environment.
+    /// An event a client posted for the daemon - `kxdesk yabai changed`, which is
+    /// what every yabai signal runs, and `kxdesk brew refresh`, which is what a
+    /// shell runs after upgrading Homebrew. Both name the item they are about:
+    /// unlike a bar event, neither carries an item's own environment.
     ///
-    /// A title event names its window, and only that window's label moves; a created
-    /// event also names the application, which is what the Telegram rule is asked
-    /// about. Anything else rebuilds every strip.
+    /// The pair that matters for yabai is `window` - a title change names the one
+    /// window whose label moves, and anything else rebuilds every strip.
     pub fn handleClientEvent(self: *Dispatcher, block: [*:0]const u8) !void {
         const env = sb.Env{ .block = block };
         const item = env.getOrEmpty("item");
@@ -273,19 +233,6 @@ pub const Dispatcher = struct {
         // An item this build knows nothing about is a client from another
         // version; like an unknown sender, it is ignored.
         if (!std.mem.eql(u8, item, items_yabai.item)) return;
-
-        if (std.mem.eql(u8, env.getOrEmpty("event"), "created")) {
-            if (std.mem.eql(u8, env.getOrEmpty("app"), "Telegram")) {
-                if (std.fmt.parseInt(u32, env.getOrEmpty("window"), 10)) |id| {
-                    if (id != 0) self.telegram.request(
-                        self.io,
-                        telegramToDisplay,
-                        .{ self.io, self.gpa, self.yabai_items.yabai_client, id },
-                    );
-                } else |_| {}
-            }
-            return self.requestYabai();
-        }
 
         const window = env.getOrEmpty("window");
         if (window.len > 0) return self.yabai_items.updateTitle(window);
@@ -383,27 +330,6 @@ pub const Dispatcher = struct {
             log.warn("yabai refresh failed: {s}", .{@errorName(err)});
         };
         return 0;
-    }
-
-    /// Compare the desk's spaces with the last look's, refresh when they differ, and
-    /// report how long the receive loop may wait next. Space create, destroy and
-    /// switch are the one class no notification reaches this process with on this
-    /// macOS; see `platform.kx_space_signature`.
-    pub fn pollSpaces(self: *Dispatcher) u32 {
-        var buffer: [space_signature_bytes]u8 = undefined;
-        if (!platform.kx_space_signature(&buffer, buffer.len)) return space_poll_ms;
-
-        const signature = std.mem.sliceTo(&buffer, 0);
-        const unchanged = self.space_signature_len == signature.len and
-            std.mem.eql(u8, self.space_signature[0..self.space_signature_len], signature);
-        if (unchanged) return space_poll_ms;
-
-        @memcpy(self.space_signature[0..signature.len], signature);
-        self.space_signature_len = signature.len;
-        self.requestYabai() catch |err| {
-            log.warn("yabai refresh failed: {s}", .{@errorName(err)});
-        };
-        return space_poll_ms;
     }
 
     /// Show or hide the rows under one of the provider items.

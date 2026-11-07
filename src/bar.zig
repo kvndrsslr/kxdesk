@@ -197,8 +197,8 @@ fn spaces(c: *sb.Client) !void {
 fn frontAppItems(c: *sb.Client, config_input: Config) !void {
     @setEvalBranchQuota(1_000_000);
     // One hidden driver item, for the one event the daemon has no other way to
-    // hear: the windows' own events reach it from its native observers, but that the
-    // display arrangement moved is the bar's to report - it is what drops the
+    // hear: yabai's own events reach it through `kxdesk yabai changed`, but that
+    // the display arrangement moved is the bar's to report - it is what drops the
     // updater's cached display map, and the batch below rebuilds the rest.
     try config.declare(c, .{
         .name = "system.yabai",
