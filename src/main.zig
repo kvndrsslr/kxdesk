@@ -3,10 +3,12 @@
 //! One process serves two things over one mach port: SketchyBar's item events and
 //! the command channel `kxdesk <command> [arguments...]`. Both bootstrap names
 //! share that port. The daemon owns the bar's state, applying the configuration
-//! and restoring the store's state whenever a bar appears. `help`, `completions`,
-//! `version`, `server-mode`, and the events `yabai changed` and `brew refresh`
-//! post are answered by the binary itself; the rest is described once in
-//! `commands.zig`.
+//! and restoring the store's state whenever a bar appears. Its window, space and
+//! display events arrive natively - accessibility observers per application, the
+//! workspace's notifications and the window server's - and are coalesced into the same
+//! refresh the bar's own `display_change` drives. `help`, `completions`, `version`,
+//! `server-mode`, `grabber`, and the event `brew refresh` posts are answered by the
+//! binary itself; the rest is described once in `commands.zig`.
 
 const std = @import("std");
 
@@ -204,6 +206,41 @@ fn onBlock(block: [*:0]const u8, reply_port: u32) callconv(.c) void {
     };
 }
 
+/// The native window observers' sink, as the pipe's C handler. It runs on the main
+/// run-loop thread, which also owns the hotkey engine's tap, so it posts and
+/// returns: the coalescing refresh happens where every other event goes, on the
+/// receive loop.
+///
+/// A title event names its window, which is the cheap path; a created event also
+/// names its application, which is the Telegram rule's input; anything else rebuilds
+/// every strip.
+fn onWmEvent(kind: [*:0]const u8, window_id: u32, app_name: [*:0]const u8) callconv(.c) void {
+    var id_buf: [10]u8 = undefined;
+    const id = std.fmt.bufPrint(&id_buf, "{d}", .{window_id}) catch return;
+
+    const name = std.mem.span(kind);
+    if (std.mem.eql(u8, name, "title") and window_id != 0) {
+        _ = control.postEvent(&.{ "item", items_yabai.item, "window", id });
+        return;
+    }
+    if (std.mem.eql(u8, name, "created")) {
+        // `control.frameEvent` refuses a block past `control.max_event` and would
+        // drop the whole event, so the name is cut to a width no application name
+        // needs and no comparison here can notice.
+        const application = std.mem.sliceTo(app_name, 0);
+        const kept = application[0..@min(application.len, max_app_name)];
+        _ = control.postEvent(&.{
+            "item",   items_yabai.item, "event", "created",
+            "window", id,               "app",   kept,
+        });
+        return;
+    }
+    _ = control.postEvent(&.{ "item", items_yabai.item });
+}
+
+/// Widest application name an event carries; see `onWmEvent`.
+const max_app_name = 48;
+
 /// The serve loop's clock, as a C callback: end a phase that has run out, show
 /// the item, and say how long the loop may block next. The loop is the only thread
 /// that runs this; the commands take the timer's own lock to touch it from theirs.
@@ -225,9 +262,13 @@ fn onTimer() callconv(.c) u32 {
     const graph_wait = daemon.dispatcher.system_items.pollGraphs(daemon.io, bar);
     const audio_wait = daemon.dispatcher.audio_items.poll(daemon.io, bar);
     const yabai_wait = daemon.dispatcher.pollYabai();
+    const space_wait = daemon.dispatcher.pollSpaces();
     return soonest(
-        soonest(soonest(soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage()), graph_wait), audio_wait),
-        yabai_wait,
+        soonest(
+            soonest(soonest(soonest(daemon.pomodoro.waitMs(daemon.io), daemon.dispatcher.pollUsage()), graph_wait), audio_wait),
+            yabai_wait,
+        ),
+        space_wait,
     );
 }
 
@@ -281,7 +322,6 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, mode, "version") or
         std.mem.eql(u8, mode, "server-mode") or
         std.mem.eql(u8, mode, "grabber") or
-        std.mem.eql(u8, mode, "yabai") or
         std.mem.eql(u8, mode, "brew"))
     {
         return runLocally(init, mode, arguments[2..]);
@@ -301,14 +341,24 @@ fn runBlackout(init: std.process.Init, args: []const []const u8) !void {
     if (!platform.kx_blackout_run(display_id, socket.ptr)) std.process.exit(1);
 }
 
-/// The process `guide` starts: the panel beside the Input Monitoring pane.
+/// The process `guide` starts: the panel beside the privacy pane the missing grant is
+/// given in.
 ///
-/// Two modes, and the command that spawns this picks one by what the grabber
-/// answered, never by what it hopes: `drag <bundle>` for the tile, `install
-/// <script>` for the button that runs a root install in a terminal.
+/// Three modes, and the command that spawns this picks one by what is missing, never
+/// by what it hopes: `drag <bundle>` for the Input Monitoring tile, `install <script>`
+/// for the button that runs a root install in a terminal, and `accessibility` for the
+/// grant the window observers need, which has no tile and no script - the panel is one
+/// line and a Close.
 fn runGuide(init: std.process.Init, args: []const []const u8) !void {
     if (args.len < 2) std.process.exit(1);
     const arena = init.arena.allocator();
+
+    if (std.mem.eql(u8, args[0], "accessibility")) {
+        const instruction = try arena.dupeSentinel(u8, commands.accessibility_instruction, 0);
+        const pane = try arena.dupeSentinel(u8, commands.accessibility_pane, 0);
+        _ = platform.kx_guide_run(null, instruction.ptr, pane.ptr, null, &guideDoneAccessibility);
+        return;
+    }
 
     const drag = std.mem.eql(u8, args[0], "drag");
     const bundle = try arena.dupeSentinel(u8, if (drag) args[1] else "", 0);
@@ -350,6 +400,13 @@ fn guideDone() callconv(.c) bool {
     };
 }
 
+/// Whether the Accessibility grant the panel was shown for has landed. The helper is
+/// the daemon's own binary, so this is the daemon's grant that is being read - the
+/// identity that has to be in the list.
+fn guideDoneAccessibility() callconv(.c) bool {
+    return platform.kx_ax_trusted();
+}
+
 /// The commands this binary answers itself, each checked against its own
 /// description so a wrong shell or an unknown name is refused like a daemon
 /// command would be.
@@ -375,8 +432,11 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
         return;
     }
 
-    if (std.mem.eql(u8, mode, "yabai") or std.mem.eql(u8, mode, "brew")) {
-        return postClientEvent(mode, args);
+    // The event a shell posts after upgrading Homebrew, naming the item it is about;
+    // see `control.postEvent` for why nothing waits for the work it starts.
+    if (std.mem.eql(u8, mode, "brew")) {
+        _ = control.postEvent(&.{ "item", items_brew.item });
+        return;
     }
 
     if (std.mem.eql(u8, mode, "grabber")) {
@@ -392,29 +452,6 @@ fn runLocally(init: std.process.Init, mode: []const u8, args: []const []const u8
     }
 
     writeText(init.io, .stdout, cli.script(args[0]) orelse return);
-}
-
-/// `kxdesk yabai changed [<window>]` and `kxdesk brew refresh`: post the event and
-/// say nothing. The callers are shells - a yabai signal's action, and a shell that
-/// has just upgraded Homebrew - whose only voice would be a line in a log, so a
-/// daemon that is not listening is silence: the event is worth nothing without
-/// one, and the next event to arrive with a daemon up refreshes everything
-/// anyway. Nothing waits for the work an event starts either; see
-/// `control.postEvent`.
-fn postClientEvent(mode: []const u8, args: []const []const u8) void {
-    if (std.mem.eql(u8, mode, "brew")) {
-        _ = control.postEvent(&.{ "item", items_brew.item });
-        return;
-    }
-
-    // `args[0]` is the subcommand, already checked against the registry; the
-    // window is the one argument `changed` may carry.
-    const window = if (args.len > 1) args[1] else "";
-    if (window.len == 0) {
-        _ = control.postEvent(&.{ "item", items_yabai.item });
-        return;
-    }
-    _ = control.postEvent(&.{ "item", items_yabai.item, "window", window });
 }
 
 /// Describe one command, or say there is no such command.
@@ -576,12 +613,69 @@ fn runDaemon(init: std.process.Init) !void {
         log.warn("the grabber check not started: {s}", .{@errorName(err)});
     }
 
-    // Blocks until the engine's run loop stops, which takes a stop request; when it
-    // does, there is nothing left but to keep the bar served.
-    if (bindings) hotkey.serve() catch |err| {
-        log.warn("hotkey engine stopped: {s}", .{@errorName(err)});
-    };
+    // The Accessibility grant the window observers need, asked for and waited on
+    // off this thread, for the reason above.
+    if (std.Thread.spawn(.{}, convergeAxAccess, .{&daemon})) |thread| {
+        thread.detach();
+    } else |err| {
+        log.warn("the accessibility check not started: {s}", .{@errorName(err)});
+    }
+
+    // This thread ends up inside a run loop either way: the engine's while it runs,
+    // and the one the window observers and the workspace's notifications are
+    // serviced from afterwards - or instead, when the engine never started. Nothing
+    // they report is delivered while this thread blocks anywhere else.
+    if (bindings) {
+        hotkey.serve() catch |err| {
+            log.warn("hotkey engine stopped: {s}", .{@errorName(err)});
+        };
+    }
+    platform.kx_run_loop_run();
     server.join();
+}
+
+/// Ask for the Accessibility grant the native window observers need, then start
+/// them.
+///
+/// The observers are the daemon's own: without the grant they register nothing, and
+/// the bar's yabai items would keep whatever they last drew - so the one thing this
+/// can do is ask, and wait for the answer. The system's prompt is one click; the
+/// panel beside the Accessibility list is what says which row it is. Once the
+/// deadline passes nothing asks again: a daemon left alone is not a daemon that
+/// keeps opening panes.
+fn convergeAxAccess(daemon: *Daemon) void {
+    const io = daemon.io;
+    if (platform.kx_ax_request()) return startWmEvents();
+
+    var scratch = std.heap.ArenaAllocator.init(daemon.gpa);
+    defer scratch.deinit();
+
+    var guided = false;
+    var waited: u32 = 0;
+    while (waited < converge_deadline_ms) {
+        if (platform.kx_ax_trusted()) return startWmEvents();
+        if (!guided) {
+            guided = true;
+            // The panel, never the command: a missing grabber must not put its own
+            // install panel in front of this grant.
+            var context_value = daemon.commandContext(scratch.allocator(), daemon.bar);
+            _ = commands.guideAccessibility(&context_value, &.{}) catch |err| {
+                log.warn("the accessibility guide could not be shown: {s}", .{@errorName(err)});
+            };
+        }
+        waited += sleepMs(io, 2000);
+    }
+    log.warn("window events are off: the Accessibility grant is missing", .{});
+}
+
+/// Start the pipe and ask for the paint it would otherwise take an event to cause:
+/// nothing else refreshes the strips on the way up any more.
+fn startWmEvents() void {
+    if (!platform.kx_wm_events_start(&onWmEvent)) {
+        log.warn("native window events unavailable", .{});
+        return;
+    }
+    _ = control.postEvent(&.{ "item", items_yabai.item });
 }
 
 /// How long the loop keeps looking: long enough for a person to read a panel and

@@ -1,5 +1,5 @@
-//! The yabai commands kxdesk manages: settings, rules, signals, and every window,
-//! space and display verb `kxdesk wm` runs.
+//! The yabai commands kxdesk manages: settings, rules, the sweep of the signals it
+//! used to provision, and every window, space and display verb `kxdesk wm` runs.
 //!
 //! Every command is an exact argv, one `yabai -m` per call; a `&&` between two
 //! commands is two `try`s, so the second only runs when the first was taken. A
@@ -32,37 +32,18 @@ const managed_rules = [_][]const []const u8{
     &.{ "-m", "rule", "--add", "label=mail on display 1", "app=^(Microsoft Outlook|Mail)$", "display=^1" },
 };
 
-/// One `signal --add`, complete: the exact argv tokens. `$YABAI_WINDOW_ID` is
-/// substituted by yabai at signal time, so it must reach yabai verbatim; argv
-/// tokens rather than a shell keep it intact.
+/// The signals kxdesk used to provision, and no longer does: what changes the bar
+/// draws from yabai arrives from the daemon's own observers now (see
+/// `src/platform.m`, `kx_wm_events_start`), so yabai is left with settings and rules
+/// only and runs no action per event.
 ///
-/// The `kx_*` family fans every event that changes what the bar renders into one
-/// `kxdesk yabai changed`; `window_resized` is in it because yabai retiles a
-/// window moved to another space, so that is the event that arrives (measured -
-/// `window_moved` is the positional one, a drag in place). `display_changed` is
-/// the focused display moving, and it is the only notification a `display --focus`
-/// that leaves the focused window where it was sends. The display *list* is left
-/// to the bar's own `display_change` subscription.
-///
-/// The event goes straight to the daemon rather than through the bar's own
-/// `--trigger`, which the bar would have to relay: the daemon is the only thing
-/// that acts on it, one process per event is unavoidable (yabai runs an action as
-/// a shell command), and a daemon that is not there costs nothing. See
-/// `commands.zig` for the words.
-const managed_signals = [_][]const []const u8{
-    &.{ "-m", "signal", "--add", "event=window_title_changed", "label=kx_atc", "action=kxdesk yabai changed $YABAI_WINDOW_ID", "active=yes" },
-    &.{ "-m", "signal", "--add", "event=window_focused", "label=kx_wf", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=window_moved", "label=kx_wm", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=window_resized", "label=kx_wr", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=window_created", "label=kx_wc", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=window_destroyed", "label=kx_wd", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=window_minimized", "label=kx_wmin", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=window_deminimized", "label=kx_wdemin", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=space_changed", "label=kx_sc", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=space_created", "label=kx_spc", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=space_destroyed", "label=kx_spd", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=display_changed", "label=kx_dch", "action=kxdesk yabai changed" },
-    &.{ "-m", "signal", "--add", "event=window_created", "app=Telegram", "label=telegram-display-enforcement", "action=zsh -c \"sleep 1.5 && yabai -m window $YABAI_WINDOW_ID --display 1 --focus\"" },
+/// The labels are still swept, once per `apply-settings`, so an upgrade that retired
+/// them leaves nothing behind: a signal that runs `kxdesk yabai changed` against a
+/// build that no longer knows the command would fork a client per event for nothing.
+const retired_signals = [_][]const u8{
+    "kx_atc", "kx_wf",   "kx_wm",                        "kx_wr", "kx_wc",
+    "kx_wd",  "kx_wmin", "kx_wdemin",                    "kx_sc", "kx_spc",
+    "kx_spd", "kx_dch",  "telegram-display-enforcement",
 };
 
 /// The strip the external bar draws in, reserved on every display: SketchyBar is
@@ -116,18 +97,30 @@ const settings = [_][]const u8{
 /// process, however many settings there are.
 const settings_argv = [_][]const u8{ "-m", "config" } ++ settings;
 
-/// Assert everything kxdesk manages on yabai: every setting, then every rule,
-/// then every signal.
+/// Assert everything kxdesk manages on yabai: every setting, then every rule, then
+/// the sweep of the signals it no longer provisions.
 ///
-/// One command, because the three are asserted together and this way it is one
-/// round trip to the daemon rather than three - and the three stay reachable on
+/// One command, because they are asserted together and this way it is one round trip
+/// to the daemon rather than three - and the settings and the rules stay reachable on
 /// their own for a targeted refresh.
 pub fn applySettings(context: *Context, args: []const []const u8) anyerror![]const u8 {
     _ = args;
     try context.yabai.command(context.arena, &settings_argv);
     _ = try refreshRules(context, &.{});
-    _ = try refreshSignals(context, &.{});
+    try sweepRetiredSignals(context);
     return "";
+}
+
+/// Remove every signal an earlier build provisioned, by label. Nothing is added back:
+/// the bar's yabai items are refreshed by the daemon's own observers, not by an action
+/// yabai runs. One-time garbage collection, like the bar's `retired_items`.
+///
+/// A signal that is not there is not an error, and neither is one yabai refuses to
+/// remove: the next `apply-settings` sweeps again.
+fn sweepRetiredSignals(context: *Context) !void {
+    for (retired_signals) |label| {
+        removeByLabel(context.arena, context.yabai, "signal", label) catch {};
+    }
 }
 
 /// Re-provision the yabai rules: drop whatever is configured, then add the six
@@ -149,42 +142,6 @@ pub fn refreshRules(context: *Context, args: []const []const u8) anyerror![]cons
     }
     try last_add;
     return "";
-}
-
-/// Re-provision the yabai signals: clear, then add every one in
-/// `managed_signals`.
-pub fn refreshSignals(context: *Context, args: []const []const u8) anyerror![]const u8 {
-    _ = args;
-    try clearSignalsInner(context, true);
-
-    const arena = context.arena;
-    // The result is the last add's, as in `refreshRules`.
-    var last_add: anyerror!void = {};
-    for (managed_signals) |signal| {
-        last_add = context.yabai.command(arena, signal);
-    }
-    try last_add;
-    return "";
-}
-
-/// Drop every configured yabai signal; removing nothing is not an error.
-pub fn clearSignals(context: *Context, args: []const []const u8) anyerror![]const u8 {
-    _ = args;
-    try clearSignalsInner(context, false);
-    return "";
-}
-
-/// `tolerate_removal_failure` is set by the provisioners, which continue past a
-/// failed removal among their adds.
-fn clearSignalsInner(context: *Context, tolerate_removal_failure: bool) !void {
-    const arena = context.arena;
-
-    const listed = try context.yabai.query([]yabai.Labeled, arena, &.{ "-m", "signal", "--list" });
-    for (listed) |signal| {
-        removeByLabel(arena, context.yabai, "signal", signal.label) catch |err| {
-            if (!tolerate_removal_failure) return err;
-        };
-    }
 }
 
 /// Focus a set of spaces named by label, leaving a member of the group on the
@@ -879,9 +836,6 @@ pub const wm_verbs = [_]WmVerb{
     .{ .name = "space-labels", .run = spaceLabels },
     .{ .name = "apply-settings", .run = applySettings },
     .{ .name = "refresh-rules", .run = refreshRules },
-    .{ .name = "refresh-signals", .run = refreshSignals },
-    .{ .name = "clear-signals", .run = clearSignals },
-    .{ .name = "refresh-yabai", .run = refreshYabai },
     .{ .name = "external-bar-toggle", .run = externalBarToggle },
     .{ .name = "blackout", .run = blackout },
     .{ .name = "window-swap", .run = windowSwap },
@@ -909,12 +863,4 @@ pub fn wmRun(context: *Context, args: []const []const u8) anyerror![]const u8 {
         if (std.mem.eql(u8, verb.name, args[0])) return verb.run(context, args);
     }
     return error.UnknownArgument;
-}
-
-/// Re-provision everything kxdesk manages on yabai: the rules, then the signals.
-/// A failed rules refresh stops the signal refresh, as it always has.
-fn refreshYabai(context: *Context, args: []const []const u8) anyerror![]const u8 {
-    _ = try refreshRules(context, args);
-    _ = try refreshSignals(context, args);
-    return "";
 }

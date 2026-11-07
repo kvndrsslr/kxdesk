@@ -11,6 +11,7 @@
 #include <SystemConfiguration/SystemConfiguration.h>
 #include <bootstrap.h>
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <locale.h>
@@ -571,6 +572,399 @@ bool kx_ax_trusted(void) {
      which is the identity an Accessibility grant has to match: a grant given to an
      earlier build is a grant this process does not have. */
   return AXIsProcessTrusted();
+}
+
+bool kx_ax_request(void) {
+  const void* keys[] = { (const void*)kAXTrustedCheckOptionPrompt };
+  const void* values[] = { (const void*)kCFBooleanTrue };
+  CFDictionaryRef options = CFDictionaryCreate(NULL, keys, values, 1,
+                                               &kCFTypeDictionaryKeyCallBacks,
+                                               &kCFTypeDictionaryValueCallBacks);
+  if (options == NULL) return AXIsProcessTrusted();
+
+  /* The prompt is the system's own dialog and the answer to it arrives later, in
+     the preferences domain - so the return value is today's grant, never the
+     user's answer. */
+  bool granted = AXIsProcessTrustedWithOptions(options);
+  CFRelease(options);
+  return granted;
+}
+
+void kx_run_loop_run(void) {
+  CFRunLoopRun();
+}
+
+/* The private pieces yabai uses for the same job: the window id behind an
+   accessibility element, and the window server's space queries. Neither is in a
+   public header, and SkyLight has no linkable stub on disk - its image lives in the
+   shared cache and only the SDK's `.tbd` names it - so each is resolved once, at
+   first use. */
+typedef AXError (*kx_ax_window_id)(AXUIElementRef element, uint32_t* window_id);
+typedef int (*kx_sls_connection)(void);
+typedef uint64_t (*kx_sls_active_space)(int connection);
+typedef CFArrayRef (*kx_sls_display_spaces)(int connection);
+
+static void* kx_wm_sls_image(void) {
+  static void* image;
+  static bool looked = false;
+  if (!looked) {
+    looked = true;
+    image = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY);
+  }
+  return image;
+}
+
+static AXError kx_wm_element_window(AXUIElementRef element, uint32_t* window_id) {
+  static kx_ax_window_id get_window;
+  static bool looked = false;
+  if (!looked) {
+    looked = true;
+    /* Through the default search order rather than a framework name: every
+       accessibility client, this one included, reaches these through the image
+       AppKit has already loaded. */
+    get_window = (kx_ax_window_id)dlsym(RTLD_DEFAULT, "_AXUIElementGetWindow");
+  }
+  if (get_window == NULL) return kAXErrorNotImplemented;
+  return get_window(element, window_id);
+}
+
+/* A compact signature of the desk's spaces - the focused space, then every display's
+   spaces in order - for telling whether a space appeared, disappeared or took the
+   focus. The window server's *notifications* for these are private SPI whose
+   numbering moves between macOS versions, and the four types yabai's table names
+   deliver nothing on darwin 27; these two queries answer exactly, so the desk is
+   compared instead of listened to. One Mach call, not a yabai query: nothing forks. */
+bool kx_space_signature(char* out, size_t cap) {
+  if (out == NULL || cap == 0) return false;
+
+  static kx_sls_connection main_connection;
+  static kx_sls_active_space active_space;
+  static kx_sls_display_spaces display_spaces;
+  static bool looked = false;
+  if (!looked) {
+    looked = true;
+    main_connection = (kx_sls_connection)dlsym(kx_wm_sls_image(), "SLSMainConnectionID");
+    active_space = (kx_sls_active_space)dlsym(kx_wm_sls_image(), "SLSGetActiveSpace");
+    display_spaces = (kx_sls_display_spaces)dlsym(kx_wm_sls_image(), "SLSCopyManagedDisplaySpaces");
+  }
+  if (main_connection == NULL || active_space == NULL || display_spaces == NULL) return false;
+
+  int connection = main_connection();
+  CFArrayRef displays = display_spaces(connection);
+  if (displays == NULL) return false;
+
+  char buffer[256];
+  size_t caret = 0;
+  int written = snprintf(buffer, sizeof buffer, "%llu",
+                         (unsigned long long)active_space(connection));
+  bool ok = written > 0 && (size_t)written < sizeof buffer;
+  if (ok) caret = (size_t)written;
+
+  CFIndex count = CFArrayGetCount(displays);
+  for (CFIndex i = 0; ok && i < count; i++) {
+    NSDictionary* display = (__bridge NSDictionary*)CFArrayGetValueAtIndex(displays, i);
+    NSArray* spaces = display[@"Spaces"];
+    if ([spaces isKindOfClass:[NSArray class]]) {
+      for (NSDictionary* space in spaces) {
+        if (![space isKindOfClass:[NSDictionary class]]) continue;
+        NSNumber* identifier = space[@"ManagedSpaceID"];
+        if (![identifier isKindOfClass:[NSNumber class]]) continue;
+        written = snprintf(buffer + caret, sizeof buffer - caret, ",%lld",
+                           identifier.longLongValue);
+        if (written < 0 || (size_t)written >= sizeof buffer - caret) {
+          ok = false;
+          break;
+        }
+        caret += (size_t)written;
+      }
+    }
+    written = snprintf(buffer + caret, sizeof buffer - caret, "|");
+    if (written < 0 || (size_t)written >= sizeof buffer - caret) ok = false;
+    else caret += (size_t)written;
+  }
+  CFRelease(displays);
+
+  if (!ok || caret + 1 > cap) return false;
+  memcpy(out, buffer, caret);
+  out[caret] = '\0';
+  return true;
+}
+
+/* Applications the pipe observes at once. An application past this is simply not
+   observed: its window changes still arrive as full refreshes from the window
+   server and the workspace. */
+#define KX_WM_MAX_APPS 96
+
+/* A slot is never moved - the accessibility observer holds its address as the
+   callback's context - so a detached application leaves a hole that the next one
+   fills. `name` outlives the observer, because a callback already queued still
+   reads it. */
+typedef struct {
+  pid_t pid; /* 0 for a free slot */
+  char name[64];
+  AXUIElementRef element;
+  AXObserverRef observer;
+} kx_wm_app;
+
+static kx_wm_handler g_wm_handler = NULL;
+static kx_wm_app g_wm_apps[KX_WM_MAX_APPS];
+static NSMutableArray* g_wm_workspace_tokens;
+static bool g_wm_started = false;
+
+static void kx_wm_notify(const char* kind, uint32_t window_id, const char* app_name) {
+  kx_wm_handler handler = g_wm_handler;
+  if (handler == NULL) return;
+  handler(kind, window_id, app_name);
+}
+
+static uint32_t kx_wm_window_id(AXUIElementRef element) {
+  uint32_t window_id = 0;
+  if (element == NULL) return 0;
+  if (kx_wm_element_window(element, &window_id) != kAXErrorSuccess) return 0;
+  return window_id;
+}
+
+static void kx_wm_ax_event(AXObserverRef observer, AXUIElementRef element,
+                           CFStringRef notification, void* context) {
+  kx_wm_app* app = context;
+  const char* name = app != NULL ? app->name : "";
+
+  if (CFEqual(notification, kAXCreatedNotification)) {
+    uint32_t window_id = kx_wm_window_id(element);
+    if (window_id != 0) return kx_wm_notify("created", window_id, name);
+    return kx_wm_notify("changed", 0, "");
+  }
+  if (CFEqual(notification, kAXTitleChangedNotification)) {
+    uint32_t window_id = kx_wm_window_id(element);
+    if (window_id != 0) return kx_wm_notify("title", window_id, "");
+    return kx_wm_notify("changed", 0, "");
+  }
+  /* Destroyed included: the header says the element a destroyed notification
+     carries is already stale, so it is never queried. */
+  kx_wm_notify("changed", 0, "");
+}
+
+static kx_wm_app* kx_wm_slot(pid_t pid, bool reserve) {
+  kx_wm_app* free_slot = NULL;
+  for (size_t i = 0; i < KX_WM_MAX_APPS; i++) {
+    if (g_wm_apps[i].pid == pid) return &g_wm_apps[i];
+    if (free_slot == NULL && g_wm_apps[i].pid == 0) free_slot = &g_wm_apps[i];
+  }
+  if (!reserve || free_slot == NULL) return NULL;
+  free_slot->pid = pid;
+  return free_slot;
+}
+
+/* Observe one application's windows, and schedule `attempts_left` more tries when
+   the application could not answer yet.
+
+   Every notification is registered on the application element: that is where this
+   macOS delivers an application's window notifications, and window elements refuse
+   all of them. Observed this way a title change names its window, a created window
+   names its application, and everything else is one full refresh. */
+static void kx_wm_attach(pid_t pid, const char* name, uint8_t attempts_left) {
+  if (pid <= 0 || pid == getpid()) return;
+
+  kx_wm_app* slot = kx_wm_slot(pid, true);
+  if (slot == NULL || slot->observer != NULL) return;
+
+  AXObserverRef observer = NULL;
+  AXUIElementRef element = NULL;
+  AXError first_error = kAXErrorSuccess;
+  size_t added = 0;
+
+  if (AXObserverCreate(pid, kx_wm_ax_event, &observer) != kAXErrorSuccess) {
+    observer = NULL;
+  } else if ((element = AXUIElementCreateApplication(pid)) != NULL) {
+    /* A wedged application must not hold the main thread, which is also the hotkey
+       engine's run loop: half a second is well past a responsive application's
+       answer, so a slow one costs a missed event rather than a stalled keyboard. */
+    AXUIElementSetMessagingTimeout(element, 0.5f);
+
+    CFStringRef notifications[] = {
+        kAXCreatedNotification,
+        kAXFocusedWindowChangedNotification,
+        kAXWindowMovedNotification,
+        kAXWindowResizedNotification,
+        kAXTitleChangedNotification,
+        kAXWindowMiniaturizedNotification,
+        kAXWindowDeminiaturizedNotification,
+        kAXUIElementDestroyedNotification,
+    };
+    for (size_t i = 0; i < sizeof notifications / sizeof notifications[0]; i++) {
+      AXError error = AXObserverAddNotification(observer, element, notifications[i], slot);
+      if (error == kAXErrorSuccess) added++;
+      else if (first_error == kAXErrorSuccess) first_error = error;
+    }
+  }
+
+  if (added == 0) {
+    if (element != NULL) CFRelease(element);
+    if (observer != NULL) CFRelease(observer);
+    slot->pid = 0;
+
+    /* Only an application that was busy, or not there yet, is worth asking again:
+       one that supports none of these notifications never will, and three more
+       tries would be three timeouts on the main thread. The helper processes of a
+       browser's framework are exactly that. */
+    /* A block captures scalars by value but not an array, so the name the retry
+       reports with is a copy of its own. */
+    if (attempts_left > 0 &&
+        (first_error == kAXErrorCannotComplete || first_error == kAXErrorInvalidUIElement)) {
+      char* copy = strdup(name != NULL ? name : "");
+      if (copy != NULL) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC),
+                       dispatch_get_main_queue(), ^{
+                         kx_wm_attach(pid, copy, attempts_left - 1);
+                         free(copy);
+                       });
+      }
+    }
+    return;
+  }
+
+  snprintf(slot->name, sizeof slot->name, "%s", name != NULL ? name : "");
+  slot->element = element;
+  slot->observer = observer;
+  CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer),
+                     kCFRunLoopCommonModes);
+}
+
+static void kx_wm_detach(pid_t pid) {
+  kx_wm_app* slot = kx_wm_slot(pid, false);
+  if (slot == NULL) return;
+
+  if (slot->observer != NULL) {
+    CFRunLoopSourceRef source = AXObserverGetRunLoopSource(slot->observer);
+    CFRunLoopRemoveSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+    CFRunLoopSourceInvalidate(source);
+    CFRelease(slot->observer);
+    slot->observer = NULL;
+  }
+  if (slot->element != NULL) {
+    CFRelease(slot->element);
+    slot->element = NULL;
+  }
+  slot->pid = 0;
+  slot->name[0] = '\0';
+}
+
+/* Report every window an application already has as created.
+
+   A window that comes up *with* its application is not announced: the created
+   notification is what an application sends when it adds a window, not a roll call,
+   and a client that attached during the launch is told nothing about the window the
+   application restored. Reading them is what makes an application that opens with a
+   window look like one that opened a window - which is the shape the Telegram rule
+   reads, and one full refresh otherwise. */
+static void kx_wm_report_windows(pid_t pid, const char* name) {
+  AXUIElementRef element = AXUIElementCreateApplication(pid);
+  if (element == NULL) return;
+  AXUIElementSetMessagingTimeout(element, 0.5f);
+
+  CFTypeRef windows = NULL;
+  if (AXUIElementCopyAttributeValue(element, kAXWindowsAttribute, &windows) == kAXErrorSuccess &&
+      windows != NULL) {
+    CFArrayRef list = (CFArrayRef)windows;
+    for (CFIndex i = 0; i < CFArrayGetCount(list); i++) {
+      uint32_t window_id = kx_wm_window_id((AXUIElementRef)CFArrayGetValueAtIndex(list, i));
+      if (window_id != 0) kx_wm_notify("created", window_id, name);
+    }
+    CFRelease(windows);
+  }
+  CFRelease(element);
+}
+
+/* An application's name for the filter the Telegram rule uses, and -0- for one the
+   workspace will not name. */
+static const char* kx_wm_application_name(NSRunningApplication* application) {
+  NSString* name = application.localizedName;
+  return name != nil ? name.UTF8String : "";
+}
+
+/* The workspace's own notifications: launches and terminates drive the observers,
+   and the rest are full refreshes. The display notification is spelled as a string
+   because it is not in the SDK headers - the same spelling SketchyBar registers. */
+static void kx_wm_observe_workspace(void) {
+  NSNotificationCenter* center = [[NSWorkspace sharedWorkspace] notificationCenter];
+  NSMutableArray* tokens = [NSMutableArray array];
+  NSOperationQueue* main_queue = [NSOperationQueue mainQueue];
+
+  void (^refresh)(NSNotification*) = ^(NSNotification* note) {
+    kx_wm_notify("changed", 0, "");
+  };
+
+  [tokens addObject:[center addObserverForName:NSWorkspaceDidLaunchApplicationNotification
+                                       object:nil
+                                        queue:main_queue
+                                   usingBlock:^(NSNotification* note) {
+                                     NSRunningApplication* app =
+                                         note.userInfo[NSWorkspaceApplicationKey];
+                                     if (app == nil) return;
+                                     kx_wm_attach(app.processIdentifier,
+                                                  kx_wm_application_name(app), 3);
+                                     kx_wm_report_windows(app.processIdentifier,
+                                                          kx_wm_application_name(app));
+                                   }]];
+  [tokens addObject:[center addObserverForName:NSWorkspaceDidTerminateApplicationNotification
+                                       object:nil
+                                        queue:main_queue
+                                   usingBlock:^(NSNotification* note) {
+                                     NSRunningApplication* app =
+                                         note.userInfo[NSWorkspaceApplicationKey];
+                                     if (app != nil) kx_wm_detach(app.processIdentifier);
+                                   }]];
+  /* Also the second chance for an application that refused to be observed when the
+     pipe started: coming to the front is when its windows matter. */
+  [tokens addObject:[center addObserverForName:NSWorkspaceDidActivateApplicationNotification
+                                       object:nil
+                                        queue:main_queue
+                                   usingBlock:^(NSNotification* note) {
+                                     NSRunningApplication* app =
+                                         note.userInfo[NSWorkspaceApplicationKey];
+                                     if (app != nil) {
+                                       kx_wm_attach(app.processIdentifier,
+                                                    kx_wm_application_name(app), 0);
+                                     }
+                                     refresh(note);
+                                   }]];
+
+  NSArray* changes = @[
+    NSWorkspaceDidHideApplicationNotification,
+    NSWorkspaceDidUnhideApplicationNotification,
+    NSWorkspaceActiveSpaceDidChangeNotification,
+    NSWorkspaceDidWakeNotification,
+    @"NSWorkspaceActiveDisplayDidChangeNotification",
+  ];
+  for (NSString* name in changes) {
+    [tokens addObject:[center addObserverForName:name
+                                         object:nil
+                                          queue:main_queue
+                                     usingBlock:refresh]];
+  }
+
+  g_wm_workspace_tokens = tokens;
+}
+
+bool kx_wm_events_start(kx_wm_handler handler) {
+  if (handler == NULL) return false;
+  if (g_wm_started) return g_wm_handler == handler;
+  g_wm_started = true;
+  g_wm_handler = handler;
+
+  /* Everything is registered on the main run loop and nowhere else: the
+     accessibility sources and the workspace's main-queue delivery are both serviced
+     by that one loop, and a registration made from a thread that never runs one
+     would never deliver. */
+  CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+    for (NSRunningApplication* app in [[NSWorkspace sharedWorkspace] runningApplications]) {
+      kx_wm_attach(app.processIdentifier, kx_wm_application_name(app), 3);
+    }
+    kx_wm_observe_workspace();
+
+  });
+  CFRunLoopWakeUp(CFRunLoopGetMain());
+  return true;
 }
 
 bool kx_app_font_path(char* out, size_t cap) {

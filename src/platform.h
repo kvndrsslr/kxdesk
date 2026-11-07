@@ -171,6 +171,44 @@ int64_t kx_unix_reply(
 /// code identity - a rebuild with an ad-hoc signature is exactly that.
 bool kx_ax_trusted(void);
 
+/// One event the native window observers report. `kind` is "title" (a window's
+/// title moved, and `window_id` names it), "created" (a window appeared, and
+/// `app_name` names its application) or "changed" (anything else). `window_id` is 0
+/// and `app_name` the empty string where the event names neither. Called on the
+/// main run-loop thread: the handler must only post and return.
+typedef void (*kx_wm_handler)(const char* kind, uint32_t window_id, const char* app_name);
+
+/// Report what windows, spaces and displays do, from the sources yabai itself reads:
+/// an accessibility observer per running application and the workspace's own
+/// notifications. This replaces the action each yabai signal used to run, so nothing
+/// spawns per event. A space created, destroyed or focused is not among them - the
+/// window server's own notifications for that are private SPI whose numbering moves
+/// between macOS versions - and comes from comparing `kx_space_signature` instead.
+///
+/// The registrations are made on the main run loop and this returns before the
+/// first of them - a thread that owns no run loop can call it, but the main thread
+/// must then run one, or nothing is ever delivered. Idempotent, and the handler is
+/// the one live reference the callbacks report through. False when `handler` is
+/// NULL, and when the pipe was already started for a different one.
+bool kx_wm_events_start(kx_wm_handler handler);
+
+/// Ask for the Accessibility grant the observers need, showing the system's own
+/// prompt when it is missing - the one click no process can make for the user.
+/// Returns whether the grant is already held, which is also why it never blocks:
+/// the answer to the prompt arrives later, as `kx_ax_trusted()` turning true.
+bool kx_ax_request(void);
+
+/// Run the main run loop of this thread, forever. Every notification the pipe
+/// registers is serviced from it.
+void kx_run_loop_run(void);
+
+/// Write a compact signature of the desk's spaces into `out` - the focused space,
+/// then every display's spaces in order - and report whether it fit. A space created,
+/// destroyed or focused changes it, and nothing else does, so comparing two of these
+/// is how those events are heard: the window server's own notifications for them are
+/// private SPI whose numbering moves between macOS versions. One Mach call, no fork.
+bool kx_space_signature(char* out, size_t cap);
+
 /// Filesystem path of the installed sketchybar-app-font, resolved through
 /// CoreText so it is the same file the bar renders with. Returns false when the
 /// font is not installed.
