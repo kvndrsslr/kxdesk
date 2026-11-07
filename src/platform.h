@@ -193,6 +193,13 @@ double kx_cpu_load(void);
 /// zero when there is no accelerator to ask, as on a machine without one.
 double kx_gpu_load(void);
 
+/// The CPU's and the GPU's die temperature in degrees Celsius, read from the SMC
+/// sensors the system's own tools use. Returns false, without touching the outputs,
+/// until both have been read at least once - a machine with no SMC, or a chip whose
+/// sensor keys are absent. A read that comes back as one of the SMC's placeholders
+/// keeps the last real reading instead of replacing it.
+bool kx_temperatures(double* cpu_celsius, double* gpu_celsius);
+
 /// Where the audio tap got to.
 enum {
   /// Never asked for, or torn down after a failure.

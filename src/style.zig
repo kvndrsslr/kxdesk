@@ -205,6 +205,10 @@ pub const Graph = struct {
     /// pair's five-character rates need it; the load pair's percentages are a
     /// character shorter and read better that character closer.
     air: bool = true,
+    /// How many characters the pair's box reserves for a reading. A pair overlays
+    /// two items, so both series must carry the same count for the readings to
+    /// line up; five is the default a reading of the graphs' own kind takes.
+    chars: usize = readout_chars,
 };
 
 /// A graph item's text slot: `graphSlot` fills one in, and the pair of them is
@@ -238,30 +242,35 @@ pub const Background = struct {
     drawing: bool,
 };
 
-/// A reading is at most three digits, one separator and a unit - `12.3K`,
-/// `100%` - so five characters; JetBrains Mono sets every glyph six tenths of
-/// its size wide.
+/// The widest reading a graph's default box reserves: three digits, one
+/// separator and a unit - `12.3K`, `100%` - so five characters. JetBrains Mono
+/// sets every glyph six tenths of its size wide.
 const readout_chars = 5;
+
+/// The load pair's own box, wider by the temperature it carries: `12%/45°` is
+/// seven characters, and both numbers can reach three digits, so nine. The two
+/// series must agree on it for their readings to end on one point.
+pub const load_readout_chars = 9;
 
 /// One character of the small print, in tenths of a point.
 const readout_char_tenths = small_font_size * 6;
 
 /// The box a reading is right-aligned in, in points: the characters the widest
-/// reading of its pair can take, its air, and the point of padding the fork
+/// reading of its series can take, its air, and the point of padding the fork
 /// keeps around glyph ink.
 ///
 /// The air belongs inside the box: a right-aligned reading sits a box's width
 /// less its own characters from the graph, so a box with a character of air in
 /// it holds that character and a box without holds none.
-fn readoutBox(comptime air: usize) u32 {
-    return (readout_chars + air) * readout_char_tenths / 10 + 1;
+fn readoutBox(comptime chars: usize, comptime air: usize) u32 {
+    return (chars + air) * readout_char_tenths / 10 + 1;
 }
 
 /// What the graph keeps free on its right for the readings: their box, and a
 /// point of air at each end of it. It is the label slot's padding - see
 /// `graphSlot` - which is also what makes the item wide enough to draw them in.
-fn readoutRoom(comptime air: usize) u32 {
-    return readoutBox(air) + 2;
+fn readoutRoom(comptime chars: usize, comptime air: usize) u32 {
+    return readoutBox(chars, air) + 2;
 }
 
 /// The air between a reading's end and the edge of the room it is drawn in.
@@ -284,11 +293,12 @@ const readout_height = 8;
 pub fn graphSlot(comptime series: Graph, comptime icon: bool, comptime high: bool) Slot {
     const reading = series.readout and !icon;
     const air: usize = if (series.air) 1 else 0;
+    const chars = series.chars;
     return .{
         .drawing = reading,
         .value = null,
         .padding_left = 0,
-        .padding_right = if (reading) readoutRoom(air) else 0,
+        .padding_right = if (reading) readoutRoom(chars, air) else 0,
         .badge = .{
             .drawing = reading,
             .font = small_font,
@@ -297,7 +307,7 @@ pub fn graphSlot(comptime series: Graph, comptime icon: bool, comptime high: boo
             // reading ends on the same point however long it is.
             .@"align" = "right",
             .anchor = config.Anchors.bottom_left,
-            .width = readoutBox(air),
+            .width = readoutBox(chars, air),
             .x_offset = readout_air,
             .y_offset = if (high) 0 else -readout_height,
             .background = .{ .drawing = false },

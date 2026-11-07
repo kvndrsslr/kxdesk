@@ -40,6 +40,12 @@ const Traffic = struct {
     sent: f64,
 };
 
+/// One tick's die temperatures, in degrees Celsius, for the load pair's readings.
+const Temperatures = struct {
+    cpu: f64,
+    gpu: f64,
+};
+
 /// Where a rate lands on the graph, as the fraction of its height the point
 /// fills.
 pub fn netLevel(bytes_per_second: f64) f64 {
@@ -204,12 +210,23 @@ pub const Updater = struct {
         const traffic = self.pollTraffic(sampled);
 
         if (bar) |client| {
+            // The dies' own sensors, when the machine answers them: the load
+            // pair carries them beside its percentages.
+            var cpu_celsius: f64 = 0;
+            var gpu_celsius: f64 = 0;
+            const temperatures: ?Temperatures =
+                if (platform.kx_temperatures(&cpu_celsius, &gpu_celsius))
+                    .{ .cpu = cpu_celsius, .gpu = gpu_celsius }
+                else
+                    null;
+
             // One batch for every series, so they cannot fall out of step: the
             // graphs share a window only by each getting exactly one point per
             // tick.
             client.push(cpu_item, cpu) catch return @intCast(std.time.ms_per_s);
             client.push(gpu_item, gpu) catch return @intCast(std.time.ms_per_s);
-            showLoad(client, cpu, gpu) catch return @intCast(std.time.ms_per_s);
+            showLoad(client, cpu, gpu, temperatures) catch
+                return @intCast(std.time.ms_per_s);
             if (traffic) |rates| {
                 client.push(net_down_item, netLevel(rates.received)) catch
                     return @intCast(std.time.ms_per_s);
@@ -254,24 +271,37 @@ pub const Updater = struct {
 };
 
 /// Put the two load readings on their graphs, each on its own item's label slot
-/// - the slot `style.zig`'s `graphSlot` keeps the pair's readout in.
-fn showLoad(client: *sb.Client, cpu: f64, gpu: f64) !void {
-    var cpu_text: [8]u8 = undefined;
-    var gpu_text: [8]u8 = undefined;
+/// - the slot `style.zig`'s `graphSlot` keeps the pair's readout in - with its die
+/// temperature after it when one was read.
+fn showLoad(
+    client: *sb.Client,
+    cpu: f64,
+    gpu: f64,
+    temperatures: ?Temperatures,
+) !void {
+    var cpu_text: [12]u8 = undefined;
+    var gpu_text: [12]u8 = undefined;
+    const cpu_celsius: ?f64 = if (temperatures) |reading| reading.cpu else null;
+    const gpu_celsius: ?f64 = if (temperatures) |reading| reading.gpu else null;
 
     var cpu_props: Props = .{};
-    try cpu_props.write(.{ .label = .{ .badge = try loadPercentText(cpu, &cpu_text) } });
+    try cpu_props.write(.{ .label = .{ .badge = try loadText(cpu, cpu_celsius, &cpu_text) } });
     try client.set(cpu_item, cpu_props.slice());
 
     var gpu_props: Props = .{};
-    try gpu_props.write(.{ .label = .{ .badge = try loadPercentText(gpu, &gpu_text) } });
+    try gpu_props.write(.{ .label = .{ .badge = try loadText(gpu, gpu_celsius, &gpu_text) } });
     try client.set(gpu_item, gpu_props.slice());
 }
 
-/// A share of one as the load graphs' reading shows it: whole percent, which is
-/// the resolution the number deserves, and the widest the reading gets.
-fn loadPercentText(share: f64, buffer: *[8]u8) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "{d:.0}%", .{share * 100});
+/// A load graph's reading: the load as a whole percent, and - when the die's
+/// temperature was read - that temperature after a slash, in whole degrees:
+/// `12%`, or `12%/45°`.
+pub fn loadText(share: f64, celsius: ?f64, buffer: *[12]u8) ![]const u8 {
+    const percent = share * 100;
+    if (celsius) |temperature| {
+        return std.fmt.bufPrint(buffer, "{d:.0}%/{d:.0}°", .{ percent, temperature });
+    }
+    return std.fmt.bufPrint(buffer, "{d:.0}%", .{percent});
 }
 
 /// Put the newest readings on the two network graphs, each in the colour of its

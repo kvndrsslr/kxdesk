@@ -18,6 +18,7 @@
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 #include <mach/message.h>
+#include <math.h>
 #include <net/if.h>
 #include <net/if_media.h>
 #include <net/route.h>
@@ -718,6 +719,213 @@ double kx_gpu_load(void) {
   IOObjectRelease(services);
 
   return percent / 100.0;
+}
+
+/// The SMC's key-data structure, byte for byte: the kernel fills a reply through
+/// this layout, so its 80-byte shape is the interface.
+typedef struct {
+  uint32_t key;
+  struct {
+    char major, minor, build, reserved;
+    uint16_t release;
+  } vers;
+  struct {
+    uint16_t version, length;
+    uint32_t cpuPLimit, gpuPLimit, memPLimit;
+  } pLimitData;
+  struct {
+    uint32_t dataSize, dataType;
+    char dataAttributes;
+  } keyInfo;
+  char result, status, data8;
+  uint32_t data32;
+  char bytes[32];
+} kx_smc_key_data_t;
+
+_Static_assert(sizeof(kx_smc_key_data_t) == 80, "the SMC user client's own layout");
+
+/// The two commands a read takes: the key's metadata, then its bytes at the size
+/// that metadata gives.
+enum {
+  kx_smc_read_bytes = 5,
+  kx_smc_read_key_info = 9,
+  /// The selector every one of those commands goes through.
+  kx_smc_index = 2,
+};
+
+static io_connect_t kx_smc_connection = 0;
+static bool kx_smc_opened = false;
+
+/// Connect to the SMC once; the connection lives as long as the process. A key's
+/// size and type never change either, so the round trip that asks for them is paid
+/// once per key: the lists below are fifteen keys, which is what bounds the cache.
+#define KX_SMC_KEY_CACHE 24
+static struct {
+  uint32_t key;
+  /// Zero for a key this machine does not have, so it is not asked for again.
+  uint32_t size;
+} kx_smc_cache[KX_SMC_KEY_CACHE];
+static size_t kx_smc_cache_count = 0;
+
+static bool kx_smc_open(void) {
+  if (kx_smc_opened) return kx_smc_connection != 0;
+  kx_smc_opened = true;
+
+  io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                     IOServiceMatching("AppleSMC"));
+  if (!service) return false;
+  kern_return_t opened = IOServiceOpen(service, mach_task_self(), 0,
+                                       &kx_smc_connection);
+  IOObjectRelease(service);
+  if (opened != KERN_SUCCESS) {
+    kx_smc_connection = 0;
+    return false;
+  }
+  return true;
+}
+
+static uint32_t kx_smc_fourcc(const char* key) {
+  return ((uint32_t)(uint8_t)key[0] << 24) | ((uint32_t)(uint8_t)key[1] << 16) |
+         ((uint32_t)(uint8_t)key[2] << 8) | (uint32_t)(uint8_t)key[3];
+}
+
+static kern_return_t kx_smc_call(kx_smc_key_data_t* input,
+                                 kx_smc_key_data_t* output) {
+  size_t output_size = sizeof(*output);
+  return IOConnectCallStructMethod(kx_smc_connection, kx_smc_index, input,
+                                   sizeof(*input), output, &output_size);
+}
+
+/// A key's data size, or false when the machine has no such key.
+static bool kx_smc_key_size(uint32_t key, uint32_t* size) {
+  for (size_t i = 0; i < kx_smc_cache_count; i++) {
+    if (kx_smc_cache[i].key == key) {
+      *size = kx_smc_cache[i].size;
+      return *size != 0;
+    }
+  }
+
+  kx_smc_key_data_t input = {0};
+  kx_smc_key_data_t output = {0};
+  input.key = key;
+  input.data8 = kx_smc_read_key_info;
+  uint32_t found = 0;
+  if (kx_smc_call(&input, &output) == KERN_SUCCESS && output.result == 0) {
+    found = output.keyInfo.dataSize;
+  }
+
+  if (kx_smc_cache_count < KX_SMC_KEY_CACHE) {
+    kx_smc_cache[kx_smc_cache_count].key = key;
+    kx_smc_cache[kx_smc_cache_count].size = found;
+    kx_smc_cache_count++;
+  }
+  *size = found;
+  return found != 0;
+}
+
+/// One temperature sensor, as the little-endian float an `flt ` key carries.
+/// False when the key is absent, the read failed, or it is not a four-byte float.
+static bool kx_smc_temperature(const char* key, double* celsius) {
+  uint32_t size = 0;
+  if (!kx_smc_key_size(kx_smc_fourcc(key), &size)) return false;
+  if (size != sizeof(float)) return false;
+
+  kx_smc_key_data_t input = {0};
+  kx_smc_key_data_t output = {0};
+  input.key = kx_smc_fourcc(key);
+  input.keyInfo.dataSize = size;
+  input.data8 = kx_smc_read_bytes;
+  if (kx_smc_call(&input, &output) != KERN_SUCCESS) return false;
+  if (output.result != 0) return false;
+
+  float value;
+  memcpy(&value, output.bytes, sizeof(value));
+  if (!isfinite(value)) return false;
+  *celsius = (double)value;
+  return true;
+}
+
+/// One bank of sensors, and whether it holds this cycle's readings. The SMC scans
+/// its sensor array in halves: a half it has not scanned yet answers with one
+/// repeated placeholder - 0, 2.2, 3.4 or 40 - rather than a temperature. A real
+/// half never reports one identical value across its sensors, so a bank counts
+/// only when at least `minimum` of its readings are in range and not all equal,
+/// and its reading is then its hottest sensor.
+static bool kx_smc_bank(const char* const* keys, size_t count, size_t minimum,
+                        double* celsius) {
+  double first = 0.0;
+  double hottest = 0.0;
+  size_t readings = 0;
+  bool identical = true;
+
+  for (size_t i = 0; i < count; i++) {
+    double value;
+    if (!kx_smc_temperature(keys[i], &value)) continue;
+    if (!(value > 10.0 && value < 120.0)) continue;
+    if (readings == 0) {
+      first = value;
+    } else if (value != first) {
+      identical = false;
+    }
+    if (readings == 0 || value > hottest) hottest = value;
+    readings++;
+  }
+
+  if (readings < minimum || identical) return false;
+  *celsius = hottest;
+  return true;
+}
+
+/// The M-series CPU core sensors, in the two halves the SMC scans: the `Tp0`
+/// set, then the one the alternate cycle fills. On this M4 Pro the halves
+/// alternate exactly, so whichever was just scanned is the one worth reading.
+static const char* const kx_cpu_bank_a[] = {"Tp01", "Tp05", "Tp09", "Tp0D",
+                                            "Tp0f"};
+static const char* const kx_cpu_bank_b[] = {"Tp1t", "Tp2D", "Tp2X"};
+
+/// The GPU's own sensors: the `Tg0D`/`Tg0P` pair the base M4 reports is absent
+/// on this chip, and these are the ones that answer.
+static const char* const kx_gpu_keys[] = {"Tg05", "Tg0X", "Tg0Y", "Tg0j",
+                                          "Tg0k", "Tg0z", "Tg1V"};
+
+bool kx_temperatures(double* cpu_celsius, double* gpu_celsius) {
+  static double last_cpu = 0.0;
+  static double last_gpu = 0.0;
+  static bool have_cpu = false;
+  static bool have_gpu = false;
+
+  if (!kx_smc_open()) return false;
+
+  // A bank that came back as a placeholder this second is not a reading: the last
+  // real one is kept rather than letting the bar's number drop to a constant.
+  double cpu = 0.0;
+  double candidate = 0.0;
+  bool fresh = false;
+  if (kx_smc_bank(kx_cpu_bank_a, sizeof(kx_cpu_bank_a) / sizeof(kx_cpu_bank_a[0]),
+                  3, &cpu)) {
+    fresh = true;
+  }
+  if (kx_smc_bank(kx_cpu_bank_b, sizeof(kx_cpu_bank_b) / sizeof(kx_cpu_bank_b[0]),
+                  3, &candidate)) {
+    if (!fresh || candidate > cpu) cpu = candidate;
+    fresh = true;
+  }
+  if (fresh) {
+    last_cpu = cpu;
+    have_cpu = true;
+  }
+
+  double gpu = 0.0;
+  if (kx_smc_bank(kx_gpu_keys, sizeof(kx_gpu_keys) / sizeof(kx_gpu_keys[0]), 3,
+                  &gpu)) {
+    last_gpu = gpu;
+    have_gpu = true;
+  }
+
+  if (!have_cpu || !have_gpu) return false;
+  *cpu_celsius = last_cpu;
+  *gpu_celsius = last_gpu;
+  return true;
 }
 
 /// The tap's ring: the IOProc thread appends mono samples of the machine's output

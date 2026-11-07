@@ -81,6 +81,7 @@ pub extern "c" fn kx_clock(
 
 pub extern "c" fn kx_cpu_load() f64;
 pub extern "c" fn kx_gpu_load() f64;
+pub extern "c" fn kx_temperatures(cpu_celsius: *f64, gpu_celsius: *f64) bool;
 
 /// Where the audio tap got to, in the order `src/platform.h` spells it. The tap
 /// is the machine's own output audio, mixed down to one stream; `kx_audio_start`

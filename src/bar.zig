@@ -331,8 +331,8 @@ fn rightItems(c: *sb.Client, io: std.Io, config_input: Config) !void {
     // The two graph pairs, the load pair first, since it is the nearer the clock.
     // The load pair is the one whose click shows the terminal btop reads in.
     try graphPair(c, config_input.helper, .{
-        .{ .name = items_system.cpu_item, .color = theme.graph_cpu, .readout = true, .top = true, .air = false },
-        .{ .name = items_system.gpu_item, .color = theme.graph_gpu, .readout = true, .air = false },
+        .{ .name = items_system.cpu_item, .color = theme.graph_cpu, .readout = true, .top = true, .air = false, .chars = style.load_readout_chars },
+        .{ .name = items_system.gpu_item, .color = theme.graph_gpu, .readout = true, .air = false, .chars = style.load_readout_chars },
     }, true);
     try graphPair(c, config_input.helper, .{
         .{ .name = items_system.net_down_item, .color = theme.graph_net_down, .readout = true },

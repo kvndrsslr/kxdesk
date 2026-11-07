@@ -453,10 +453,27 @@ test "formatRate keeps a reading inside three digits and a unit" {
         const text = try items_system.formatRate(case.rate, &buffer);
         try std.testing.expectEqualStrings(case.text, text);
         // Three digits, one separator and the unit is what the graph's right
-        // padding is sized for - see `readout_chars` in `bar.zig` - so the width
+        // padding is sized for - see `readout_chars` in `style.zig` - so the width
         // is a contract and not a coincidence of these cases.
         try std.testing.expect(text.len <= 5);
     }
+}
+
+test "loadText keeps a temperature beside the load's own percentage" {
+    var buffer: [12]u8 = undefined;
+
+    // One slash, and no room wasted around it: the pair's box is sized from the
+    // widest reading, not from this one.
+    try std.testing.expectEqualStrings("12%/45°", try items_system.loadText(0.12, 45.4, &buffer));
+
+    // A machine that answers no temperature keeps the reading the bar had before.
+    try std.testing.expectEqualStrings("100%", try items_system.loadText(1, null, &buffer));
+
+    // Both numbers at their widest still fit the box `style.load_readout_chars`
+    // reserves, which is that box's contract. It counts glyphs, and `°` is two
+    // bytes of UTF-8.
+    const widest = try items_system.loadText(1, 105, &buffer);
+    try std.testing.expect(try std.unicode.utf8CountCodepoints(widest) <= style.load_readout_chars);
 }
 
 test "the battery ring's colour steps with the level glyph's bands" {
@@ -1113,12 +1130,19 @@ test "log.Once reports only a changed message, remembering 160 bytes" {
 // reading the pair can print, and the two halves of the pair are told apart by
 // the reading's offset alone.
 test "graphSlot sizes the room from the widest reading of the pair" {
-    const load = style.Graph{ .name = "cpu", .color = theme.green, .readout = true, .top = true, .air = false };
+    const load = style.Graph{
+        .name = "cpu",
+        .color = theme.green,
+        .readout = true,
+        .top = true,
+        .air = false,
+        .chars = style.load_readout_chars,
+    };
     const top = style.graphSlot(load, false, true);
 
     try std.testing.expect(top.drawing);
-    try std.testing.expectEqual(@as(u32, 30), top.padding_right);
-    try std.testing.expectEqual(@as(u32, 28), top.badge.width);
+    try std.testing.expectEqual(@as(u32, 51), top.padding_right);
+    try std.testing.expectEqual(@as(u32, 49), top.badge.width);
     try std.testing.expectEqual(@as(i32, 0), top.badge.y_offset);
     try std.testing.expectEqual(@as(i32, 1), top.badge.x_offset);
     try std.testing.expectEqual(config.Anchors.bottom_left, top.badge.anchor);
