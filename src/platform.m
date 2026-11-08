@@ -1750,6 +1750,20 @@ bool kx_display_name(uint32_t display_id, char* out, size_t cap) {
   }
 }
 
+bool kx_display_name_at(size_t index, char* out, size_t cap) {
+  @autoreleasepool {
+    NSArray<NSScreen*>* screens = [NSScreen screens];
+    if (index >= screens.count) return false;
+
+    const char* name = screens[index].localizedName.UTF8String;
+    if (!name) return false;
+    const size_t length = strlen(name);
+    if (length + 1 > cap) return false;
+    memcpy(out, name, length + 1);
+    return true;
+  }
+}
+
 bool kx_has_onscreen_window(int32_t pid) {
   @autoreleasepool {
     /* On screen only, which is the whole question: a window hidden the way

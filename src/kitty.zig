@@ -168,37 +168,31 @@ pub fn toggleNamed(
     // nothing configured.
     if (!configured(io, name)) return error.NotConfigured;
 
-    var request_buffer: [max_request]u8 = undefined;
-    const move = if (target) |value| moveRequest(&request_buffer, value.name) else null;
-
     // A terminal that is running is either on screen - where a toggle hides it,
     // and a move first would be a window the user watches cross the desk - or
     // hidden, where the move belongs before the toggle that shows it. The window
     // server is the only one that knows which, and `ask` is where the socket that
     // says the terminal is up comes from.
     if (panelPid(io, name)) |pid| {
-        const brought = if (target) |wanted| blk: {
-            // A name that cannot be spelled into a request leaves the panel
-            // where it is, which is also where it is when it is not to be moved.
-            const request = move orelse break :blk true;
-            break :blk bringTo(io, arena, name, pid, wanted.id, request);
-        } else true;
-
-        if (brought) {
-            if (try ask(io, arena, name, toggle_request)) return;
-        } else {
-            // A panel that would not move is one whose process has a stale
-            // picture of the desk - kitty matches a panel's `output_name` against
-            // the monitors it saw at start-up, and answers ok for a name it does
-            // not have - so it is replaced by a process that has the current one.
-            closePanel(io, arena, name);
-        }
+        if (target) |wanted| {
+            if (bringTo(io, arena, name, pid, wanted)) {
+                if (try ask(io, arena, name, toggle_request)) return;
+            } else {
+                // The panel keeps its process even when it would not move: the
+                // command in its window is the user's session - a player mid-track
+                // - and ending the panel to repair its placement would cost that
+                // session to run the command again. So a hidden panel that did not
+                // reach the display is shown where the last move left it.
+                log.warn("quick access terminal {s} did not move; showing it rather than replacing it", .{name});
+                if (try ask(io, arena, name, show_request)) return;
+            }
+        } else if (try ask(io, arena, name, toggle_request)) return;
     }
 
     var terminal_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const terminal = terminalFile(&terminal_buffer, name) orelse return error.NotConfigured;
     try start(io, arena, name, .{ .config = terminal });
-    return showWhenReady(io, arena, name, move);
+    return showWhenReady(io, arena, name, target);
 }
 
 /// Show the named terminal without toggling it, answering whether one was there
@@ -211,52 +205,92 @@ pub fn showNamed(
     target: ?Display,
 ) !bool {
     const pid = panelPid(io, name) orelse return false;
-
-    if (target) |value| {
-        var request_buffer: [max_request]u8 = undefined;
-        if (moveRequest(&request_buffer, value.name)) |request| {
-            // No replacement here: this reveals a window that holds a run in
-            // progress, and a process that cannot be brought to another display
-            // is left where it is rather than ended.
-            _ = bringTo(io, arena, name, pid, value.id, request);
-        }
-    }
+    if (target) |wanted| _ = bringTo(io, arena, name, pid, wanted);
     return ask(io, arena, name, show_request);
 }
 
-/// Bring a hidden panel to the display of `display_id`, answering whether it got
-/// there.
+/// Bring a hidden panel to `display`, answering whether it got there.
 ///
 /// A panel that is on screen is left where it is: the toggle that follows hides
 /// it, and a move first would be a window the user watches cross the desk. A
 /// hidden one is moved by name and then looked for, because kitty answers ok for
-/// a name its start-up picture of the desk does not have and moves nothing - the
+/// a name its process's picture of the desk does not have and moves nothing - the
 /// window server, not the reply, is what says a panel changed display.
+///
+/// The name comes from this daemon's own picture of the desk, which no longer has
+/// to match the panel's: a display that was hotplugged, or two sharing a model
+/// whose "(1)" and "(2)" the system renumbered, leaves the two naming different
+/// monitors the same. So a move that does not land is followed by every name the
+/// system reports now - a permuted picture finds its display on the next one -
+/// before the panel is given up on. Nothing here ends a process: the window is the
+/// user's session, and a placement is not worth it.
 fn bringTo(
     io: std.Io,
     arena: std.mem.Allocator,
     name: []const u8,
     pid: i32,
-    display_id: u32,
-    request: []const u8,
+    display: Display,
 ) bool {
     if (platform.kx_has_onscreen_window(pid)) return true;
-    if (platform.kx_panel_display(pid) == display_id) return true;
+    if (platform.kx_panel_display(pid) == display.id) return true;
 
-    _ = ask(io, arena, name, request) catch false;
+    var request_buffer: [max_request]u8 = undefined;
+    const first = tryMove(io, arena, name, pid, display.id, &request_buffer, display.name);
+    if (first != Movement.ignored) return first == Movement.landed;
 
-    var waited: u32 = 0;
-    while (waited < timeouts.move_timeout_ms) : (waited += timeouts.start_poll_ms) {
-        if (platform.kx_panel_display(pid) == display_id) return true;
-        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(timeouts.start_poll_ms), .awake) catch {};
+    var name_buffer: [max_display_name]u8 = undefined;
+    var index: usize = 0;
+    while (platform.kx_display_name_at(index, &name_buffer, name_buffer.len)) : (index += 1) {
+        const candidate = std.mem.sliceTo(&name_buffer, 0);
+        if (std.mem.eql(u8, candidate, display.name)) continue;
+        const movement = tryMove(io, arena, name, pid, display.id, &request_buffer, candidate);
+        if (movement != Movement.ignored) return movement == Movement.landed;
     }
-
     return false;
 }
 
-/// Close a running terminal's window and wait for its socket to go: how a panel
-/// whose process is to be replaced is ended. A refusal, or a socket that lingers
-/// a moment too long, is the next start's problem rather than this call's.
+/// What one move attempt came to.
+const Movement = enum {
+    /// The window server has the panel on the display that was asked for.
+    landed,
+    /// The command was answered and the panel did not go there: kitty accepts an
+    /// `output_name` its picture of the desk does not have and then moves nothing,
+    /// so another name is worth trying.
+    ignored,
+    /// Nothing on the socket answered, so there is no panel to ask again.
+    unanswered,
+};
+
+/// Ask a panel to move to `display_id` by the name `display_name`, answering what
+/// came of it. A name that will not go into a request is not asked at all: what it
+/// spells would end the JSON string it is written into.
+fn tryMove(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    name: []const u8,
+    pid: i32,
+    display_id: u32,
+    buffer: *[max_request]u8,
+    display_name: []const u8,
+) Movement {
+    const request = moveRequest(buffer, display_name) orelse return .ignored;
+    const answered = ask(io, arena, name, request) catch false;
+
+    var waited: u32 = 0;
+    while (waited < timeouts.move_timeout_ms) : (waited += timeouts.start_poll_ms) {
+        if (platform.kx_panel_display(pid) == display_id) return .landed;
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(timeouts.start_poll_ms), .awake) catch {};
+    }
+
+    // A move that did not land is only worth another name when the panel answered:
+    // with nothing on the socket there is no second question to ask.
+    return if (answered) Movement.ignored else Movement.unanswered;
+}
+
+/// Close a running terminal's window and wait for its socket to go: how a
+/// terminal whose window is to print other text than the text it holds is
+/// replaced. A refusal, or a socket that lingers a moment too long, is the next
+/// start's problem rather than this call's.
 fn closePanel(io: std.Io, arena: std.mem.Allocator, name: []const u8) void {
     _ = ask(io, arena, name, close_request) catch |err| log.warn(
         "quick access terminal {s} did not close: {s}",
@@ -303,9 +337,11 @@ pub fn showText(io: std.Io, arena: std.mem.Allocator, name: []const u8, text: []
 /// and its window is drawn before it is seen, so the ask that follows is what
 /// shows it rather than a toggle: "is it up yet" cannot be answered by hiding it.
 ///
-/// `move` is asked again on every round rather than once, because a terminal that
-/// has bound its socket has not necessarily drawn its window, and the move has to
-/// land before the show does: it is a hidden window being given a display, and the
+/// `target` is the display it is to appear on, and the move is made on every
+/// round rather than once: a terminal that has bound its socket has not
+/// necessarily drawn its window, and a move the panel refuses for having none
+/// would be a window shown on the monitor it started on. The move has to land
+/// before the show does - it is a hidden window being given a display, and the
 /// show that follows is the first frame it is drawn in.
 ///
 /// A refusal is not the end of the wait: a terminal that has bound its socket but
@@ -316,11 +352,24 @@ fn showWhenReady(
     io: std.Io,
     arena: std.mem.Allocator,
     name: []const u8,
-    move: ?[]const u8,
+    target: ?Display,
 ) !void {
+    // Placed once, as soon as there is a window to place: a move the panel refuses
+    // for having none is not one to ask again, and a placement that could not be
+    // made is still a window the key asked for.
+    var placed = false;
     var waited: u32 = 0;
     while (waited < timeouts.terminal_timeout_ms) : (waited += timeouts.start_poll_ms) {
-        if (move) |request| _ = ask(io, arena, name, request) catch false;
+        if (!placed) {
+            if (target) |wanted| {
+                if (panelPid(io, name)) |pid| {
+                    if (platform.kx_panel_display(pid) > 0) {
+                        _ = bringTo(io, arena, name, pid, wanted);
+                        placed = true;
+                    }
+                }
+            }
+        }
         if (ask(io, arena, name, show_request) catch false) return;
         std.Io.sleep(
             io,

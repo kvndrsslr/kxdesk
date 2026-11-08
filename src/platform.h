@@ -331,6 +331,13 @@ bool kx_clipboard_set(const char* text);
 /// command that moves a panel to the monitor the user is at.
 bool kx_display_name(uint32_t display_id, char* out, size_t cap);
 
+/// Copy the name of the attached display at `index` of the system's own list into
+/// `out`, answering false when there are no more displays. The list is the one
+/// `kx_display_name` reads by id, so this is the way a caller that only has a
+/// display id can ask for every name a panel might take - the fallback of a move
+/// whose name did not land.
+bool kx_display_name_at(size_t index, char* out, size_t cap);
+
 /// Whether the process of this pid has a window on screen right now.
 ///
 /// A hidden window is not one: kitty takes a quick access terminal's panel off

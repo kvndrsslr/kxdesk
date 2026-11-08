@@ -145,6 +145,10 @@ pub extern "c" fn kx_space_signature(out: [*]u8, cap: usize) bool;
 /// false when no display of that id is attached or the name does not fit `out`.
 pub extern "c" fn kx_display_name(display_id: u32, out: [*]u8, cap: usize) bool;
 
+/// The name of the attached display at `index` of the system's list, answering
+/// false past the end: every name a panel's move could take.
+pub extern "c" fn kx_display_name_at(index: usize, out: [*]u8, cap: usize) bool;
+
 /// Whether that process has a window on screen right now: the state a quick
 /// access terminal's panel is shown or hidden in.
 pub extern "c" fn kx_has_onscreen_window(pid: i32) bool;
