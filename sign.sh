@@ -30,6 +30,13 @@ identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
 executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")
 inner="$bundle/Contents/MacOS/$executable"
 
+# A bundle already carrying the identity is left alone: a service restart signs
+# nothing, and a good signature is never taken away just to be written again.
+signature=$(codesign --display --verbose=4 "$bundle" 2>&1 || true)
+if printf '%s\n' "$signature" | grep -qx "Authority=$certificate"; then
+    exit 0
+fi
+
 if ! security find-certificate -c "$certificate" >/dev/null 2>&1; then
     work=$(mktemp -d)
     trap 'rm -rf "$work"' EXIT

@@ -33,18 +33,8 @@ fi
 git push
 brew upgrade --fetch-HEAD kxdesk
 
-# Re-sign what brew installed, with the local identity `sign.sh` keeps.
-#
-# The build runs inside Homebrew's sandbox, which denies the keychain, so the
-# signing `zig build` does there falls back to ad-hoc - and an ad-hoc signature's
-# identity is the binary's cdhash, which changes with every build. That is one
-# Accessibility grant lost per deploy: the entry stays in the list, switched on,
-# and authorizes nothing. Signing here, outside the sandbox, gives the bundle the
-# identity that survives it.
-installed=$(brew --prefix kxdesk)
-bash sign.sh "$installed/kxdesk.app"
-# The grabber's bundle carries the other grant - Input Monitoring, which the
-# seize needs - so it is signed the same way and for the same reason.
-bash sign.sh "$installed/kxdesk-grabber.app"
-
+# The restart runs the formula's service entry, which signs both bundles with
+# the local identity `sign.sh` keeps before it execs the daemon: the build's own
+# signature is ad-hoc inside Homebrew's sandbox, and an ad-hoc identity is the
+# binary's cdhash, one lost grant per deploy.
 brew services restart kxdesk
