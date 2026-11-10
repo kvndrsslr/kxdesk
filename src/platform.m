@@ -1152,8 +1152,9 @@ static bool kx_smc_opened = false;
 
 /// Connect to the SMC once; the connection lives as long as the process. A key's
 /// size and type never change either, so the round trip that asks for them is paid
-/// once per key: the lists below are fifteen keys, which is what bounds the cache.
-#define KX_SMC_KEY_CACHE 24
+/// once per key - a machine answers only its own generation's handful, and the
+/// keys it does not have are never asked for again either.
+#define KX_SMC_KEY_CACHE 96
 static struct {
   uint32_t key;
   /// Zero for a key this machine does not have, so it is not asked for again.
@@ -1270,17 +1271,41 @@ static bool kx_smc_bank(const char* const* keys, size_t count, size_t minimum,
   return true;
 }
 
-/// The M-series CPU core sensors, in the two halves the SMC scans: the `Tp0`
-/// set, then the one the alternate cycle fills. On this M4 Pro the halves
-/// alternate exactly, so whichever was just scanned is the one worth reading.
-static const char* const kx_cpu_bank_a[] = {"Tp01", "Tp05", "Tp09", "Tp0D",
-                                            "Tp0f"};
-static const char* const kx_cpu_bank_b[] = {"Tp1t", "Tp2D", "Tp2X"};
+/// The CPU core sensors, in the two halves the SMC scans: the performance cores,
+/// then the efficiency cores the alternate cycle fills. The key names move with
+/// the chip generation - `Tp` on the M1, M2 and M4, `Tf` and `Te` on the M3 - and
+/// a key this machine does not have is skipped without a read, so every
+/// generation's set is listed. A bank needs three readings because a half with
+/// fewer live sensors is a scan mid-cycle, not a reading.
+static const char* const kx_cpu_bank_a[] = {
+    // M1, M2 and M4 performance cores.
+    "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0f", "Tp0H", "Tp0L",
+    "Tp0P", "Tp0X", "Tp0b", "Tp0j",
+    // M3 performance cores.
+    "Tf04", "Tf09", "Tf0A", "Tf0B", "Tf0D", "Tf0E",
+    "Tf44", "Tf49", "Tf4A", "Tf4B", "Tf4D", "Tf4E",
+};
+static const char* const kx_cpu_bank_b[] = {
+    // M4's alternate scan half.
+    "Tp1t", "Tp2D", "Tp2X",
+    // M2 efficiency cores.
+    "Tp1h", "Tp1p", "Tp1l",
+    // M3 and M4 efficiency cores.
+    "Te05", "Te09", "Te0H", "Te0L", "Te0P", "Te0S",
+};
 
-/// The GPU's own sensors: the `Tg0D`/`Tg0P` pair the base M4 reports is absent
-/// on this chip, and these are the ones that answer.
-static const char* const kx_gpu_keys[] = {"Tg05", "Tg0X", "Tg0Y", "Tg0j",
-                                          "Tg0k", "Tg0z", "Tg1V"};
+/// The GPU's own sensors, again one set per generation: `Tg` on the M1, M2 and
+/// M4, `Tf` on the M3. Two live sensors are enough to read a die - the pairs
+/// differ - which is what lets a chip that reports only a diode and a proximity
+/// sensor through.
+static const char* const kx_gpu_keys[] = {
+    "Tg05", "Tg0D", "Tg0L", "Tg0P", "Tg0T", "Tg0U", "Tg0X", "Tg0Y",
+    "Tg0b", "Tg0d", "Tg0e", "Tg0f", "Tg0g", "Tg0j", "Tg0k", "Tg0v",
+    "Tg0y", "Tg0z", "Tg1U", "Tg1V", "Tg1Y", "Tg1b", "Tg1c", "Tg1g",
+    "Tg4b",
+    // M3 GPU sensors.
+    "Tf14", "Tf18", "Tf19", "Tf1A", "Tf24", "Tf28", "Tf29", "Tf2A",
+};
 
 bool kx_temperatures(double* cpu_celsius, double* gpu_celsius) {
   static double last_cpu = 0.0;
@@ -1288,6 +1313,8 @@ bool kx_temperatures(double* cpu_celsius, double* gpu_celsius) {
   static bool have_cpu = false;
   static bool have_gpu = false;
 
+  *cpu_celsius = NAN;
+  *gpu_celsius = NAN;
   if (!kx_smc_open()) return false;
 
   // A bank that came back as a placeholder this second is not a reading: the last
@@ -1310,16 +1337,18 @@ bool kx_temperatures(double* cpu_celsius, double* gpu_celsius) {
   }
 
   double gpu = 0.0;
-  if (kx_smc_bank(kx_gpu_keys, sizeof(kx_gpu_keys) / sizeof(kx_gpu_keys[0]), 3,
+  if (kx_smc_bank(kx_gpu_keys, sizeof(kx_gpu_keys) / sizeof(kx_gpu_keys[0]), 2,
                   &gpu)) {
     last_gpu = gpu;
     have_gpu = true;
   }
 
-  if (!have_cpu || !have_gpu) return false;
-  *cpu_celsius = last_cpu;
-  *gpu_celsius = last_gpu;
-  return true;
+  // One die answering is a reading: the other is written as NaN so the bar can
+  // leave its temperature out instead of losing both, which is what a chip whose
+  // family of keys this does not know used to cost.
+  *cpu_celsius = have_cpu ? last_cpu : NAN;
+  *gpu_celsius = have_gpu ? last_gpu : NAN;
+  return have_cpu || have_gpu;
 }
 
 /// The tap's ring: the IOProc thread appends mono samples of the machine's output

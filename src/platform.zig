@@ -81,6 +81,9 @@ pub extern "c" fn kx_clock(
 
 pub extern "c" fn kx_cpu_load() f64;
 pub extern "c" fn kx_gpu_load() f64;
+/// The two dies' temperatures in Celsius. A die this machine never answered is
+/// written as NaN, so one reading stays usable without the other; false when
+/// neither answered.
 pub extern "c" fn kx_temperatures(cpu_celsius: *f64, gpu_celsius: *f64) bool;
 
 /// Where the audio tap got to, in the order `src/platform.h` spells it. The tap

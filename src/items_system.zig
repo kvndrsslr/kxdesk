@@ -40,10 +40,11 @@ const Traffic = struct {
     sent: f64,
 };
 
-/// One tick's die temperatures, in degrees Celsius, for the load pair's readings.
+/// One tick's die temperatures, in degrees Celsius, for the load pair's readings;
+/// a die the machine never answered stays null.
 const Temperatures = struct {
-    cpu: f64,
-    gpu: f64,
+    cpu: ?f64,
+    gpu: ?f64,
 };
 
 /// Where a rate lands on the graph, as the fraction of its height the point
@@ -211,12 +212,16 @@ pub const Updater = struct {
 
         if (bar) |client| {
             // The dies' own sensors, when the machine answers them: the load
-            // pair carries them beside its percentages.
-            var cpu_celsius: f64 = 0;
-            var gpu_celsius: f64 = 0;
+            // pair carries them beside its percentages, one die at a time - a
+            // chip that reports only its GPU still shows that temperature.
+            var cpu_celsius: f64 = std.math.nan(f64);
+            var gpu_celsius: f64 = std.math.nan(f64);
             const temperatures: ?Temperatures =
                 if (platform.kx_temperatures(&cpu_celsius, &gpu_celsius))
-                    .{ .cpu = cpu_celsius, .gpu = gpu_celsius }
+                    .{
+                        .cpu = if (std.math.isFinite(cpu_celsius)) cpu_celsius else null,
+                        .gpu = if (std.math.isFinite(gpu_celsius)) gpu_celsius else null,
+                    }
                 else
                     null;
 
