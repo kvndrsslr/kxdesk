@@ -629,6 +629,12 @@ fn runDaemon(init: std.process.Init) !void {
         hotkey.serve() catch |err| {
             log.warn("hotkey engine stopped: {s}", .{@errorName(err)});
         };
+        // The engine's run loop only ends with the engine, and its tap belongs to
+        // this thread: a daemon that keeps serving the bar with the bindings gone
+        // cannot bring them back. Exiting is what the engine's own failure path
+        // asks for - launchd starts the process over, engine included.
+        log.warn("bindings stopped with the engine; exiting so the service restarts", .{});
+        std.process.exit(0);
     }
     platform.kx_run_loop_run();
     server.join();

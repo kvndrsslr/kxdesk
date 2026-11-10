@@ -223,8 +223,10 @@ pub fn init(gpa: std.mem.Allocator, deps: Deps) !void {
 /// its keyboard watch to the main run loop, and `NSApplicationLoad` is a
 /// main-thread call.
 ///
-/// Returns only when the loop does, which takes a stop request; the caller treats
-/// it as the end of the bindings and keeps serving the bar.
+/// Returns only when the loop does, which takes a stop request - the grabber's
+/// socket going away, or a reload whose tap could not be built; the caller treats
+/// that as the end of the bindings and starts the process over so they can come
+/// back.
 pub fn serve() !void {
     const self = host orelse return error.NotInitialised;
 
