@@ -596,6 +596,16 @@ fn runDaemon(init: std.process.Init) !void {
         break :blk true;
     };
 
+    // A tap built before Input Monitoring was granted is created and then sees no
+    // key events at all - no error, no log line of its own - so say which command
+    // asks for the grant while the rest of the daemon is fine.
+    if (bindings and platform.inputMonitoring() != .granted) {
+        log.warn(
+            "input monitoring {s}: key events may not reach the tap; run `kxdesk hotkey grant`",
+            .{@tagName(platform.inputMonitoring())},
+        );
+    }
+
     // The receive loop never returns: the process ends when launchd or a signal
     // ends it, not when SketchyBar does. Every handler it runs was already
     // thread-agnostic - commands run on their own workers - so a thread of its own

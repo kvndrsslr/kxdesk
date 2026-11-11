@@ -356,12 +356,28 @@ pub fn status(arena: std.mem.Allocator) ![]const u8 {
     // The grant is asked separately from the run loop's own view: an engine that
     // never got its tap and one whose grant was given to another build look the
     // same from here, and they are fixed differently.
-    return arena.print("hotkey engine: {s} accessibility={s} handled={d} config={s}", .{
-        if (self.running.load(.monotonic)) "running" else "stopped",
-        if (platform.kx_ax_trusted()) "granted" else "denied",
-        self.handled.load(.monotonic),
-        self.config,
-    });
+    return arena.print(
+        "hotkey engine: {s} accessibility={s} input_monitoring={s} handled={d} config={s}",
+        .{
+            if (self.running.load(.monotonic)) "running" else "stopped",
+            if (platform.kx_ax_trusted()) "granted" else "denied",
+            @tagName(platform.inputMonitoring()),
+            self.handled.load(.monotonic),
+            self.config,
+        },
+    );
+}
+
+/// Ask macOS for Input Monitoring, the grant that lets key events reach the tap:
+/// without it the tap is built and its callback never sees a key. The system's
+/// dialog blocks this call until it is answered, and a tap built before the grant
+/// was given is not the tap a restart would build - hence the restart in the
+/// answer.
+pub fn grant() []const u8 {
+    if (platform.kx_request_input_monitoring()) {
+        return "input monitoring: granted - restart the daemon to rebuild the tap: brew services restart kxdesk";
+    }
+    return "input monitoring: still denied - enable kxdesk in System Settings > Privacy & Security > Input Monitoring, then: brew services restart kxdesk";
 }
 
 /// Re-read the bindings, for `kxdesk hotkey reload`.

@@ -137,6 +137,25 @@ pub extern "c" fn kx_wm_events_start(handler: WmHandler) bool;
 /// prompt when it is missing; answers whether it is held now.
 pub extern "c" fn kx_ax_request() bool;
 
+/// Input Monitoring, the second grant a tap needs before key events reach it.
+pub const InputMonitoring = enum(u8) { granted, denied, unknown };
+
+/// What macOS answers for this process's Input Monitoring grant; `unknown` means
+/// the user has never been asked.
+pub fn inputMonitoring() InputMonitoring {
+    return switch (kx_input_monitoring()) {
+        0 => .granted,
+        1 => .denied,
+        else => .unknown,
+    };
+}
+
+extern "c" fn kx_input_monitoring() u8;
+
+/// Ask for that grant. The system shows its own dialog and this blocks until it
+/// is answered, so it is called from a command and never on a startup path.
+pub extern "c" fn kx_request_input_monitoring() bool;
+
 /// Spin this thread's main run loop forever: the loop the observers deliver on.
 pub extern "c" fn kx_run_loop_run() void;
 

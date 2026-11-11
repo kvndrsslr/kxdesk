@@ -189,6 +189,10 @@ pub const all = [_]Command{
                 .name = "reload",
                 .summary = "re-read the binding config, as saving it does",
             },
+            .{
+                .name = "grant",
+                .summary = "ask macOS for the Input Monitoring grant the tap needs",
+            },
         },
         .run = hotkeyCommand,
     },
@@ -682,6 +686,7 @@ fn hotkeyCommand(context: *Context, args: []const []const u8) ![]const u8 {
         try hotkey.reload();
         return "reloaded";
     }
+    if (std.mem.eql(u8, verb, "grant")) return hotkey.grant();
     return error.UnknownArgument;
 }
 

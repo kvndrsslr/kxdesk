@@ -6,6 +6,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
 #include <IOKit/IOKitLib.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 #include <IOKit/ps/IOPSKeys.h>
 #include <IOKit/ps/IOPowerSources.h>
 #include <SystemConfiguration/SystemConfiguration.h>
@@ -588,6 +589,26 @@ bool kx_ax_request(void) {
   bool granted = AXIsProcessTrustedWithOptions(options);
   CFRelease(options);
   return granted;
+}
+
+/// Input Monitoring: the grant, on top of Accessibility, that lets key events
+/// reach an event tap. TCC's own order - granted, denied, never asked - as an int
+/// so the Zig side can name it.
+int kx_input_monitoring(void) {
+  switch (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)) {
+    case kIOHIDAccessTypeGranted:
+      return 0;
+    case kIOHIDAccessTypeDenied:
+      return 1;
+    default:
+      return 2;
+  }
+}
+
+bool kx_request_input_monitoring(void) {
+  /* The system's own dialog, blocking until it is answered - which is why the
+     daemon asks from a command and never on its startup path. */
+  return IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
 }
 
 void kx_run_loop_run(void) {

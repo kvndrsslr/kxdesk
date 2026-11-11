@@ -73,10 +73,12 @@ The bindings live in `~/.config/kxdesk/skhdrc`, in skhd's grammar, and this daem
 runs them itself: upstream [skhd.zig](https://github.com/jackielii/skhd.zig) is
 compiled into the binary (`src/hotkey.zig` hosts it), so its event tap owns the
 keyboard, its parser reads the config, and a key press runs a command with no
-process in between. There is no root service and no driver extension — one
-Accessibility grant for `kxdesk.app` is the whole setup — and stopping the daemon
-gives the keyboard back, because an event tap dies with the process that
-installed it.
+process in between. There is no root service and no driver extension — two grants
+for `kxdesk.app`, Accessibility and Input Monitoring, are the whole setup — and
+stopping the daemon gives the keyboard back, because an event tap dies with the
+process that installed it. `kxdesk hotkey grant` asks for the Input Monitoring
+half; `kxdesk hotkey status` says what each grant is, because a tap built without
+it is created and then never sees a key.
 
 An action is a shell command, as in skhd. The one addition is `! ` at the start:
 the rest of the line is a `kxdesk` argv line with the binary name left off, which
@@ -119,13 +121,15 @@ sudo kxdesk grabber install     # the driver extension, the grabber daemon, then
 kxdesk grabber status           # both halves, the grant, and the grabber's build
 ```
 
-The daemon needs one more grant than the rest of kxdesk: **Input Monitoring**, for
-`kxdesk-grabber` in System Settings > Privacy & Security. Seizing a keyboard is what
-tap-hold costs, and macOS refuses it to an unapproved process with
-`kIOReturnNotPermitted` — which is exactly what a root LaunchDaemon cannot ask for,
-because the approval dialog needs a session to appear in. That is also why the
-grabber ships as a `.app`: the pane wants an app to add, and the bundle identifier
-plus the signing certificate are what make the grant survive an upgrade.
+Tap-hold adds a second Input Monitoring grant, this one for `kxdesk-grabber` in
+System Settings > Privacy & Security. Seizing a keyboard is what tap-hold costs,
+and macOS refuses it to an unapproved process with `kIOReturnNotPermitted` — which
+is exactly what a root LaunchDaemon cannot ask for, because the approval dialog
+needs a session to appear in. That is also why the grabber ships as a `.app`: the
+pane wants an app to add, and the bundle identifier plus the signing certificate
+are what make the grant survive an upgrade. A grant is anchored to the code
+signature it was given to, so an entry that predates the bundle's current signature
+authorizes nothing — remove it from the list and add the app again.
 
 An install ends with that grant, so it does not end in instructions: `install` opens
 the Input Monitoring pane and a panel beside it, the app on the panel is the thing to
