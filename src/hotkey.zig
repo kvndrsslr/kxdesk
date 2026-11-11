@@ -377,7 +377,7 @@ pub fn grant() []const u8 {
     if (platform.kx_request_input_monitoring()) {
         return "input monitoring: granted - restart the daemon to rebuild the tap: brew services restart kxdesk";
     }
-    return "input monitoring: still denied - enable kxdesk in System Settings > Privacy & Security > Input Monitoring, then: brew services restart kxdesk";
+    return "input monitoring: still denied - a row left by an earlier build keeps the dialog away: remove kxdesk from System Settings > Privacy & Security > Input Monitoring, add /opt/homebrew/opt/kxdesk/kxdesk.app with +, then: brew services restart kxdesk";
 }
 
 /// Re-read the bindings, for `kxdesk hotkey reload`.
