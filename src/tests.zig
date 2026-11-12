@@ -26,6 +26,7 @@ const spectrum = @import("spectrum.zig");
 const store = @import("store.zig");
 const style = @import("style.zig");
 const theme = @import("theme.zig");
+const yabai = @import("yabai.zig");
 const yabai_ops = @import("yabai_ops.zig");
 const zen = @import("zen.zig");
 
@@ -827,6 +828,29 @@ test "a CLI word names its enum tag whichever way it is spelled" {
     try std.testing.expect(yabai_ops.wordToEnum(yabai_ops.WindowToggle, "sideways") == null);
     try std.testing.expect(yabai_ops.wordToEnum(yabai_ops.Direction, "south-west") == null);
     try std.testing.expect(yabai_ops.wordToEnum(yabai_ops.WindowToggle, "exposed") == null);
+}
+
+// A window switch walks yabai's window list, and an application's auxiliary
+// windows are in it: a help tag in flight, a sheet, an invisible
+// `AXSystemDialog` panel, and the roleless entry yabai keeps while a window is
+// replaced - the one it refuses to focus. Only the three subroles yabai's own
+// `window_is_real` accepts, under the `AXWindow` role, are windows to land on.
+test "only a standard, floating or dialog AXWindow is a real window" {
+    const real = [_][]const u8{ "AXStandardWindow", "AXFloatingWindow", "AXDialog" };
+    for (real) |subrole| {
+        try std.testing.expect(yabai.isRealWindow(.{ .role = "AXWindow", .subrole = subrole }));
+    }
+
+    const auxiliary = [_]struct { role: []const u8, subrole: []const u8 }{
+        .{ .role = "AXWindow", .subrole = "AXSystemDialog" },
+        .{ .role = "AXWindow", .subrole = "AXUnknown" },
+        .{ .role = "AXHelpTag", .subrole = "" },
+        .{ .role = "AXSheet", .subrole = "AXStandardWindow" },
+        .{ .role = "", .subrole = "" },
+    };
+    for (auxiliary) |window| {
+        try std.testing.expect(!yabai.isRealWindow(.{ .role = window.role, .subrole = window.subrole }));
+    }
 }
 
 test "the wm verb table and the registry's subcommands are the same list" {

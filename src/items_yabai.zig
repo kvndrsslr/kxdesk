@@ -337,19 +337,12 @@ const DisplayMap = struct {
     }
 };
 
-/// Whether the bar lists a window at all: one yabai itself calls real - a
-/// standard window, a floating window or a dialog - and not minimized or
-/// hidden. A dictation helper's invisible panels are `AXSystemDialog`, so they
-/// are left out whatever level they stack at, while a floating or always-on-top
-/// window the user can work in still counts.
+/// Whether the bar lists a window at all: one yabai itself calls real and not
+/// minimized or hidden. A dictation helper's invisible panels are
+/// `AXSystemDialog`, so they are left out whatever level they stack at, while a
+/// floating or always-on-top window the user can work in still counts.
 fn drawn(window: yabai.Window) bool {
-    return std.mem.eql(u8, window.role, "AXWindow") and realSubrole(window.subrole) and !window.@"is-minimized" and !window.@"is-hidden";
-}
-
-/// The subroles of yabai's `window_is_real`: `AXSystemDialog` and `AXUnknown`
-/// are not windows the user works in.
-fn realSubrole(subrole: []const u8) bool {
-    return std.mem.eql(u8, subrole, "AXStandardWindow") or std.mem.eql(u8, subrole, "AXFloatingWindow") or std.mem.eql(u8, subrole, "AXDialog");
+    return yabai.isRealWindow(window) and !window.@"is-minimized" and !window.@"is-hidden";
 }
 
 /// Derived per-space state: which windows are on which space and what each space

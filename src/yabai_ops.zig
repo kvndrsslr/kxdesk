@@ -220,9 +220,11 @@ pub fn switchWorkspace(context: *Context, args: []const []const u8) anyerror![]c
 /// target - and a floating window holding focus has no node at all. The order
 /// here is the space's window list sorted by window id, which is creation order
 /// and does not shift as focus moves. Minimized windows are left out, as yabai
-/// leaves them out of the tree by untiling them; the focused window is the last
-/// candidate, so a space with one window re-raises it; a space with nothing
-/// focusable does nothing and still succeeds.
+/// leaves them out of the tree by untiling them; so is anything not a real
+/// window (`yabai.isRealWindow`), because yabai lists an auxiliary or roleless
+/// window among the space's own and refuses to focus it. The focused window is
+/// the last candidate, so a space with one window re-raises it; a space with
+/// nothing focusable does nothing and still succeeds.
 pub fn cycleSpaceWindows(context: *Context, args: []const []const u8) anyerror![]const u8 {
     const arena = context.arena;
     const reverse = hasFlag(args, "--reverse");
@@ -254,7 +256,7 @@ pub fn cycleSpaceWindows(context: *Context, args: []const []const u8) anyerror![
             offset - 1;
 
         const window = windows[position];
-        if (window.@"is-minimized") continue;
+        if (!yabai.isRealWindow(window) or window.@"is-minimized") continue;
         if (focusWindow(arena, context.yabai, window.id)) return "";
     }
     return "";
@@ -662,9 +664,12 @@ fn windowFocusRecent(context: *Context) !void {
 /// Focus the next window of the focused window's application.
 ///
 /// The focused window is the first entry of yabai's window list and the one
-/// wanted is the next entry carrying the same application. An application with
-/// one window has no next entry, which is reported as `error.YabaiFailed` for the
-/// caller to log and drop.
+/// wanted is the next entry carrying the same application that is a real window
+/// - yabai lists an application's auxiliary and roleless windows among its own
+/// (a help tag in flight, the window it keeps while replacing one), and an
+/// entry it will not focus must not be taken for the next window. An
+/// application with one real window has no next entry, which is reported as
+/// `error.YabaiFailed` for the caller to log and drop.
 fn windowFocusSameApp(context: *Context) !void {
     const arena = context.arena;
     const windows = try context.yabai.windows(arena);
@@ -673,6 +678,7 @@ fn windowFocusSameApp(context: *Context) !void {
     const current = windows[0].app;
     for (windows[1..]) |window| {
         if (!std.mem.eql(u8, window.app, current)) continue;
+        if (!yabai.isRealWindow(window)) continue;
         if (!focusWindow(arena, context.yabai, window.id)) return error.YabaiFailed;
         return;
     }

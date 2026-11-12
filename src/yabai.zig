@@ -67,6 +67,20 @@ pub const Window = struct {
     @"has-fullscreen-zoom": bool = false,
 };
 
+/// Whether the entry is a window the user works in, which is yabai's own
+/// `window_is_real`: role `AXWindow` with a standard, floating or dialog
+/// subrole. An auxiliary role - a help tag, a sheet, `AXSystemDialog`,
+/// `AXUnknown` - is not one, nor is an entry with an empty role, which is a
+/// window yabai holds without an accessibility element behind it: focusing
+/// that one is refused, so a switch that walks into it is a switch that does
+/// nothing.
+pub fn isRealWindow(window: Window) bool {
+    return std.mem.eql(u8, window.role, "AXWindow") and
+        (std.mem.eql(u8, window.subrole, "AXStandardWindow") or
+            std.mem.eql(u8, window.subrole, "AXFloatingWindow") or
+            std.mem.eql(u8, window.subrole, "AXDialog"));
+}
+
 pub const Error = error{
     YabaiNotFound,
     YabaiFailed,
