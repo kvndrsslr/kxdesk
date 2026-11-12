@@ -8,7 +8,7 @@ Swiss-army knife for desktop productivity on macOS, in Zig. One daemon serves Sk
 
 Single binary, single long-lived process (`src/main.zig:Daemon`).
 
-- Transport: `src/platform.m` (`kx_server_serve`) blocks main thread → `onBlock` in `src/main.zig`. Two bootstrap names, one receive port: `org.kdressler.kxdesk` (bar item events via `mach_helper=`) and `org.kdressler.kxdesk.control` (CLI clients).
+- Transport: `src/platform.m` (`kx_server_serve`) blocks main thread → `onBlock` in `src/main.zig`. Two bootstrap names, one receive port: `org.kdressler.kxdesk` (bar item events via `mach_helper=`) and `org.kdressler.kxdesk.control` (CLI clients). `KXDESK_BOOTSTRAP` replaces the base both derive from (`src/bootstrap.zig`), which is how a checkout daemon runs beside the service: a daemon started that way is a probe and leaves the live bar, the key bindings and the grabber to the installed one.
 - Framing: bar events are NUL-separated `key\0value\0…`; control requests are `CMD\0<verb>\0<args>…` (`src/control.zig`). Replies `OK\0<payload>` / `ERR\0<message>` to request reply port; bar sends are one-way.
 - Routing: `isRequest` → control path, else `src/dispatch.zig:Dispatcher` looks up `NAME`/`SENDER` (names mirror `mach_helper` items declared in `src/bar.zig`). No forks on this path; clicks are events.
 - Commands: run as worker tasks on `commands.Context` (own arena freed on return, own `sb.Client`, shared `yabai.Client`, `pomodoro.Timer`, `store.Store`). One `background.Slot` per command in `Daemon.slots` — never run twice, never block loop.
@@ -36,7 +36,8 @@ zig build                  # ReleaseFast default → zig-out/bin/kxdesk
 zig build -Doptimize=Debug # debugging
 zig build test             # the unit tests in src/tests.zig
 ./zig-out/bin/kxdesk daemon
-brew services stop kxdesk  # REQUIRED before checkout daemon (bootstrap names exclusive)
+KXDESK_BOOTSTRAP=org.kdressler.kxdesk.probe ./zig-out/bin/kxdesk daemon  # probe, beside the service
+brew services stop kxdesk  # only for a daemon on the installed bootstrap names
 kxdesk --help              # all commands (works with no daemon)
 kxdesk help <command>      # one command in full
 kxdesk <command> --help    # same, without running
@@ -97,5 +98,5 @@ retires yabai provisioning, which is where the sweep of the retired signals runs
 Tests live in `src/tests.zig` and run with `zig build test`: the `test` step in `build.zig` compiles that file alone, so a module's tests are reached only once it is imported there. There is still no CI, no coverage and no fixtures.
 
 - Verify by building + exercising the live binary: `zig build`, then `kxdesk --help`, `kxdesk <command> --help`, `kxdesk state …`, or a checkout `daemon` (after stopping the service).
-- `KXDESK_STATE` (`src/store.zig:51`) is the intended sandbox seam for probes/tests, and the suite sets it to keep off the real store.
+- `KXDESK_STATE` (`src/store.zig:51`) is the intended sandbox seam for probes/tests, and the suite sets it to keep off the real store. `KXDESK_BOOTSTRAP` is the other half: with both set, a checkout daemon and its client run beside the service and cannot touch the live bar, bindings or grabber.
 - New tests only for genuinely uncertain edges, per repo note that platform-free modules are designed testable (`src/tests.zig:1-5`); Fish completions intentionally unsupported (ships untested otherwise).

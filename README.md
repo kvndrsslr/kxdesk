@@ -425,8 +425,18 @@ zig build                  # fast (optimized), into zig-out/bin/kxdesk
 The daemon registers two bootstrap names on one receive port: `org.kdressler.kxdesk`
 for SketchyBar item events (the value items carry as `mach_helper`) and
 `org.kdressler.kxdesk.control` for `kxdesk <command>` clients. Only one daemon
-can hold them, so stop the agent (`brew services stop kxdesk`) before running a
-checkout's `daemon`.
+can hold a pair, so a checkout daemon run beside the installed one is given its
+own base:
+
+```sh
+KXDESK_BOOTSTRAP=org.kdressler.kxdesk.probe KXDESK_STATE=/tmp/probe.db \
+  ./zig-out/bin/kxdesk daemon
+KXDESK_BOOTSTRAP=org.kdressler.kxdesk.probe ./zig-out/bin/kxdesk status
+```
+
+A daemon started that way is a probe: it serves its control channel and leaves
+the live bar, the key bindings and the grabber to the installed daemon. Running
+one on the installed names still needs `brew services stop kxdesk` first.
 
 Three provider tokens are read from the state database rather than the
 environment, since the daemon runs under launchd:

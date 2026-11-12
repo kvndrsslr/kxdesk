@@ -12,9 +12,9 @@
 
 const std = @import("std");
 
+const bootstrap = @import("bootstrap.zig");
 const exec = @import("exec.zig");
 const platform = @import("platform.zig");
-const sb = @import("sb.zig");
 const timeouts = @import("timeouts.zig");
 
 /// First token of a control request.
@@ -195,7 +195,7 @@ pub fn query(
     args: []const []const u8,
     out: []u8,
 ) ?[]const u8 {
-    const port = platform.kx_bootstrap_lookup(sb.control_service);
+    const port = platform.kx_bootstrap_lookup(bootstrap.control);
     if (port == 0) return null;
     defer platform.kx_port_release(port);
 
@@ -235,7 +235,7 @@ pub fn postEvent(pairs: []const []const u8) bool {
     var buffer: [max_event]u8 = undefined;
     const framed = frameEvent(&buffer, pairs) orelse return false;
 
-    const port = platform.kx_bootstrap_lookup(sb.control_service);
+    const port = platform.kx_bootstrap_lookup(bootstrap.control);
     if (port == 0) return false;
     defer platform.kx_port_release(port);
 
@@ -309,7 +309,7 @@ fn frameRequest(gpa: std.mem.Allocator, verb: []const u8, args: []const []const 
 /// Resolve the daemon's control service, asking launchd to start the agent when
 /// nothing is listening.
 fn connect(gpa: std.mem.Allocator, io: std.Io) !u32 {
-    const existing = platform.kx_bootstrap_lookup(sb.control_service);
+    const existing = platform.kx_bootstrap_lookup(bootstrap.control);
     if (existing != 0) return existing;
 
     // Nothing is answering. launchd owns the agent, so it is asked to start it -
@@ -320,7 +320,7 @@ fn connect(gpa: std.mem.Allocator, io: std.Io) !u32 {
     var waited: u32 = 0;
     while (waited < timeouts.start_timeout_ms) : (waited += timeouts.start_poll_ms) {
         std.Io.sleep(io, std.Io.Duration.fromMilliseconds(timeouts.start_poll_ms), .awake) catch {};
-        const port = platform.kx_bootstrap_lookup(sb.control_service);
+        const port = platform.kx_bootstrap_lookup(bootstrap.control);
         if (port != 0) return port;
     }
 

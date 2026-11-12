@@ -7,6 +7,7 @@
 
 const std = @import("std");
 
+const bootstrap = @import("bootstrap.zig");
 const cli = @import("cli.zig");
 const hotkey = @import("hotkey.zig");
 const config = @import("config.zig");
@@ -31,6 +32,7 @@ const yabai_ops = @import("yabai_ops.zig");
 const zen = @import("zen.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 test "store get/set roundtrip" {
     const io = std.testing.io;
@@ -802,6 +804,41 @@ test "app open takes the applications the bindings open, and nothing else" {
 
     const chrome = (try cli.validate(arena, std.testing.io, app, &.{ "open", "chrome" })).?;
     try std.testing.expect(std.mem.indexOf(u8, chrome, "<app> is not one of: code, kitty, browser") != null);
+}
+
+// `KXDESK_BOOTSTRAP` is what lets a checkout daemon and the client talking to it
+// run beside the installed service: one base, both names derived from it. Empty
+// or past what the buffers hold, the installed names stay - a truncated name is
+// one nothing answers.
+test "an environment base renames both bootstrap services" {
+    defer {
+        _ = unsetenv("KXDESK_BOOTSTRAP");
+        bootstrap.resolve();
+    }
+
+    bootstrap.resolve();
+    try std.testing.expectEqualStrings("org.kdressler.kxdesk", bootstrap.event);
+    try std.testing.expectEqualStrings("org.kdressler.kxdesk.control", bootstrap.control);
+    try std.testing.expect(!bootstrap.overridden);
+
+    _ = setenv("KXDESK_BOOTSTRAP", "org.kdressler.kxdesk.probe", 1);
+    bootstrap.resolve();
+    try std.testing.expectEqualStrings("org.kdressler.kxdesk.probe", bootstrap.event);
+    try std.testing.expectEqualStrings("org.kdressler.kxdesk.probe.control", bootstrap.control);
+    try std.testing.expect(bootstrap.overridden);
+
+    // 201 bytes, one past the longest base both names share a buffer with.
+    var long: [201:0]u8 = @splat('x');
+    _ = setenv("KXDESK_BOOTSTRAP", &long, 1);
+    bootstrap.resolve();
+    try std.testing.expectEqualStrings("org.kdressler.kxdesk", bootstrap.event);
+    try std.testing.expectEqualStrings("org.kdressler.kxdesk.control", bootstrap.control);
+    try std.testing.expect(!bootstrap.overridden);
+
+    _ = setenv("KXDESK_BOOTSTRAP", "", 1);
+    bootstrap.resolve();
+    try std.testing.expectEqualStrings("org.kdressler.kxdesk.control", bootstrap.control);
+    try std.testing.expect(!bootstrap.overridden);
 }
 
 test "a CLI word names its enum tag whichever way it is spelled" {

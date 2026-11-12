@@ -12,10 +12,6 @@ const timeouts = @import("timeouts.zig");
 /// Bootstrap service name of the running SketchyBar instance.
 pub const sketchybar_service: [:0]const u8 = "git.felix.sketchybar";
 
-/// Bootstrap service the kxdesk daemon publishes its command channel under;
-/// `main.event_service` is another name for the same receive port.
-pub const control_service: [:0]const u8 = "org.kdressler.kxdesk.control";
-
 pub const Error = error{
     /// The bootstrap service this client was built for is not registered.
     SketchyBarUnavailable,

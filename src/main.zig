@@ -14,6 +14,7 @@ const std = @import("std");
 
 const app_icons = @import("app_icons.zig");
 const background = @import("background.zig");
+const bootstrap = @import("bootstrap.zig");
 const build_options = @import("build_options");
 const bar_config = @import("bar.zig");
 const cli = @import("cli.zig");
@@ -35,11 +36,6 @@ const server_mode = @import("server_mode.zig");
 const state = @import("store.zig");
 const sb = @import("sb.zig");
 const yabai = @import("yabai.zig");
-
-/// Bootstrap name every `mach_helper` property refers to; SketchyBar resolves it
-/// while parsing that property, so it must be registered before any item points
-/// at it.
-pub const event_service: [:0]const u8 = "org.kdressler.kxdesk";
 
 /// The serve loop is a C callback with no context pointer, so the daemon is
 /// reached through this single live reference.
@@ -77,7 +73,7 @@ const Daemon = struct {
             .pomodoro = self.pomodoro,
             .store = self.store,
             .bar_present = &self.present,
-            .event_service = event_service,
+            .event_service = bootstrap.event,
             .started = self.started,
         };
     }
@@ -285,6 +281,11 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
 
+    // Before anything registers or looks a name up: `KXDESK_BOOTSTRAP` is the
+    // pair a probe daemon and the client talking to it use, instead of the
+    // installed service's.
+    bootstrap.resolve();
+
     if (arguments.len < 2) {
         // No command at all: say what there is, on stderr, the way a usage error
         // does.
@@ -490,14 +491,24 @@ fn runCompletions(init: std.process.Init, args: []const []const u8) !void {
 /// The daemon: register the service, then serve until the process is killed.
 fn runDaemon(init: std.process.Init) !void {
     const gpa = init.gpa;
+    // A daemon started on another bootstrap base is a probe, and the machine it
+    // runs on already has the installed daemon: the bar's items, the key
+    // bindings and the grabber are that one's, and a probe that touched them
+    // would point the live bar at a name that dies with it and run every binding
+    // twice. Probes serve their control channel and nothing else.
+    const probe = bootstrap.overridden;
 
     // The event service has to exist before any item is told to use it, and the
     // control name before a client comes looking for one.
-    const server_port = platform.kx_server_register(event_service);
+    const server_port = platform.kx_server_register(bootstrap.event);
     if (server_port == 0) return error.BootstrapRegistrationFailed;
-    if (!platform.kx_server_publish(server_port, sb.control_service)) {
+    if (!platform.kx_server_publish(server_port, bootstrap.control)) {
         return error.BootstrapRegistrationFailed;
     }
+    if (probe) log.warn(
+        "probe daemon: {s}; the bar, the bindings and the grabber stay the installed daemon's",
+        .{bootstrap.control},
+    );
 
     var bar = sb.Client.init(gpa, sb.sketchybar_service);
     defer bar.deinit();
@@ -543,7 +554,7 @@ fn runDaemon(init: std.process.Init) !void {
             .bar = &bar,
             .io = init.io,
             .gpa = gpa,
-            .helper = event_service,
+            .helper = bootstrap.event,
             .pomodoro = &timer,
             .store = &store,
             .yabai_items = items_yabai.Updater.init(gpa, &yabai_client, &bar, &scratch, &icons),
@@ -560,34 +571,37 @@ fn runDaemon(init: std.process.Init) !void {
 
     // Applied here as well as by the `apply` command: launchd restarts this agent
     // on its own, and a restarted daemon listens on a new port, so every item's
-    // `mach_helper` has to be pointed at it again.
-    if (bar.connect()) |_| {
-        daemon.present.store(true, .monotonic);
-        bar_config.apply(&bar, init.io, .{ .helper = event_service, .store = &store }) catch |err| {
-            log.warn("startup apply failed: {s}", .{@errorName(err)});
-        };
-        // A freshly built bar knows nothing about the state the last one was in.
-        {
-            var restore_state_arena = std.heap.ArenaAllocator.init(gpa);
-            defer restore_state_arena.deinit();
-            var command_context = daemon.commandContext(restore_state_arena.allocator(), &bar);
-            commands.restoreState(&command_context);
-        }
-    } else |_| {}
+    // `mach_helper` has to be pointed at it again. Not from a probe: its name
+    // dies with the process, and the live bar would send its clicks into nothing.
+    if (!probe) {
+        if (bar.connect()) |_| {
+            daemon.present.store(true, .monotonic);
+            bar_config.apply(&bar, init.io, .{ .helper = bootstrap.event, .store = &store }) catch |err| {
+                log.warn("startup apply failed: {s}", .{@errorName(err)});
+            };
+            // A freshly built bar knows nothing about the state the last one was in.
+            {
+                var restore_state_arena = std.heap.ArenaAllocator.init(gpa);
+                defer restore_state_arena.deinit();
+                var command_context = daemon.commandContext(restore_state_arena.allocator(), &bar);
+                commands.restoreState(&command_context);
+            }
+        } else |_| {}
+    }
 
     // The key bindings, set up last and in two parts, because the engine's tap has
     // to be on this thread while the receive loop needs one of its own: the engine
     // is parsed and its hooks installed here, the loop is handed to a thread, and
     // this thread then runs the engine's run loop. Losing the bindings costs them
     // and nothing else, so a failure is said once and the bar keeps being served.
-    const bindings = blk: {
+    const bindings = if (probe) false else blk: {
         hotkey.init(gpa, .{
             .io = init.io,
             .store = &store,
             .yabai_client = &yabai_client,
             .pomodoro = &timer,
             .bar_present = &daemon.present,
-            .event_service = event_service,
+            .event_service = bootstrap.event,
             .started = daemon.started,
         }) catch |err| {
             log.warn("hotkey engine not started: {s}", .{@errorName(err)});
@@ -616,19 +630,26 @@ fn runDaemon(init: std.process.Init) !void {
     };
 
     // The grabber the bindings need, checked and driven to green off this thread:
-    // the one below it becomes the engine's run loop and never comes back.
-    if (std.Thread.spawn(.{}, convergeGrabber, .{&daemon})) |thread| {
-        thread.detach();
-    } else |err| {
-        log.warn("the grabber check not started: {s}", .{@errorName(err)});
+    // the one below it becomes the engine's run loop and never comes back. A probe
+    // never touches it - asking the installed daemon's grabber to restart is how a
+    // probe would break the user's own tap-hold rules.
+    if (!probe) {
+        if (std.Thread.spawn(.{}, convergeGrabber, .{&daemon})) |thread| {
+            thread.detach();
+        } else |err| {
+            log.warn("the grabber check not started: {s}", .{@errorName(err)});
+        }
     }
 
     // The Accessibility grant the window observers need, asked for and waited on
-    // off this thread, for the reason above.
-    if (std.Thread.spawn(.{}, convergeAxAccess, .{&daemon})) |thread| {
-        thread.detach();
-    } else |err| {
-        log.warn("the accessibility check not started: {s}", .{@errorName(err)});
+    // off this thread, for the reason above. A probe asks for nothing: the grant
+    // and the observers belong to the installed daemon.
+    if (!probe) {
+        if (std.Thread.spawn(.{}, convergeAxAccess, .{&daemon})) |thread| {
+            thread.detach();
+        } else |err| {
+            log.warn("the accessibility check not started: {s}", .{@errorName(err)});
+        }
     }
 
     // This thread ends up inside a run loop either way: the engine's while it runs,

@@ -442,6 +442,33 @@ const engine_delta = [_]Edit{
         \\/// Poll AXIsProcessTrusted on a 1s timer and reconcile the event tap with
         ,
     },
+    .{
+        // A grabber that is not up yet must not cost the bindings their tap: the
+        // service restarts the grabber on every upgrade, and returning here takes
+        // the whole event tap down for as long as it is missing. The retry timer
+        // a lost connection already uses forwards the rules as soon as it
+        // answers, so the tap is up and tap-hold follows.
+        .from =
+        \\    // Propagate the error: forwardTapholdsToGrabber returns early when
+        \\    // the config has no caps-class rules (or none whose target devices
+        \\    // are connected), so an error here means the config genuinely needs
+        \\    // the grabber and we couldn't reach it. Better to exit and let
+        \\    // launchd respawn us — by then the grabber daemon should be up —
+        \\    // than silently run with the caps-class rules disabled.
+        \\    self.forwardTapholdsToGrabber() catch |err| {
+        \\        log.err("config requires skhd-grabber but forward failed: {s} — exiting so launchd can retry", .{@errorName(err)});
+        \\        return err;
+        \\    };
+        ,
+        .to =
+        \\    // A grabber that is not up yet costs this config its tap-hold rules,
+        \\    // not the bindings.
+        \\    self.forwardTapholdsToGrabber() catch |err| {
+        \\        log.warn("skhd-grabber not reachable ({s}) — starting without tap-hold rules, retrying", .{@errorName(err)});
+        \\        self.scheduleGrabberReconnect();
+        \\    };
+        ,
+    },
 };
 
 /// The grabber's own answer to "may I seize a keyboard", in the hello reply.
